@@ -1,0 +1,45 @@
+name: CPS Runtime CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  core-st:
+    name: Core ST (ORC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.0.10'
+      - name: Install dependencies
+        run: nimble install -d -y
+      - name: Core tests
+        run: |
+          nim c -r --mm:orc tests/core/test_event_loop.nim
+          nim c -r --mm:orc tests/core/test_tasks.nim
+          nim c -r --mm:orc tests/concurrency/test_channels.nim
+
+  mt-atomicarc:
+    name: MT (atomicArc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.0.10'
+      - name: Install dependencies
+        run: nimble install -d -y
+      - name: MT correctness tests
+        run: |
+          nim c -r --mm:atomicArc tests/core/test_lockfree.nim
+          nim c -r --mm:atomicArc tests/mt/test_mt_basic.nim
+          nim c -r --mm:atomicArc tests/mt/test_mt_blocking.nim
+      - name: MT stress loop
+        run: |
+          for i in $(seq 1 20); do
+            echo "stress run $i"
+            nim c -r --mm:atomicArc tests/mt/test_mt_concurrent.nim
+          done
