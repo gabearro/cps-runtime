@@ -4,6 +4,9 @@
 ## Parses ANSI escape sequences into structured key/mouse events.
 ## Integrates with the CPS event loop via selector-based fd monitoring.
 
+when not defined(posix):
+  {.error: "TUI requires POSIX terminal support (termios, SIGWINCH). Not available on Windows.".}
+
 import ../runtime
 import ../transform
 import ../eventloop

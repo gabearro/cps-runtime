@@ -4,6 +4,9 @@
 ## the CPS event loop. Pipe fds are registered with the OS selector for
 ## non-blocking reads/writes; exit status is polled via a timer.
 
+when not defined(posix):
+  {.error: "Async process module requires POSIX (fork/exec). Not available on Windows.".}
+
 import std/[posix, os, nativesockets]
 import ../runtime
 import ../eventloop

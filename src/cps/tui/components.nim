@@ -169,6 +169,14 @@ type
     timestamp*: string
     spans*: seq[StyledSpan]  ## Optional: styled spans (overrides `style` when non-empty)
 
+  VisualRow* = object
+    ## A single visual (screen) row produced by wrapping a logical line.
+    lineIdx*: int           ## Index into lines[]
+    spans*: seq[StyledSpan] ## Styled spans for this row
+    text*: string           ## Plain text for this row
+    style*: Style           ## Fallback style (used when spans is empty)
+    isFirstRow*: bool       ## True for the first visual row of a logical line
+
   ScrollableTextView* = ref object
     ## A scrollable text view — suitable for chat logs, log viewers, etc.
     lines*: seq[LineEntry]
@@ -179,6 +187,8 @@ type
     showTimestamps*: bool
     timestampStyle*: Style
     lastRect*: Rect         ## Set during render for mouse hit-testing
+    lastTotalVisualRows*: int  ## Total visual rows after wrapping (set during render)
+    lastMsgColWidth*: int      ## Cached message column width for mouse mapping
     # Selection state
     selecting*: bool        ## True while dragging a selection
     selAnchor*: TextPos     ## Where the drag started (line index in lines[])
@@ -199,8 +209,100 @@ proc newScrollableTextView*(maxLines: int = 0,
     timestampStyle: style(clBrightBlack),
   )
 
+proc wrapSpans*(spans: seq[StyledSpan], width: int): seq[seq[StyledSpan]] =
+  ## Split styled spans across multiple visual rows at character boundaries.
+  ## Each returned row is a list of spans fitting within `width` chars.
+  if width <= 0:
+    return @[spans]
+  var currentRow: seq[StyledSpan] = @[]
+  var currentRowLen = 0
+  result = @[]
+  for span in spans:
+    var pos = 0
+    while pos < span.text.len:
+      let remaining = width - currentRowLen
+      if remaining <= 0:
+        result.add(currentRow)
+        currentRow = @[]
+        currentRowLen = 0
+        continue
+      let chunkLen = min(remaining, span.text.len - pos)
+      currentRow.add(StyledSpan(text: span.text[pos ..< pos + chunkLen], style: span.style))
+      currentRowLen += chunkLen
+      pos += chunkLen
+      if currentRowLen >= width and pos < span.text.len:
+        result.add(currentRow)
+        currentRow = @[]
+        currentRowLen = 0
+  # Add final row (even if empty — represents at least one visual row)
+  result.add(currentRow)
+
+proc wrapPlainText(text: string, width: int, st: Style): seq[VisualRow] =
+  ## Wrap plain text into visual rows at character boundaries.
+  if width <= 0 or text.len == 0:
+    return @[VisualRow(text: "", style: st, isFirstRow: true)]
+  result = @[]
+  var pos = 0
+  var first = true
+  while pos < text.len:
+    let endPos = min(pos + width, text.len)
+    result.add(VisualRow(text: text[pos ..< endPos], style: st, isFirstRow: first))
+    first = false
+    pos = endPos
+  if result.len == 0:
+    result.add(VisualRow(text: "", style: st, isFirstRow: true))
+
+proc buildVisualRows*(sv: ScrollableTextView, msgColWidth: int): seq[VisualRow] =
+  ## Build a flat list of visual rows from all logical lines, applying wrapping.
+  result = @[]
+  if msgColWidth <= 0:
+    return
+  for lineIdx in 0 ..< sv.lines.len:
+    let entry = sv.lines[lineIdx]
+    if sv.wrapMode == twNone or msgColWidth <= 0:
+      # No wrapping: 1 logical line → 1 visual row
+      result.add(VisualRow(
+        lineIdx: lineIdx, spans: entry.spans, text: entry.text,
+        style: entry.style, isFirstRow: true,
+      ))
+    elif entry.spans.len > 0:
+      # Wrap styled spans
+      let wrappedRows = wrapSpans(entry.spans, msgColWidth)
+      for i, rowSpans in wrappedRows:
+        var plainText = ""
+        for sp in rowSpans:
+          plainText.add(sp.text)
+        result.add(VisualRow(
+          lineIdx: lineIdx, spans: rowSpans, text: plainText,
+          style: entry.style, isFirstRow: (i == 0),
+        ))
+    else:
+      # Wrap plain text
+      let rows = wrapPlainText(entry.text, msgColWidth, entry.style)
+      for i, row in rows:
+        var vr = row
+        vr.lineIdx = lineIdx
+        vr.isFirstRow = (i == 0)
+        result.add(vr)
+
+proc visualRowCount*(entry: LineEntry, msgColWidth: int, wrapMode: TextWrap): int =
+  ## Return how many visual rows a line needs.
+  if wrapMode == twNone or msgColWidth <= 0:
+    return 1
+  let textLen = if entry.spans.len > 0:
+    var total = 0
+    for sp in entry.spans:
+      total += sp.text.len
+    total
+  else:
+    entry.text.len
+  max(1, (textLen + msgColWidth - 1) div msgColWidth)
+
 proc scrollToBottom*(sv: ScrollableTextView) =
-  sv.scrollOffset = max(0, sv.lines.len)  # Will be clamped during render
+  # Use lastTotalVisualRows if available (post-render), otherwise lines.len
+  let total = if sv.lastTotalVisualRows > 0: sv.lastTotalVisualRows
+              else: sv.lines.len
+  sv.scrollOffset = max(0, total)  # Will be clamped during render
 
 proc addLine*(sv: ScrollableTextView, text: string,
               st: Style = styleDefault, timestamp: string = "",
@@ -224,8 +326,10 @@ proc scrollUp*(sv: ScrollableTextView, amount: int = 1) =
   sv.autoScroll = false
 
 proc scrollDown*(sv: ScrollableTextView, amount: int = 1, visibleHeight: int = 0) =
-  sv.scrollOffset = min(max(0, sv.lines.len - 1), sv.scrollOffset + amount)
-  if visibleHeight > 0 and sv.scrollOffset >= sv.lines.len - visibleHeight:
+  let totalRows = if sv.lastTotalVisualRows > 0: sv.lastTotalVisualRows
+                  else: sv.lines.len
+  sv.scrollOffset = min(max(0, totalRows - 1), sv.scrollOffset + amount)
+  if visibleHeight > 0 and sv.scrollOffset >= totalRows - visibleHeight:
     sv.autoScroll = true
 
 proc pageUp*(sv: ScrollableTextView, pageSize: int) =
@@ -247,15 +351,42 @@ proc screenToTextPos(sv: ScrollableTextView, mx, my: int): TextPos =
   let r = sv.lastRect
   let row = my - r.y
   let visibleH = r.h
-  var startIdx: int
-  if sv.autoScroll:
-    startIdx = max(0, sv.lines.len - visibleH)
+  let msgColWidth = sv.lastMsgColWidth
+
+  if sv.wrapMode != twNone and msgColWidth > 0:
+    # With wrapping: build visual rows and map back
+    let allVisualRows = sv.buildVisualRows(msgColWidth)
+    let totalVR = allVisualRows.len
+    var startVR: int
+    if sv.autoScroll:
+      startVR = max(0, totalVR - visibleH)
+    else:
+      let maxOffset = max(0, totalVR - visibleH)
+      startVR = clamp(sv.scrollOffset, 0, maxOffset)
+    let vrIdx = clamp(startVR + row, 0, max(0, totalVR - 1))
+    if vrIdx < totalVR:
+      let vr = allVisualRows[vrIdx]
+      # Compute column offset within the logical line
+      var colOffset = 0
+      for vi in 0 ..< vrIdx:
+        if allVisualRows[vi].lineIdx == vr.lineIdx:
+          colOffset += allVisualRows[vi].text.len
+        elif allVisualRows[vi].lineIdx > vr.lineIdx:
+          break
+      let col = max(0, mx - r.x - sv.tsColWidth) + colOffset
+      return TextPos(line: vr.lineIdx, col: col)
+    return TextPos(line: max(0, sv.lines.len - 1), col: 0)
   else:
-    let maxOffset = max(0, sv.lines.len - visibleH)
-    startIdx = clamp(sv.scrollOffset, 0, maxOffset)
-  let lineIdx = clamp(startIdx + row, 0, max(0, sv.lines.len - 1))
-  let col = max(0, mx - r.x - sv.tsColWidth)
-  TextPos(line: lineIdx, col: col)
+    # No wrapping: simple mapping
+    var startIdx: int
+    if sv.autoScroll:
+      startIdx = max(0, sv.lines.len - visibleH)
+    else:
+      let maxOffset = max(0, sv.lines.len - visibleH)
+      startIdx = clamp(sv.scrollOffset, 0, maxOffset)
+    let lineIdx = clamp(startIdx + row, 0, max(0, sv.lines.len - 1))
+    let col = max(0, mx - r.x - sv.tsColWidth)
+    TextPos(line: lineIdx, col: col)
 
 proc selStart*(sv: ScrollableTextView): TextPos =
   ## Return the selection start (earlier position).
@@ -361,20 +492,12 @@ proc toWidget*(sv: ScrollableTextView, height: int = 0): Widget =
       return
     let visibleH = rect.h
 
-    # Determine the starting line index
-    var startIdx: int
-    if view.autoScroll:
-      startIdx = max(0, view.lines.len - visibleH)
-    else:
-      let maxOffset = max(0, view.lines.len - visibleH)
-      startIdx = clamp(view.scrollOffset, 0, maxOffset)
-
-    # Compute timestamp column width (fixed across all lines for alignment)
+    # Compute timestamp column width (scan all lines for max width)
     var tsColWidth = 0
     if view.showTimestamps:
-      for i in startIdx ..< min(startIdx + visibleH, view.lines.len):
-        if view.lines[i].timestamp.len > tsColWidth:
-          tsColWidth = view.lines[i].timestamp.len
+      for entry in view.lines:
+        if entry.timestamp.len > tsColWidth:
+          tsColWidth = entry.timestamp.len
       if tsColWidth > 0:
         tsColWidth += 1  # Space after timestamp
 
@@ -384,6 +507,20 @@ proc toWidget*(sv: ScrollableTextView, height: int = 0): Widget =
     view.tsColWidth = tsColWidth
 
     let msgColWidth = max(1, rect.w - tsColWidth)
+    view.lastMsgColWidth = msgColWidth
+
+    # Build visual rows (handles wrapping)
+    let allVisualRows = view.buildVisualRows(msgColWidth)
+    let totalVR = allVisualRows.len
+    view.lastTotalVisualRows = totalVR
+
+    # Determine starting visual row index
+    var startVR: int
+    if view.autoScroll:
+      startVR = max(0, totalVR - visibleH)
+    else:
+      let maxOffset = max(0, totalVR - visibleH)
+      startVR = clamp(view.scrollOffset, 0, maxOffset)
 
     # Selection range (normalized so selS <= selE)
     let hasSel = view.hasSelection or view.selecting
@@ -393,32 +530,34 @@ proc toWidget*(sv: ScrollableTextView, height: int = 0): Widget =
       selE = view.selEnd
 
     for row in 0 ..< visibleH:
-      let lineIdx = startIdx + row
-      if lineIdx >= view.lines.len:
+      let vrIdx = startVR + row
+      if vrIdx >= totalVR:
         break
+      let vr = allVisualRows[vrIdx]
+      let lineIdx = vr.lineIdx
       let entry = view.lines[lineIdx]
       var x = rect.x
 
-      # Draw timestamp column (fixed-width, right-padded)
+      # Draw timestamp column only on the first visual row of a logical line
       if tsColWidth > 0 and view.showTimestamps:
-        let ts = if entry.timestamp.len > 0: entry.timestamp
-                 else: ""
-        let padded = ts & " ".repeat(max(0, tsColWidth - ts.len))
-        buf.writeStrClip(x, rect.y + row, min(tsColWidth, rect.w), padded, view.timestampStyle)
+        if vr.isFirstRow:
+          let ts = if entry.timestamp.len > 0: entry.timestamp else: ""
+          let padded = ts & " ".repeat(max(0, tsColWidth - ts.len))
+          buf.writeStrClip(x, rect.y + row, min(tsColWidth, rect.w), padded, view.timestampStyle)
         x += tsColWidth
 
       # Draw message text — clip to remaining width within the rect
       let remainingW = max(0, (rect.x + rect.w) - x)
-      if entry.spans.len > 0:
-        # Render styled spans
+      if vr.spans.len > 0:
+        # Render styled spans for this visual row
         var sx = x
-        for span in entry.spans:
+        for span in vr.spans:
           let available = max(0, (rect.x + rect.w) - sx)
           if available <= 0: break
           buf.writeStrClip(sx, rect.y + row, available, span.text, span.style)
           sx += span.text.len
       else:
-        buf.writeStrClip(x, rect.y + row, min(msgColWidth, remainingW), entry.text, entry.style)
+        buf.writeStrClip(x, rect.y + row, min(msgColWidth, remainingW), vr.text, vr.style)
 
       # Apply selection highlight (reverse video) over selected columns
       if hasSel and lineIdx >= selS.line and lineIdx <= selE.line:
@@ -437,13 +576,26 @@ proc toWidget*(sv: ScrollableTextView, height: int = 0): Widget =
         # Also extend the last column of the start line if multi-line
         if lineIdx == selS.line and selE.line > selS.line:
           colEnd = max(textLen, rect.w - tsColWidth)
-        for c in colStart ..< colEnd:
-          let sx = x + c
-          if sx >= rect.x and sx < rect.x + rect.w:
-            let cell = buf[sx, rect.y + row]
-            var invSt = cell.style
-            invSt.attrs = invSt.attrs + {taReverse}
-            buf.setCell(sx, rect.y + row, cell.ch, invSt)
+        # Map selection columns to this visual row's portion
+        var vrColOffset = 0
+        for vi in startVR ..< vrIdx:
+          if allVisualRows[vi].lineIdx == lineIdx:
+            vrColOffset += allVisualRows[vi].text.len
+        # Also count visual rows before the visible window
+        for vi in 0 ..< startVR:
+          if allVisualRows[vi].lineIdx == lineIdx:
+            vrColOffset += allVisualRows[vi].text.len
+        let vrLen = vr.text.len
+        let vrColStart = max(0, colStart - vrColOffset)
+        let vrColEnd = min(vrLen, colEnd - vrColOffset)
+        if vrColEnd > vrColStart:
+          for c in vrColStart ..< vrColEnd:
+            let sx = x + c
+            if sx >= rect.x and sx < rect.x + rect.w:
+              let cell = buf[sx, rect.y + row]
+              var invSt = cell.style
+              invSt.attrs = invSt.attrs + {taReverse}
+              buf.setCell(sx, rect.y + row, cell.ch, invSt)
   )
 
 # ============================================================
@@ -858,3 +1010,246 @@ proc hitTestList*(itemCount: int, mx, my: int, rect: Rect,
   if idx >= 0 and idx < itemCount:
     return idx
   return -1
+
+# ============================================================
+# Confirm Dialog (declarative, with focus trap)
+# ============================================================
+
+proc confirmDialog*(title: string, lines: seq[string],
+                    acceptLabel: string = "[Y] Accept",
+                    declineLabel: string = "[N] Decline",
+                    onAccept: proc(), onDecline: proc(),
+                    screenW: int = 80, screenH: int = 24): Widget =
+  ## A bordered dialog with focus trap that handles Y/N/Escape keys.
+  ## Replaces the imperative PasteConfirm/DccConfirm pattern.
+  let acceptCb = onAccept
+  let declineCb = onDecline
+  let bodyLines = lines
+  let aLabel = acceptLabel
+  let dLabel = declineLabel
+
+  let dw = min(max(40, screenW * 60 div 100), screenW - 2)
+  let lineCount = bodyLines.len + 2  # +2 for spacing and button row
+  let dh = min(lineCount + 4, max(screenH - 4, 7))  # +4 for border+padding
+  let dx = max(0, (screenW - dw) div 2)
+  let dy = max(0, (screenH - dh) div 2)
+
+  custom(proc(buf: var CellBuffer, rect: Rect) =
+    # Shadow
+    buf.fill(dx + 1, dy + 1, dw, dh, " ", style(clDefault, clBrightBlack))
+    # Background
+    buf.fill(dx, dy, dw, dh, " ", styleDefault)
+    # Border
+    let bc = borderChars(bsRounded)
+    let titleSt = style(clBrightWhite).bold()
+    buf.setCell(dx, dy, bc.topLeft, titleSt)
+    for x in dx + 1 ..< dx + dw - 1:
+      buf.setCell(x, dy, bc.horizontal, titleSt)
+    buf.setCell(dx + dw - 1, dy, bc.topRight, titleSt)
+    for y in dy + 1 ..< dy + dh - 1:
+      buf.setCell(dx, y, bc.vertical, titleSt)
+      buf.setCell(dx + dw - 1, y, bc.vertical, titleSt)
+    buf.setCell(dx, dy + dh - 1, bc.bottomLeft, titleSt)
+    for x in dx + 1 ..< dx + dw - 1:
+      buf.setCell(x, dy + dh - 1, bc.horizontal, titleSt)
+    buf.setCell(dx + dw - 1, dy + dh - 1, bc.bottomRight, titleSt)
+    # Title
+    if title.len > 0:
+      buf.writeStr(dx + 2, dy, " " & title & " ", titleSt)
+    # Body lines
+    let innerW = dw - 4
+    for i, line in bodyLines:
+      if i < dh - 4:
+        buf.writeStrClip(dx + 2, dy + 1 + i, innerW, line, styleDefault)
+    # Button row
+    let buttonY = dy + dh - 2
+    let buttonText = aLabel & "  " & dLabel
+    buf.writeStrClip(dx + 2, buttonY, innerW, buttonText, style(clBrightCyan))
+  ).withFocusTrap(true).withOnKey(proc(evt: InputEvent): bool =
+    if evt.kind == iekKey:
+      if evt.key == kcChar and (evt.ch == 'y' or evt.ch == 'Y'):
+        acceptCb()
+        return true
+      elif evt.key == kcChar and (evt.ch == 'n' or evt.ch == 'N'):
+        declineCb()
+        return true
+      elif evt.key == kcEscape:
+        declineCb()
+        return true
+    return true  # Trap all keys
+  ).withFocus(true)
+
+# ============================================================
+# Interactive List (declarative, with built-in click/key nav)
+# ============================================================
+
+proc interactiveList*(items: seq[ListItem], selected: int,
+                      onSelect: proc(idx: int),
+                      onActivate: proc(idx: int) = nil,
+                      offset: int = 0,
+                      highlightStyle: Style = style(clBlack, clWhite)): Widget =
+  ## A list with built-in click-to-select and keyboard navigation.
+  ## `onSelect` fires when selection changes, `onActivate` fires on Enter.
+  let listItems = items
+  let selectCb = onSelect
+  let activateCb = onActivate
+  let sel = selected
+  let ofs = offset
+  let hlStyle = highlightStyle
+
+  list(listItems, sel, ofs, hlStyle)
+    .withOnClick(proc(mx, my: int) =
+      let idx = ofs + my
+      if idx >= 0 and idx < listItems.len:
+        selectCb(idx)
+    )
+    .withOnKey(proc(evt: InputEvent): bool =
+      if evt.kind == iekKey:
+        case evt.key
+        of kcUp:
+          if sel > 0:
+            selectCb(sel - 1)
+          return true
+        of kcDown:
+          if sel < listItems.len - 1:
+            selectCb(sel + 1)
+          return true
+        of kcEnter:
+          if activateCb != nil and sel >= 0 and sel < listItems.len:
+            activateCb(sel)
+          return true
+        else: discard
+      return false
+    )
+    .withFocus(true)
+
+# ============================================================
+# Interactive Tabs (declarative, with built-in click switching)
+# ============================================================
+
+proc interactiveTabs*(items: seq[TabItem],
+                      onSwitch: proc(idx: int),
+                      tabSt: Style = styleDefault,
+                      activeSt: Style = style(clBlack, clWhite).bold()): Widget =
+  ## A tab bar with built-in click-to-switch.
+  let tabItems = items
+  let switchCb = onSwitch
+  tabBar(tabItems, tabSt, activeSt)
+    .withOnClick(proc(mx, my: int) =
+      # Hit-test the tab positions
+      var x = 0
+      for i, tab in tabItems:
+        let label = " " & tab.label & " "
+        if mx >= x and mx < x + label.len:
+          switchCb(i)
+          return
+        x += label.len
+        if i < tabItems.len - 1:
+          x += 1  # Separator
+    )
+
+# ============================================================
+# Declarative SplitView (events built-in)
+# ============================================================
+
+proc toWidgetWithEvents*(sv: SplitView, first, second: Widget): Widget =
+  ## Render the split view with internal mouse event handling for divider drag.
+  ## Sets customChildren/customChildRects so the event system can route clicks
+  ## to child widgets (channel list, chat area, etc.).
+  let svRef = sv
+  let firstChild = first
+  let secondChild = second
+  var w = custom(proc(buf: var CellBuffer, rect: Rect) =
+    case svRef.direction
+    of dirHorizontal:
+      let usable = max(0, rect.w - 1)
+      let firstSize = svRef.computeFirstSize(usable)
+      let secondSize = usable - firstSize
+      if firstSize > 0:
+        renderWidget(buf, firstChild, Rect(x: rect.x, y: rect.y, w: firstSize, h: rect.h))
+      let divX = rect.x + firstSize
+      for y in rect.y ..< rect.y + rect.h:
+        buf.setCell(divX, y, svRef.dividerChar, svRef.dividerStyle)
+      if secondSize > 0:
+        renderWidget(buf, secondChild, Rect(x: divX + 1, y: rect.y, w: secondSize, h: rect.h))
+    of dirVertical:
+      let usable = max(0, rect.h - 1)
+      let firstSize = svRef.computeFirstSize(usable)
+      let secondSize = usable - firstSize
+      if firstSize > 0:
+        renderWidget(buf, firstChild, Rect(x: rect.x, y: rect.y, w: rect.w, h: firstSize))
+      let divY = rect.y + firstSize
+      for x in rect.x ..< rect.x + rect.w:
+        buf.setCell(x, divY, svRef.dividerChar, svRef.dividerStyle)
+      if secondSize > 0:
+        renderWidget(buf, secondChild, Rect(x: rect.x, y: divY + 1, w: rect.w, h: secondSize))
+  )
+  # Register children for event routing. The rects are computed lazily
+  # during customRender and read by renderWidgetWithEvents afterward.
+  w.customChildren = @[firstChild, secondChild]
+  # Placeholder rects — will be updated by a wrapper render proc
+  w.customChildRects = @[Rect(), Rect()]
+  let wRef = w
+  let origRender = w.customRender
+  w.customRender = proc(buf: var CellBuffer, rect: Rect) =
+    # Compute child rects for event routing before rendering
+    case svRef.direction
+    of dirHorizontal:
+      let usable = max(0, rect.w - 1)
+      let firstSize = svRef.computeFirstSize(usable)
+      let secondSize = usable - firstSize
+      wRef.customChildRects[0] = Rect(x: rect.x, y: rect.y, w: firstSize, h: rect.h)
+      wRef.customChildRects[1] = Rect(x: rect.x + firstSize + 1, y: rect.y, w: secondSize, h: rect.h)
+    of dirVertical:
+      let usable = max(0, rect.h - 1)
+      let firstSize = svRef.computeFirstSize(usable)
+      let secondSize = usable - firstSize
+      wRef.customChildRects[0] = Rect(x: rect.x, y: rect.y, w: rect.w, h: firstSize)
+      wRef.customChildRects[1] = Rect(x: rect.x, y: rect.y + firstSize + 1, w: rect.w, h: secondSize)
+    origRender(buf, rect)
+  w
+
+# ============================================================
+# Declarative ScrollableTextView (events built-in)
+# ============================================================
+
+proc toWidgetWithEvents*(sv: ScrollableTextView, height: int = 0): Widget =
+  ## Render the scrollable text view with built-in scroll and selection handling.
+  let view = sv
+  sv.toWidget(height)
+    .withOnScroll(proc(delta: int) =
+      if delta < 0:
+        view.scrollUp(3)
+      else:
+        view.scrollDown(3, view.lastRect.h)
+    )
+    .withOnMouse(proc(evt: InputEvent): bool =
+      view.handleMouse(evt)
+    )
+
+# ============================================================
+# Declarative TreeView (events built-in)
+# ============================================================
+
+proc toWidgetWithEvents*(tv: TreeView): Widget =
+  ## Render the tree view with built-in click handling.
+  let view = tv
+  tv.toWidget()
+    .withOnClick(proc(mx, my: int) =
+      let flat = view.flatItems()
+      if my >= 0 and my < flat.len:
+        view.selectedIdx = my
+        let (node, depth) = flat[my]
+        let iconX = depth * view.indentSize
+        if mx >= iconX and mx < iconX + 2 and node.children.len > 0:
+          node.expanded = not node.expanded
+    )
+    .withOnKey(proc(evt: InputEvent): bool =
+      if evt.kind == iekKey:
+        case evt.key
+        of kcUp: view.moveUp(); return true
+        of kcDown: view.moveDown(); return true
+        of kcEnter: view.toggleExpand(); return true
+        else: discard
+      return false
+    )

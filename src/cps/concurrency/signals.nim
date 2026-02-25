@@ -11,6 +11,9 @@
 ##   runCps(fut)
 ##   deinitSignalHandling()
 
+when not defined(posix):
+  {.error: "Signal handling requires POSIX. Not available on Windows.".}
+
 import std/[posix, nativesockets]
 import ../runtime
 import ../eventloop

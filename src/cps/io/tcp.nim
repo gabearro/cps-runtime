@@ -3,9 +3,10 @@
 ## Provides TCP client (TcpStream) and server (TcpListener) sockets
 ## integrated with the CPS event loop.
 
-import std/[nativesockets, net, os, posix]
+import std/[nativesockets, net, os]
 import ../runtime
 import ../eventloop
+import ../private/platform
 import ./streams
 import ./dns
 
@@ -32,7 +33,7 @@ proc tcpStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
 
   # n < 0: check if it's EAGAIN (need to wait) or real error
   let firstErr = osLastError()
-  if firstErr.int != EAGAIN and firstErr.int != EWOULDBLOCK:
+  if not firstErr.isWouldBlock():
     let fut = newCpsFuture[string]()
     fut.fail(newException(streams.AsyncIoError, "Read failed: " & osErrorMsg(firstErr)))
     return fut
@@ -46,7 +47,7 @@ proc tcpStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
     let n = recv(ts.fd, addr buf[0], size.cint, 0'i32)
     if n < 0:
       let err = osLastError()
-      if err.int == EAGAIN or err.int == EWOULDBLOCK:
+      if err.isWouldBlock():
         loop.registerRead(ts.fd, proc() =
           loop.unregister(ts.fd)
           tryRecv()
@@ -89,7 +90,7 @@ proc tcpStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
     let n = send(ts.fd, unsafeAddr data[sent], (totalLen - sent).cint, 0'i32)
     if n < 0:
       let err = osLastError()
-      if err.int == EAGAIN or err.int == EWOULDBLOCK:
+      if err.isWouldBlock():
         break  # Need async path
       else:
         let fut = newCpsVoidFuture()
@@ -116,7 +117,7 @@ proc tcpStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
       let n = send(ts.fd, unsafeAddr data[sent], remaining.cint, 0'i32)
       if n < 0:
         let err = osLastError()
-        if err.int == EAGAIN or err.int == EWOULDBLOCK:
+        if err.isWouldBlock():
           loop.registerWrite(ts.fd, proc() =
             loop.unregister(ts.fd)
             trySend()
@@ -143,7 +144,7 @@ proc tcpStreamReadInto(s: AsyncStream, buf: pointer, size: int): int =
   if n > 0: return n
   if n == 0: return 0
   let err = osLastError()
-  if err.int == EAGAIN or err.int == EWOULDBLOCK: return -1
+  if err.isWouldBlock(): return -1
   return -2
 
 proc tcpStreamWaitReadable(s: AsyncStream): CpsVoidFuture =
@@ -232,7 +233,7 @@ proc tcpConnectIp*(ip: string, port: int, domain: Domain = AF_INET): CpsFuture[T
     return fut
 
   let errCode = osLastError()
-  if errCode.int == EINPROGRESS or errCode.int == EWOULDBLOCK:
+  if errCode.isInProgress():
     loop.registerWrite(fd, proc() =
       loop.unregister(fd)
       var optVal: cint = 0
@@ -348,7 +349,7 @@ proc accept*(listener: TcpListener): CpsFuture[TcpStream] =
     let clientFd = accept(listener.fd, cast[ptr SockAddr](addr clientAddr), addr addrLen)
     if clientFd == osInvalidSocket:
       let err = osLastError()
-      if err.int == EAGAIN or err.int == EWOULDBLOCK:
+      if err.isWouldBlock():
         loop.registerRead(listener.fd, proc() =
           loop.unregister(listener.fd)
           tryAccept()

@@ -10,6 +10,7 @@
 import ./style
 import ./cell
 import ./layout
+import ./input
 import std/strutils
 
 type
@@ -53,6 +54,20 @@ type
 
   CustomRenderProc* = proc(buf: var CellBuffer, rect: Rect)
 
+  ClickHandler* = proc(mx, my: int)
+  KeyHandler* = proc(evt: InputEvent): bool
+  ScrollHandler* = proc(delta: int)
+  MouseHandler* = proc(evt: InputEvent): bool
+  FocusHandler* = proc()
+
+  EventHandlers* = ref object
+    onClick*: ClickHandler
+    onKey*: KeyHandler          ## Key events when focused
+    onScroll*: ScrollHandler    ## Scroll wheel
+    onMouse*: MouseHandler      ## Raw mouse (drag, etc.)
+    onFocus*: FocusHandler
+    onBlur*: FocusHandler
+
   Widget* = ref object
     ## A node in the widget tree.
     kind*: WidgetKind
@@ -61,6 +76,8 @@ type
     focusable*: bool
     focused*: bool
     id*: string           ## Optional identifier for event routing
+    events*: EventHandlers ## nil when no handlers (common case)
+    trapFocus*: bool       ## If true, all key events stay within this subtree
 
     case wk: WidgetKind
     of wkContainer:
@@ -108,6 +125,8 @@ type
       activeTabStyle*: Style
     of wkCustom:
       customRender*: CustomRenderProc
+      customChildren*: seq[Widget]  ## Optional children for event routing
+      customChildRects*: seq[Rect]  ## Rects for customChildren (set by customRender)
 
 # ============================================================
 # Widget constructors
@@ -334,6 +353,55 @@ proc withTextAlign*(w: Widget, align: TextAlign): Widget =
   result = w
   if w.kind == wkText:
     result.textAlign = align
+
+# ============================================================
+# Event handler builder methods
+# ============================================================
+
+proc ensureEvents(w: Widget): EventHandlers {.inline.} =
+  ## Lazily allocate EventHandlers so widgets without handlers pay zero cost.
+  if w.events == nil:
+    w.events = EventHandlers()
+  w.events
+
+proc withOnClick*(w: Widget, h: ClickHandler): Widget =
+  result = w
+  discard result.ensureEvents()
+  result.events.onClick = h
+
+proc withOnKey*(w: Widget, h: KeyHandler): Widget =
+  result = w
+  discard result.ensureEvents()
+  result.events.onKey = h
+
+proc withOnScroll*(w: Widget, h: ScrollHandler): Widget =
+  result = w
+  discard result.ensureEvents()
+  result.events.onScroll = h
+
+proc withOnMouse*(w: Widget, h: MouseHandler): Widget =
+  result = w
+  discard result.ensureEvents()
+  result.events.onMouse = h
+
+proc withOnFocus*(w: Widget, h: FocusHandler): Widget =
+  result = w
+  result.focusable = true
+  discard result.ensureEvents()
+  result.events.onFocus = h
+
+proc withOnBlur*(w: Widget, h: FocusHandler): Widget =
+  result = w
+  discard result.ensureEvents()
+  result.events.onBlur = h
+
+proc withFocusTrap*(w: Widget, trap: bool = true): Widget =
+  result = w
+  result.trapFocus = trap
+
+proc hasEventHandlers*(w: Widget): bool =
+  ## Returns true if the widget has any event handlers attached.
+  w.events != nil
 
 # ============================================================
 # Content size estimation (for auto sizing)

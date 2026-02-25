@@ -8,9 +8,10 @@
 ## - Socket readiness (readable / writable)
 ## - Pending continuations (ready to run immediately)
 
-import std/[selectors, nativesockets, monotimes, times, os, posix, atomics, sysatomics, locks]
+import std/[selectors, nativesockets, monotimes, times, os, atomics, sysatomics, locks]
 import ./runtime
 import ./private/mpsc_queue
+import ./private/platform
 
 export runtime
 
@@ -48,8 +49,8 @@ type
     ownerRuntime*: CpsRuntime
     # MT extensions (nil/default when single-threaded)
     crossThreadQueue*: MpscQueue   ## Lock-free MPSC queue for cross-thread callbacks
-    wakePipeRead*: cint   ## Read end of wake pipe (-1 = not initialized)
-    wakePipeWrite*: cint  ## Write end of wake pipe (-1 = not initialized)
+    wakePipeRead*: SocketHandle   ## Read end of wake pipe (SocketHandle(-1) = not initialized)
+    wakePipeWrite*: SocketHandle  ## Write end of wake pipe (SocketHandle(-1) = not initialized)
     wakePending: Atomic[bool]  ## Coalesce wake-pipe writes
     mtActive*: bool       ## Whether MT extensions are active
     stats*: LoopStats
@@ -92,8 +93,8 @@ proc newEventLoop*(): EventLoop =
   result.readyQueue = @[]
   result.running = false
   result.ownerRuntime = nil
-  result.wakePipeRead = -1
-  result.wakePipeWrite = -1
+  result.wakePipeRead = SocketHandle(-1)
+  result.wakePipeWrite = SocketHandle(-1)
   result.mtActive = false
 
 proc timerHeapPush(loop: EventLoop, entry: TimerEntry) {.inline.} =
@@ -203,20 +204,11 @@ proc setEventLoop*(loop: EventLoop) =
 
 proc tryWakeSelector*(loop: EventLoop) =
   ## Coalesced wake for selector waiters. Safe from any thread.
-  if not loop.mtActive or loop.wakePipeWrite < 0:
+  if not loop.mtActive or loop.wakePipeWrite == SocketHandle(-1):
     return
   if loop.wakePending.exchange(true, moAcquireRelease):
     return  # Wake already in flight
-  var buf: array[1, byte] = [1'u8]
-  while true:
-    let n = posix.write(loop.wakePipeWrite, addr buf[0], 1)
-    if n == 1:
-      return
-    let err = osLastError()
-    if err == OSErrorCode(EINTR):
-      continue
-    # Pipe full means the reactor is already signaled; keep wakePending=true.
-    return
+  platform.wakePipeSignal(loop.wakePipeWrite)
 
 proc markWakeDrained*(loop: EventLoop) {.inline.} =
   ## Mark the wake signal as drained so producers can signal again.

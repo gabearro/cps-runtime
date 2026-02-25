@@ -4,7 +4,7 @@
 ## HttpHandler, HttpServerConfig, HttpServer.
 
 import std/[strutils, nativesockets, tables, json]
-from std/posix import Sockaddr_in, getsockname, SockLen
+import ../../private/platform
 import ../../runtime
 import ../../eventloop
 import ../../concurrency/taskgroup
@@ -349,7 +349,7 @@ proc bindAndListen*(server: HttpServer) =
   var addrLen: SockLen = sizeof(localAddr).SockLen
   let rc = getsockname(server.listener.fd, cast[ptr SockAddr](addr localAddr), addr addrLen)
   if rc == 0:
-    server.boundPort = ntohs(localAddr.sin_port).int
+    server.boundPort = nativesockets.ntohs(localAddr.sin_port).int
   else:
     server.boundPort = server.config.port
 

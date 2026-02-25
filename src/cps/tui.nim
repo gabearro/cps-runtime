@@ -19,5 +19,5 @@
 ##   - components: Split views, scrollable text, status bar, dialog, tree view, etc.
 ##   - app: Application framework with event loop integration
 
-import cps/tui/[style, cell, input, layout, widget, renderer, textinput, reactive, dsl, components, app]
-export style, cell, input, layout, widget, renderer, textinput, reactive, dsl, components, app
+import cps/tui/[style, cell, input, layout, widget, renderer, textinput, reactive, dsl, components, events, component, app]
+export style, cell, input, layout, widget, renderer, textinput, reactive, dsl, components, events, component, app

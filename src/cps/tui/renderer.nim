@@ -8,6 +8,7 @@ import ./style
 import ./cell
 import ./layout
 import ./widget
+import ./events
 import std/strutils
 
 # ============================================================
@@ -140,31 +141,72 @@ proc drawInput(buf: var CellBuffer, rect: Rect, w: Widget) =
   else:
     w.style
 
-  # Scroll input if cursor is past visible area
   let visibleWidth = rect.w
-  var scrollOffset = 0
-  if w.inputCursor > visibleWidth - 1:
-    scrollOffset = w.inputCursor - visibleWidth + 1
 
-  let visibleText = if scrollOffset < displayText.len:
-    displayText[scrollOffset ..< min(scrollOffset + visibleWidth, displayText.len)]
+  if rect.h > 1:
+    # Multi-line wrapping mode: wrap displayText at character boundaries
+    var wrappedRows: seq[string] = @[]
+    var pos = 0
+    while pos < displayText.len:
+      let endPos = min(pos + visibleWidth, displayText.len)
+      wrappedRows.add(displayText[pos ..< endPos])
+      pos = endPos
+    if wrappedRows.len == 0:
+      wrappedRows.add("")
+
+    # Determine which row the cursor is on
+    let cursorRow = if visibleWidth > 0: w.inputCursor div visibleWidth else: 0
+    let cursorCol = if visibleWidth > 0: w.inputCursor mod visibleWidth else: 0
+
+    # Scroll so cursor row is visible
+    var scrollRow = 0
+    if cursorRow >= rect.h:
+      scrollRow = cursorRow - rect.h + 1
+
+    # Render rows
+    for row in 0 ..< rect.h:
+      let rowIdx = scrollRow + row
+      let rowText = if rowIdx < wrappedRows.len: wrappedRows[rowIdx] else: ""
+      buf.writeStrClip(rect.x, rect.y + row, visibleWidth, rowText, st)
+      # Fill remaining with spaces
+      let textLen = rowText.len
+      if textLen < visibleWidth:
+        for x in rect.x + textLen ..< rect.x + visibleWidth:
+          buf.setCell(x, rect.y + row, " ", st)
+
+    # Cursor indicator
+    if w.focused:
+      let screenRow = cursorRow - scrollRow
+      if screenRow >= 0 and screenRow < rect.h:
+        let cursorX = rect.x + cursorCol
+        if cursorX >= rect.x and cursorX < rect.x + visibleWidth:
+          let curCell = buf[cursorX, rect.y + screenRow]
+          buf.setCell(cursorX, rect.y + screenRow, curCell.ch, curCell.style.reverse())
   else:
-    ""
+    # Single-line mode: horizontal scroll
+    var scrollOffset = 0
+    if w.inputCursor > visibleWidth - 1:
+      scrollOffset = w.inputCursor - visibleWidth + 1
 
-  buf.writeStrClip(rect.x, rect.y, visibleWidth, visibleText, st)
+    let visibleText = if scrollOffset < displayText.len:
+      displayText[scrollOffset ..< min(scrollOffset + visibleWidth, displayText.len)]
+    else:
+      ""
 
-  # Fill remaining with spaces
-  let remaining = visibleWidth - visibleText.len
-  if remaining > 0:
-    for x in rect.x + visibleText.len ..< rect.x + visibleWidth:
-      buf.setCell(x, rect.y, " ", st)
+    buf.writeStrClip(rect.x, rect.y, visibleWidth, visibleText, st)
 
-  # Cursor indicator
-  if w.focused:
-    let cursorX = rect.x + w.inputCursor - scrollOffset
-    if cursorX >= rect.x and cursorX < rect.x + visibleWidth:
-      let curCell = buf[cursorX, rect.y]
-      buf.setCell(cursorX, rect.y, curCell.ch, curCell.style.reverse())
+    # Fill remaining with spaces
+    let remaining = visibleWidth - visibleText.len
+    if remaining > 0:
+      for x in rect.x + visibleText.len ..< rect.x + visibleWidth:
+        buf.setCell(x, rect.y, " ", st)
+
+    # Cursor indicator
+    if w.focused:
+      let cursorX = rect.x + w.inputCursor - scrollOffset
+      if cursorX >= rect.x and cursorX < rect.x + visibleWidth:
+        let curCell = buf[cursorX, rect.y]
+        buf.setCell(cursorX, rect.y, curCell.ch, curCell.style.reverse())
 
 proc drawList(buf: var CellBuffer, rect: Rect, w: Widget) =
   if rect.h < 1 or rect.w < 1:
@@ -393,3 +435,209 @@ proc renderWidget*(buf: var CellBuffer, w: Widget, rect: Rect) =
   of wkCustom:
     if w.customRender != nil:
       w.customRender(buf, rect)
+
+# ============================================================
+# Event-only traversal (no drawing)
+# ============================================================
+
+proc collectWidgetEvents*(w: Widget, rect: Rect,
+                          hitMap: var HitMap, fm: FocusManager,
+                          depth: int = 0, parentIdx: int = -1) =
+  ## Traverse the widget tree collecting hit regions and focus order,
+  ## WITHOUT drawing. Used for custom widget children that were already
+  ## rendered by the parent's customRender proc.
+  if rect.w <= 0 or rect.h <= 0:
+    return
+
+  var myIdx = -1
+  if w.hasEventHandlers or w.focusable:
+    myIdx = hitMap.regions.len
+    hitMap.add(rect, w, depth, parentIdx)
+
+  if w.trapFocus and depth > fm.focusTrapDepth:
+    fm.focusTrapWidget = w
+    fm.focusTrapDepth = depth
+
+  if w.focusable:
+    fm.addFocusable(w, rect)
+    w.focused = (w == fm.focusedWidget)
+
+  let effectiveParent = if myIdx >= 0: myIdx else: parentIdx
+
+  case w.kind
+  of wkContainer:
+    let innerRect = Rect(
+      x: rect.x + w.layout.padding.left,
+      y: rect.y + w.layout.padding.top,
+      w: max(0, rect.w - w.layout.padding.padH()),
+      h: max(0, rect.h - w.layout.padding.padV()),
+    )
+    if w.children.len > 0:
+      var nodes = newSeq[LayoutNode](w.children.len)
+      for i, child in w.children:
+        nodes[i] = LayoutNode(
+          props: child.layout,
+          childCount: 0,
+          contentWidth: child.contentWidth,
+          contentHeight: child.contentHeight,
+        )
+      let rects = computeLayout(nodes, innerRect,
+                                w.layout.direction,
+                                w.layout.gap,
+                                w.layout.alignItems,
+                                w.layout.justifyContent)
+      for i, child in w.children:
+        let clipped = clipRect(rects[i], innerRect)
+        collectWidgetEvents(child, clipped, hitMap, fm, depth + 1, effectiveParent)
+
+  of wkBorder:
+    if w.borderChild != nil:
+      let innerRect = Rect(
+        x: rect.x + 1, y: rect.y + 1,
+        w: max(0, rect.w - 2), h: max(0, rect.h - 2),
+      )
+      collectWidgetEvents(w.borderChild, innerRect, hitMap, fm, depth + 1, effectiveParent)
+
+  of wkScrollView:
+    if w.scrollChild != nil:
+      let childRect = Rect(
+        x: rect.x - w.scrollX, y: rect.y - w.scrollY,
+        w: rect.w + w.scrollX, h: rect.h + w.scrollY,
+      )
+      collectWidgetEvents(w.scrollChild, childRect, hitMap, fm, depth + 1, effectiveParent)
+
+  of wkCustom:
+    if w.customChildren.len > 0 and w.customChildRects.len == w.customChildren.len:
+      for i in 0 ..< w.customChildren.len:
+        let childRect = clipRect(w.customChildRects[i], rect)
+        if childRect.w > 0 and childRect.h > 0:
+          collectWidgetEvents(w.customChildren[i], childRect, hitMap, fm,
+                              depth + 1, effectiveParent)
+
+  else:
+    discard  # Leaf widgets (text, input, list, table, etc.) — no children to recurse
+
+# ============================================================
+# Render with HitMap and FocusManager collection
+# ============================================================
+
+proc renderWidgetWithEvents*(buf: var CellBuffer, w: Widget, rect: Rect,
+                             hitMap: var HitMap, fm: FocusManager,
+                             depth: int = 0, parentIdx: int = -1) =
+  ## Render a widget and collect event routing data (hit regions, focus order).
+  ## This is the event-aware overload — call this from the app loop to enable
+  ## declarative event routing.
+  if rect.w <= 0 or rect.h <= 0:
+    return
+
+  # Register this widget in the hit map if it has handlers or is focusable
+  var myIdx = -1
+  if w.hasEventHandlers or w.focusable:
+    myIdx = hitMap.regions.len
+    hitMap.add(rect, w, depth, parentIdx)
+
+  # Track focus trap (deepest trapFocus widget wins)
+  if w.trapFocus and depth > fm.focusTrapDepth:
+    fm.focusTrapWidget = w
+    fm.focusTrapDepth = depth
+
+  # Collect focusable widgets
+  if w.focusable:
+    fm.addFocusable(w, rect)
+
+  # Set the focused field on the widget based on FocusManager state
+  if w.focusable:
+    w.focused = (w == fm.focusedWidget)
+
+  # Fill background
+  if w.style.bg.kind != ckNone:
+    buf.fill(rect.x, rect.y, rect.w, rect.h, " ", w.style)
+
+  let effectiveParent = if myIdx >= 0: myIdx else: parentIdx
+
+  case w.kind
+  of wkContainer:
+    let innerRect = Rect(
+      x: rect.x + w.layout.padding.left,
+      y: rect.y + w.layout.padding.top,
+      w: max(0, rect.w - w.layout.padding.padH()),
+      h: max(0, rect.h - w.layout.padding.padV()),
+    )
+
+    if w.children.len > 0:
+      var nodes = newSeq[LayoutNode](w.children.len)
+      for i, child in w.children:
+        nodes[i] = LayoutNode(
+          props: child.layout,
+          childCount: 0,
+          contentWidth: child.contentWidth,
+          contentHeight: child.contentHeight,
+        )
+
+      let rects = computeLayout(nodes, innerRect,
+                                w.layout.direction,
+                                w.layout.gap,
+                                w.layout.alignItems,
+                                w.layout.justifyContent)
+
+      for i, child in w.children:
+        let clipped = clipRect(rects[i], innerRect)
+        renderWidgetWithEvents(buf, child, clipped, hitMap, fm,
+                               depth + 1, effectiveParent)
+
+  of wkText:
+    drawText(buf, rect, w)
+
+  of wkBorder:
+    drawBorder(buf, rect, w)
+    if w.borderChild != nil:
+      let innerRect = Rect(
+        x: rect.x + 1,
+        y: rect.y + 1,
+        w: max(0, rect.w - 2),
+        h: max(0, rect.h - 2),
+      )
+      renderWidgetWithEvents(buf, w.borderChild, innerRect, hitMap, fm,
+                             depth + 1, effectiveParent)
+
+  of wkInput:
+    drawInput(buf, rect, w)
+
+  of wkList:
+    drawList(buf, rect, w)
+
+  of wkTable:
+    drawTable(buf, rect, w)
+
+  of wkSpacer:
+    discard
+
+  of wkScrollView:
+    if w.scrollChild != nil:
+      let childRect = Rect(
+        x: rect.x - w.scrollX,
+        y: rect.y - w.scrollY,
+        w: rect.w + w.scrollX,
+        h: rect.h + w.scrollY,
+      )
+      renderWidgetWithEvents(buf, w.scrollChild, childRect, hitMap, fm,
+                             depth + 1, effectiveParent)
+
+  of wkProgressBar:
+    drawProgressBar(buf, rect, w)
+
+  of wkTabs:
+    drawTabs(buf, rect, w)
+
+  of wkCustom:
+    if w.customRender != nil:
+      w.customRender(buf, rect)
+    # After custom rendering, traverse customChildren for event routing only.
+    # customRender already drew the pixels; collectWidgetEvents only registers
+    # hit regions and focusable widgets without re-drawing.
+    if w.customChildren.len > 0 and w.customChildRects.len == w.customChildren.len:
+      for i in 0 ..< w.customChildren.len:
+        let childRect = clipRect(w.customChildRects[i], rect)
+        if childRect.w > 0 and childRect.h > 0:
+          collectWidgetEvents(w.customChildren[i], childRect, hitMap, fm,
+                              depth + 1, effectiveParent)

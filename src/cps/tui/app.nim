@@ -25,7 +25,10 @@ import ./input
 import ./layout
 import ./widget
 import ./renderer
-import std/[posix, os, monotimes, times]
+import ./events
+when not defined(posix):
+  {.error: "TUI requires POSIX terminal support. Not available on Windows.".}
+import std/[posix, monotimes]
 
 type
   RenderProc* = proc(width, height: int): Widget
@@ -47,6 +50,11 @@ type
     backBuf: CellBuffer
     needsRender*: bool
     fullRedraw*: bool
+
+    # Event routing
+    hitMap*: HitMap
+    focus*: FocusManager
+    eventRouting*: bool        ## Enable declarative event routing (default true)
 
     # Configuration
     altScreen*: bool           ## Use alternate screen buffer (default true)
@@ -72,6 +80,8 @@ proc newTuiApp*(): TuiApp =
     backBuf: newCellBuffer(term.width, term.height),
     needsRender: true,
     fullRedraw: true,
+    focus: newFocusManager(),
+    eventRouting: true,
     altScreen: true,
     mouseMode: false,
     cursorVisible: false,
@@ -170,7 +180,15 @@ proc doRender(app: TuiApp) =
   # Build widget tree and render
   let root = app.onRender(w, h)
   let rootRect = Rect(x: 0, y: 0, w: w, h: h)
-  renderWidget(app.backBuf, root, rootRect)
+
+  if app.eventRouting:
+    # Clear and rebuild hit map + focus order each frame
+    app.hitMap.clear()
+    app.focus.clear()
+    renderWidgetWithEvents(app.backBuf, root, rootRect,
+                           app.hitMap, app.focus)
+  else:
+    renderWidget(app.backBuf, root, rootRect)
 
   # Produce output wrapped in synchronized update to prevent tearing.
   # Terminals that support DEC mode 2026 (iTerm2, Kitty, WezTerm, etc.)
@@ -238,7 +256,18 @@ proc run*(app: TuiApp): CpsVoidFuture {.cps.} =
           app.running = false
           break
 
-        if app.onInput != nil:
+        # Try declarative event routing first
+        var handled = false
+        if app.eventRouting:
+          try:
+            handled = routeEvent(app.hitMap, app.focus, evt)
+            if handled:
+              app.needsRender = true
+          except Exception:
+            discard  # Don't crash the app on event routing errors
+
+        # Fallback to imperative onInput handler
+        if not handled and app.onInput != nil:
           try:
             let needsRedraw = app.onInput(evt)
             if needsRedraw:

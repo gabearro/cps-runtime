@@ -7,9 +7,10 @@
 ## (e.g., DNS): fire-and-forget sends to pre-resolved IPs, persistent
 ## read callbacks, and raw datagram access.
 
-import std/[nativesockets, net, os, posix, strutils]
+import std/[nativesockets, net, os, strutils]
 import ../runtime
 import ../eventloop
+import ../private/platform
 import ./streams
 
 type
@@ -115,7 +116,7 @@ proc sendTo*(sock: UdpSocket, data: string, host: string, port: int): CpsVoidFut
                    ai_addr, ai_addrlen.SockLen)
     if n < 0:
       let err = osLastError()
-      if err.int == EAGAIN or err.int == EWOULDBLOCK:
+      if err.isWouldBlock():
         loop.registerWrite(sock.fd, proc() =
           loop.unregister(sock.fd)
           trySend()
@@ -150,7 +151,7 @@ proc recvFrom*(sock: UdpSocket, maxSize: int = 65535): CpsFuture[Datagram] =
                      cast[ptr SockAddr](addr srcAddr), addr addrLen)
     if n < 0:
       let err = osLastError()
-      if err.int == EAGAIN or err.int == EWOULDBLOCK:
+      if err.isWouldBlock():
         loop.registerRead(sock.fd, proc() =
           loop.unregister(sock.fd)
           tryRecv()
@@ -199,7 +200,7 @@ proc trySendToAddr*(sock: UdpSocket, data: string, ip: string, port: int,
                  cast[ptr SockAddr](addr sa), saLen)
   if n < 0:
     let err = osLastError()
-    if err.int == EAGAIN or err.int == EWOULDBLOCK:
+    if err.isWouldBlock():
       return false
     else:
       raise newException(streams.AsyncIoError, "sendToAddr failed: " & osErrorMsg(err))
@@ -220,7 +221,7 @@ proc sendToAddr*(sock: UdpSocket, data: string, ip: string, port: int,
                    cast[ptr SockAddr](addr sa), saLen)
     if n < 0:
       let err = osLastError()
-      if err.int == EAGAIN or err.int == EWOULDBLOCK:
+      if err.isWouldBlock():
         loop.registerWrite(sock.fd, proc() =
           loop.unregister(sock.fd)
           trySend()

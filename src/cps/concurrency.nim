@@ -6,8 +6,11 @@
 import cps/concurrency/channels
 import cps/concurrency/broadcast
 import cps/concurrency/sync
-import cps/concurrency/signals
 import cps/concurrency/taskgroup
 import cps/concurrency/asynciter
 
-export channels, broadcast, sync, signals, taskgroup, asynciter
+export channels, broadcast, sync, taskgroup, asynciter
+
+when defined(posix):
+  import cps/concurrency/signals
+  export signals

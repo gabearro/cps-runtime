@@ -47,6 +47,13 @@ proc transformPropertyAssign(call: NimNode, prop: string, value: NimNode): NimNo
   of "focus": return newCall(ident"withFocus", call, value)
   of "direction": return newCall(ident"withDirection", call, value)
   of "constraint": return newCall(ident"withConstraint", call, value)
+  of "onClick": return newCall(ident"withOnClick", call, value)
+  of "onKey": return newCall(ident"withOnKey", call, value)
+  of "onScroll": return newCall(ident"withOnScroll", call, value)
+  of "onMouse": return newCall(ident"withOnMouse", call, value)
+  of "onFocus": return newCall(ident"withOnFocus", call, value)
+  of "onBlur": return newCall(ident"withOnBlur", call, value)
+  of "focusTrap": return newCall(ident"withFocusTrap", call, value)
   else:
     error("Unknown TUI property: " & prop, value)
     call  # Unreachable but satisfies return type
@@ -68,7 +75,9 @@ proc extractBody(n: NimNode): tuple[props: seq[NimNode], children: seq[NimNode]]
       let name = child[0].strVal
       if name in ["style", "gap", "padding", "width", "height", "id",
                    "align", "justify", "wrap", "textAlign", "focus",
-                   "direction", "constraint"]:
+                   "direction", "constraint",
+                   "onClick", "onKey", "onScroll", "onMouse",
+                   "onFocus", "onBlur", "focusTrap"]:
         result.props.add(newTree(nnkAsgn, child[0], child[1]))
       else:
         result.children.add(transformDslNode(child))

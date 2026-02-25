@@ -26,6 +26,7 @@ import cps/eventloop
 import cps/ircclient
 import cps/concurrency/channels
 import cps/io/files
+import cps/irc/dcc
 import cps/tui
 
 import std/[strutils, times, options, os, sequtils, posix, algorithm]
@@ -33,6 +34,16 @@ import std/[strutils, times, options, os, sequtils, posix, algorithm]
 # ============================================================
 # Clipboard
 # ============================================================
+
+proc formatSize(bytes: int64): string =
+  ## Format a byte count as a human-readable string.
+  if bytes < 0: return "? B"
+  elif bytes < 1024: return $bytes & " B"
+  elif bytes < 1024 * 1024: return $(bytes div 1024) & " KB"
+  elif bytes < 1024 * 1024 * 1024: return $(bytes div (1024 * 1024)) & " MB"
+  else:
+    let gb = float(bytes) / (1024.0 * 1024.0 * 1024.0)
+    return gb.formatFloat(ffDecimal, 1) & " GB"
 
 proc writeOsc52(text: string) =
   ## Write OSC 52 escape sequence to copy text to system clipboard.
@@ -613,6 +624,11 @@ type
     lines: seq[string]       ## The lines to send
     preview: seq[string]     ## First few lines for preview
 
+  DccConfirm = object
+    ## State for DCC transfer confirmation dialog.
+    active: bool
+    transfer: DccTransfer
+
   IrcChatState = ref object
     client: IrcClient
     channels: seq[Channel]
@@ -625,6 +641,7 @@ type
     isAway: bool            ## True if we are /away
     batches: seq[BatchAccumulator]  ## Active batch accumulators
     serverLabel: string      ## Short label for multi-server (e.g., "libera")
+    dccManager: DccManager   ## DCC file transfer manager
 
   NickComplete = object
     ## State for @-mention autocomplete.
@@ -694,6 +711,7 @@ type
     quickSwitcher: QuickSwitcher ## Ctrl+K channel switcher
     lastPingTime: float          ## For periodic lag pings
     pasteConfirm: PasteConfirm   ## Multi-line paste confirmation
+    dccConfirm: DccConfirm       ## DCC transfer confirmation
 
 # ============================================================
 # Multi-server convenience: active chat accessor
@@ -871,7 +889,7 @@ proc getOrCreateChannel(cs: IrcChatState, name: string): int =
   if idx >= 0: return idx
   var ch = Channel(
     name: name,
-    messages: newScrollableTextView(maxLines = 1000, autoScroll = true),
+    messages: newScrollableTextView(maxLines = 1000, autoScroll = true, wrapMode = twChar),
     users: @[], topic: "", unread: 0,
   )
   ch.messages.showTimestamps = true
@@ -1386,7 +1404,14 @@ proc processIrcEventsForChat(ms: MasterState, cs: IrcChatState): bool =
           if evt.pmTarget.isChannel():
             cs.addSystem(evt.pmTarget, "[" & source & "] " & text)
           else:
-            cs.addServerMsg("[" & source & "] " & text)
+            # Route DM notices to a query window for the sender
+            let idx = cs.getOrCreateChannel(source)
+            let ts = now().format("HH:mm")
+            cs.channels[idx].messages.addLine("-" & source & "- " & text, activeTheme.system, ts)
+            logMessage(source, "-" & source & "- " & text)
+            if idx != cs.activeChannel:
+              cs.channels[idx].unread += 1
+            ms.notifications.notify("Notice from " & source & ": " & text, nlInfo, 5.0)
         else:
           cs.addServerMsg(text)
       of iekJoin:
@@ -1712,11 +1737,32 @@ proc processIrcEventsForChat(ms: MasterState, cs: IrcChatState): bool =
                                $batch.messages.len & " messages")
               for msg in batch.messages:
                 cs.addServerMsg("  " & msg.source & " -> " & msg.target & ": " & msg.text)
+      of iekDccSend:
+        discard cs.dccManager.addOffer(evt.dccSource, evt.dccInfo)
+        let sizeStr = formatSize(evt.dccInfo.filesize)
+        cs.addServerMsg("DCC SEND from " & evt.dccSource & ": " & evt.dccInfo.filename & " (" & sizeStr & ")")
+        ms.notifications.notify("DCC: " & evt.dccInfo.filename & " from " & evt.dccSource, nlInfo, 10.0)
+        changed = true
+      of iekDccAccept:
+        for t in cs.dccManager.pendingOffers:
+          if t.source.toLowerAscii == evt.dccSource.toLowerAscii and
+             t.info.filename == evt.dccInfo.filename:
+            t.setResumePosition(evt.dccInfo.filesize)
+            break
+      of iekDccChat:
+        cs.addServerMsg("DCC CHAT request from " & evt.dccSource & " (not supported)")
+        changed = true
+      of iekDccResume:
+        cs.addServerMsg("DCC RESUME from " & evt.dccSource)
+        changed = true
       else:
         discard
     except Exception:
       # Don't let a single bad event crash the entire TUI
       cs.addError(ServerChannel, "Event processing error: " & getCurrentExceptionMsg())
+  # Force redraw while transfers are active (progress updates)
+  if cs.dccManager != nil and cs.dccManager.activeTransfers.len > 0:
+    changed = true
   return changed
 
 proc processIrcEvents(ms: MasterState): bool =
@@ -1759,6 +1805,7 @@ proc connectToServer(ms: MasterState, server: ServerEntry) =
     statusBar: newStatusBar(style(clBlack, clCyan)),
     myNick: nick,
     serverLabel: label,
+    dccManager: newDccManager(downloadDir = "downloads", maxConcurrent = 3),
   )
 
   # Server console
@@ -2112,6 +2159,51 @@ proc handleChatCommand(ms: MasterState, cmd: string) =
     # Also show caps
     if cs.client.enabledCaps.len > 0:
       cs.addSystem(cs.currentChannel.name, "Enabled caps: " & cs.client.enabledCaps.join(", "))
+  of "/close":
+    let chName = if parts.len > 1: parts[1].strip() else: cs.currentChannel.name
+    if chName == ServerChannel:
+      cs.addError(chName, "Cannot close server window")
+    else:
+      if chName.isChannel():
+        discard cs.client.partChannel(chName, "")
+      cs.removeChannel(chName)
+  of "/accept":
+    let nick = if parts.len > 1: parts[1].strip() else: ""
+    var found = false
+    for t in cs.dccManager.pendingOffers:
+      if nick.len == 0 or t.source.toLowerAscii == nick.toLowerAscii:
+        let transfer = t
+        let dm = cs.dccManager
+        let fut = dm.acceptOffer(transfer)
+        fut.addCallback(proc() = discard)
+        cs.addServerMsg("Accepting: " & transfer.info.filename & " from " & transfer.source)
+        found = true
+        break
+    if not found:
+      cs.addError(ServerChannel, "No pending DCC offer" & (if nick.len > 0: " from " & nick else: ""))
+  of "/decline":
+    let nick = if parts.len > 1: parts[1].strip() else: ""
+    var found = false
+    for i in countdown(cs.dccManager.pendingOffers.len - 1, 0):
+      let t = cs.dccManager.pendingOffers[i]
+      if nick.len == 0 or t.source.toLowerAscii == nick.toLowerAscii:
+        cs.addServerMsg("Declined: " & t.info.filename & " from " & t.source)
+        cs.dccManager.pendingOffers.delete(i)
+        found = true
+        break
+    if not found:
+      cs.addError(ServerChannel, "No pending DCC offer to decline")
+  of "/transfers":
+    if cs.dccManager.pendingOffers.len == 0 and cs.dccManager.activeTransfers.len == 0 and cs.dccManager.completedTransfers.len == 0:
+      cs.addServerMsg("No transfers")
+    else:
+      for t in cs.dccManager.pendingOffers:
+        cs.addServerMsg("[pending] " & t.info.filename & " from " & t.source & " (" & formatSize(t.info.filesize) & ")")
+      for t in cs.dccManager.activeTransfers:
+        let pct = if t.totalBytes > 0: $int(t.bytesReceived * 100 div t.totalBytes) & "%" else: "?"
+        cs.addServerMsg("[active] " & t.info.filename & " " & pct & " " & formatSize(t.bytesReceived) & "/" & formatSize(t.totalBytes))
+      for t in cs.dccManager.completedTransfers:
+        cs.addServerMsg("[done] " & t.info.filename & " " & formatSize(t.totalBytes))
   of "/clear":
     cs.currentChannel.messages.clear()
   of "/disconnect":
@@ -2170,16 +2262,21 @@ proc renderSetup(ms: MasterState, width, height: int): Widget =
   # Profile section
   rows.add(text("  Profile", style(clBrightWhite).bold().underline()))
   rows.add(spacer(1))
+  let msRefSetup = ms
   for i in sfNick .. sfRealname:
     let labelSt = if i == ms.setupFocusIdx: style(clBrightWhite).bold()
                   else: style(clWhite)
     let indicator = if i == ms.setupFocusIdx: "> " else: "  "
     ms.setupFields[i].focused = (i == ms.setupFocusIdx)
+    let fieldIdx = i
     rows.add(
       hbox(
         text(indicator & SetupLabels[i], labelSt).withWidth(fixed(14)),
         ms.setupFields[i].toWidget(),
       ).withHeight(fixed(1))
+       .withOnClick(proc(mx, my: int) =
+         msRefSetup.setupFocusIdx = fieldIdx
+       )
     )
 
   rows.add(spacer(1))
@@ -2192,11 +2289,15 @@ proc renderSetup(ms: MasterState, width, height: int): Widget =
                   else: style(clWhite)
     let indicator = if i == ms.setupFocusIdx: "> " else: "  "
     ms.setupFields[i].focused = (i == ms.setupFocusIdx)
+    let fieldIdx = i
     rows.add(
       hbox(
         text(indicator & SetupLabels[i], labelSt).withWidth(fixed(14)),
         ms.setupFields[i].toWidget(),
       ).withHeight(fixed(1))
+       .withOnClick(proc(mx, my: int) =
+         msRefSetup.setupFocusIdx = fieldIdx
+       )
     )
 
   rows.add(spacer(1))
@@ -2246,16 +2347,21 @@ proc renderServerList(ms: MasterState, width, height: int): Widget =
     let formTitle = if ms.editServerMode: "  Edit Server" else: "  Add New Server"
     rows.add(text(formTitle, style(clBrightWhite).bold().underline()))
     rows.add(spacer(1))
+    let msRefForm = ms
     for i in 0 ..< AddFieldCount:
       let labelSt = if i == ms.addFocusIdx: style(clBrightWhite).bold()
                     else: style(clWhite)
       let indicator = if i == ms.addFocusIdx: "> " else: "  "
       ms.addFields[i].focused = (i == ms.addFocusIdx)
+      let fieldIdx = i
       rows.add(
         hbox(
           text(indicator & AddLabels[i], labelSt).withWidth(fixed(14)),
           ms.addFields[i].toWidget(),
         ).withHeight(fixed(1))
+         .withOnClick(proc(mx, my: int) =
+           msRefForm.addFocusIdx = fieldIdx
+         )
       )
     rows.add(spacer(1))
     let enterLabel = if ms.editServerMode: "Save" else: "Save & Connect"
@@ -2272,6 +2378,7 @@ proc renderServerList(ms: MasterState, width, height: int): Widget =
       rows.add(text("  (no saved servers)", style(clBrightBlack).italic()))
       rows.add(spacer(1))
     else:
+      let msRefSl = ms
       for i, s in ms.config.servers:
         let selected = (i == ms.serverListIdx)
         let indicator = if selected: " > " else: "   "
@@ -2279,12 +2386,24 @@ proc renderServerList(ms: MasterState, width, height: int): Widget =
                      else: style(clBrightWhite)
         let detailSt = if selected: style(clCyan, clBlue)
                        else: style(clBrightBlack)
-        rows.add(text(indicator & s.name, nameSt))
         let chanStr = if s.channels.len > 0: "  " & s.channels.join(", ") else: ""
         let tlsStr = if s.useTls: " [TLS]" else: ""
         let saslStr = if s.saslUsername.len > 0: " [SASL]" else: ""
-        rows.add(text("   " & s.host & ":" & $s.port & tlsStr & saslStr & chanStr, detailSt))
-        rows.add(spacer(1))
+        let serverIdx = i
+        rows.add(
+          vbox(
+            text(indicator & s.name, nameSt),
+            text("   " & s.host & ":" & $s.port & tlsStr & saslStr & chanStr, detailSt),
+            spacer(1),
+          ).withHeight(fixed(3))
+           .withOnClick(proc(mx, my: int) =
+             if msRefSl.serverListIdx == serverIdx:
+               # Already selected — connect on second click
+               msRefSl.connectToServer(msRefSl.config.servers[serverIdx])
+             else:
+               msRefSl.serverListIdx = serverIdx
+           )
+        )
 
     helpBar = keyHelpBar([
       kh("Up/Down", "Select"), kh("Enter", "Connect"),
@@ -2310,21 +2429,71 @@ proc renderServerList(ms: MasterState, width, height: int): Widget =
 # Rendering: Chat screen
 # ============================================================
 
-proc renderChannelList(cs: IrcChatState, width, height: int, theme: Theme): Widget =
+proc renderChannelList(ms: MasterState, cs: IrcChatState, width, height: int, theme: Theme): Widget =
   var items: seq[ListItem] = @[]
+  let innerW = max(0, width - 2)  # account for border
+  let channelCount = cs.channels.len
+  let closeXThreshold = innerW - 4  # x threshold for close button click
   for i, ch in cs.channels:
     let indicator = if i == cs.activeChannel: ">" else: " "
     let badge = if ch.mentions > 0: " @" & $ch.mentions
                 elif ch.unread > 0: " (" & $ch.unread & ")"
                 else: ""
-    let label = indicator & " " & ch.name & badge
+    let closable = ch.name != ServerChannel
+    let left = indicator & " " & ch.name & badge
+    # Right-align [x] close button
+    let label = if closable:
+      let pad = max(1, innerW - left.len - 3)  # 3 for "[x]"
+      left & spaces(pad) & "[x]"
+    else:
+      left
     let st = if i == cs.activeChannel: theme.chanActive
              elif ch.mentions > 0: theme.chanMention
              elif ch.unread > 0: theme.chanUnread
              else: theme.chanNormal
     items.add(listItem(label, st = st))
+  # Transfers section
+  let dm = cs.dccManager
+  var transferStartIdx = -1
+  if dm != nil and (dm.pendingOffers.len > 0 or dm.activeTransfers.len > 0 or dm.completedTransfers.len > 0):
+    items.add(listItem(""))  # spacer
+    items.add(listItem(" Transfers", st = theme.chanActive.bold()))
+    transferStartIdx = channelCount + 2
+    let maxW = max(0, width - 8)
+    for t in dm.pendingOffers:
+      let fname = if t.info.filename.len > maxW: t.info.filename[0 ..< max(0, maxW - 3)] & "..." else: t.info.filename
+      items.add(listItem("  ? " & fname, st = style(clBrightYellow)))
+    for t in dm.activeTransfers:
+      let pct = if t.totalBytes > 0: int(t.bytesReceived * 100 div t.totalBytes) else: 0
+      let maxWa = max(0, width - 12)
+      let fname = if t.info.filename.len > maxWa: t.info.filename[0 ..< max(0, maxWa - 3)] & "..." else: t.info.filename
+      items.add(listItem("  " & $pct & "% " & fname, st = style(clBrightCyan)))
+    for t in dm.completedTransfers:
+      let fname = if t.info.filename.len > maxW: t.info.filename[0 ..< max(0, maxW - 3)] & "..." else: t.info.filename
+      items.add(listItem("  + " & fname, st = style(clBrightGreen)))
+  let csRef = cs
+  let msRef = ms
+  let closeX = closeXThreshold
+  let tStartIdx = transferStartIdx
   list(items, selected = cs.activeChannel,
        highlightStyle = style(clBlack, clCyan))
+    .withOnClick(proc(mx, my: int) =
+      # Channel item click
+      if my >= 0 and my < channelCount:
+        if mx >= closeX and csRef.channels[my].name != ServerChannel:
+          # Close button clicked
+          let chName = csRef.channels[my].name
+          if chName.isChannel():
+            discard csRef.client.partChannel(chName)
+          csRef.removeChannel(chName)
+        else:
+          csRef.switchChannel(my)
+      # Transfer item click
+      elif tStartIdx >= 0 and my >= tStartIdx and csRef.dccManager != nil:
+        let transferIdx = my - tStartIdx
+        if transferIdx >= 0 and transferIdx < csRef.dccManager.pendingOffers.len:
+          msRef.dccConfirm = DccConfirm(active: true, transfer: csRef.dccManager.pendingOffers[transferIdx])
+    )
 
 proc renderChat(ms: MasterState, width, height: int): Widget =
   let cs = ms.chat
@@ -2373,8 +2542,11 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
                 else: c.name
     tabItems.add(tabItem(label, active = (i == cs.activeChannel)))
 
+  # Compute actual sidebar width for channel list rendering
+  let usable = max(0, width - 1)
+  let sidebarW = cs.splitView.computeFirstSize(usable)
   let channelList = border(
-    cs.renderChannelList(width, height, ms.theme),
+    ms.renderChannelList(cs, sidebarW, height, ms.theme),
     bsSingle, "Channels",
     titleStyle = ms.theme.inputPrompt.bold(),
   )
@@ -2382,11 +2554,15 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
   # Build autocomplete popup widget (shown between messages and status bar)
   let nc = ms.nickComplete
   var chatChildren: seq[Widget] = @[]
-  chatChildren.add(tabBar(tabItems,
+  let csRefTabs = cs
+  chatChildren.add(interactiveTabs(tabItems,
+    onSwitch = proc(idx: int) =
+      if idx >= 0 and idx < csRefTabs.channels.len:
+        csRefTabs.switchChannel(idx),
     tabSt = style(clWhite, clBrightBlack),
     activeSt = style(clBlack, clCyan).bold(),
   ))
-  chatChildren.add(ch.messages.toWidget())
+  chatChildren.add(ch.messages.toWidgetWithEvents())
   if nc.active and nc.matches.len > 0:
     let matches = nc.matches
     let sel = nc.selected
@@ -2398,25 +2574,80 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
                else: style(clWhite, clBrightBlack)
       let prefix = if isSelected: "> " else: "  "
       rows.add(text(prefix & matches[i], st))
+    let msRefNc = ms
+    let ncVisCount = visibleCount
     chatChildren.add(
       border(vbox(rows), bsSingle, "@mention",
         titleStyle = style(clBrightCyan),
       ).withHeight(fixed(visibleCount + 2))
+       .withFocusTrap(true)
+       .withFocus(true)
+       .withOnClick(proc(mx, my: int) =
+         # my is relative to the border widget: 0=top border, 1..n=items
+         let itemIdx = my - 1  # Subtract top border row
+         if itemIdx >= 0 and itemIdx < ncVisCount:
+           msRefNc.nickComplete.selected = itemIdx
+           msRefNc.acceptComplete()
+       )
+       .withOnKey(proc(evt: InputEvent): bool =
+         if evt.isKey(kcEscape):
+           msRefNc.dismissComplete()
+           return true
+         if evt.isKey(kcUp):
+           if msRefNc.nickComplete.selected > 0:
+             msRefNc.nickComplete.selected -= 1
+           else:
+             msRefNc.nickComplete.selected = msRefNc.nickComplete.matches.len - 1
+           return true
+         if evt.isKey(kcDown):
+           if msRefNc.nickComplete.selected < msRefNc.nickComplete.matches.len - 1:
+             msRefNc.nickComplete.selected += 1
+           else:
+             msRefNc.nickComplete.selected = 0
+           return true
+         if evt.isKey(kcTab) or evt.isKey(kcEnter):
+           msRefNc.acceptComplete()
+           return true
+         false  # Let other keys through to the input field
+       )
     )
-  # Search bar
+  # Search bar (declarative event handling via focusTrap + onKey)
   if ms.search.active:
     let matchInfo = if ms.search.matchLines.len > 0:
       " [" & $(ms.search.currentMatch + 1) & "/" & $ms.search.matchLines.len & "]"
     else: " [no matches]"
+    let msRefSearch = ms
     chatChildren.add(
       hbox(
         label("Search: ", ms.theme.inputPrompt).withWidth(autoSize()),
         ms.search.input.toWidget(),
         label(matchInfo, style(clBrightBlack)).withWidth(autoSize()),
       ).withHeight(fixed(1))
+       .withFocusTrap(true)
+       .withFocus(true)
+       .withOnKey(proc(evt: InputEvent): bool =
+         if evt.isKey(kcEscape):
+           msRefSearch.dismissSearch()
+           return true
+         if evt.isKey(kcEnter):
+           msRefSearch.dismissSearch()
+           return true
+         if evt.isCtrl('n'):
+           msRefSearch.searchNext()
+           return true
+         if evt.isCtrl('p'):
+           msRefSearch.searchPrev()
+           return true
+         let oldText = msRefSearch.search.input.text
+         let handled = msRefSearch.search.input.handleInput(evt)
+         if handled and msRefSearch.search.input.text != oldText:
+           msRefSearch.search.query = msRefSearch.search.input.text
+           msRefSearch.updateSearchMatches()
+         return handled
+       )
     )
 
-  # Paste confirmation dialog
+  # Paste confirmation dialog (declarative event handling)
   if ms.pasteConfirm.active:
     let lineCount = ms.pasteConfirm.lines.len
     var previewRows: seq[Widget] = @[]
@@ -2430,18 +2661,105 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
       previewRows.add(text(prefix, style(clBrightBlack)))
     previewRows.add(spacer(1))
     previewRows.add(text("  [Y] Send  [N] Cancel", style(clBrightWhite)))
+    let msRef = ms
+    let csRef2 = cs
+    let pasteLines = ms.pasteConfirm.lines
     chatChildren.add(
       border(vbox(previewRows), bsRounded, "Paste Confirm",
         titleStyle = style(clBrightYellow).bold(),
       ).withHeight(fixed(min(lineCount + 6, 12)))
+       .withFocusTrap(true)
+       .withOnKey(proc(evt: InputEvent): bool =
+         if evt.kind == iekKey and evt.key == kcChar:
+           case evt.ch
+           of 'y', 'Y':
+             let chName = csRef2.currentChannel.name
+             if chName != ServerChannel:
+               for line in pasteLines:
+                 if line.len > 0:
+                   discard csRef2.client.privMsg(chName, line)
+                   csRef2.addMsg(chName, csRef2.myNick, line)
+             else:
+               csRef2.addError(chName, "Cannot paste to server console")
+             msRef.pasteConfirm = PasteConfirm()
+             return true
+           of 'n', 'N':
+             msRef.pasteConfirm = PasteConfirm()
+             return true
+           else:
+             return true
+         if evt.kind == iekKey and evt.key == kcEscape:
+           msRef.pasteConfirm = PasteConfirm()
+           return true
+         return true  # Trap all keys
+       ).withFocus(true)
+    )
+
+  # DCC transfer confirmation dialog (declarative event handling)
+  if ms.dccConfirm.active:
+    let t = ms.dccConfirm.transfer
+    let sizeStr = if t.info.filesize > 0: formatSize(t.info.filesize) else: "unknown"
+    var rows: seq[Widget] = @[]
+    rows.add(text("DCC SEND from " & t.source, style(clBrightYellow).bold()))
+    rows.add(spacer(1))
+    rows.add(text("  File: " & t.info.filename, style(clBrightWhite)))
+    rows.add(text("  Size: " & sizeStr, style(clBrightWhite)))
+    rows.add(text("  From: " & longIpToString(t.info.ip) & ":" & $t.info.port, style(clBrightWhite)))
+    rows.add(text("  Save: " & t.outputPath, style(clBrightWhite)))
+    rows.add(spacer(1))
+    rows.add(text("  [Y] Accept  [N] Decline", style(clBrightWhite)))
+    let msRef2 = ms
+    let csRef3 = cs
+    let dccTransfer = t
+    chatChildren.add(
+      border(vbox(rows), bsRounded, "DCC Transfer",
+        titleStyle = style(clBrightYellow).bold(),
+      ).withHeight(fixed(10))
+       .withFocusTrap(true)
+       .withOnKey(proc(evt: InputEvent): bool =
+         if evt.kind == iekKey and evt.key == kcChar:
+           case evt.ch
+           of 'y', 'Y':
+             let fut = csRef3.dccManager.acceptOffer(dccTransfer)
+             fut.addCallback(proc() = discard)
+             csRef3.addServerMsg("Accepting: " & dccTransfer.info.filename & " from " & dccTransfer.source)
+             msRef2.dccConfirm = DccConfirm()
+             return true
+           of 'n', 'N':
+             for i in countdown(csRef3.dccManager.pendingOffers.len - 1, 0):
+               if csRef3.dccManager.pendingOffers[i] == dccTransfer:
+                 csRef3.dccManager.pendingOffers.delete(i)
+                 break
+             csRef3.addServerMsg("Declined: " & dccTransfer.info.filename & " from " & dccTransfer.source)
+             msRef2.dccConfirm = DccConfirm()
+             return true
+           else:
+             return true
+         if evt.kind == iekKey and evt.key == kcEscape:
+           msRef2.dccConfirm = DccConfirm()
+           return true
+         return true  # Trap all keys
+       ).withFocus(true)
     )
 
   chatChildren.add(cs.statusBar.toWidget())
+
+  # Dynamic input height: wrap long input text across multiple rows
+  let promptText = ch.name & "> "
+  let inputWidth = max(1, width - promptText.len - 2)  # account for split view margins
+  let inputRows = max(1, (ms.inputField.text.len + inputWidth - 1) div inputWidth)
+  let cappedRows = min(inputRows, max(1, height div 4))  # cap at 25% of screen height
+  let inputFieldRef = ms.inputField
   chatChildren.add(
     hbox(
-      label(ch.name & "> ", ms.theme.inputPrompt).withWidth(autoSize()),
-      ms.inputField.toWidget(),
-    ).withHeight(fixed(1))
+      label(promptText, ms.theme.inputPrompt).withWidth(autoSize()),
+      ms.inputField.toWidget()
+        .withOnClick(proc(mx, my: int) =
+          let newCursor = min(mx, inputFieldRef.text.len)
+          if newCursor != inputFieldRef.cursor:
+            inputFieldRef.cursor = newCursor
+        ),
+    ).withHeight(fixed(cappedRows))
   )
 
   # Server tabs (when multi-server)
@@ -2461,7 +2779,11 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
       let lbl = if totalUnread > 0: chat.serverLabel & "(" & $totalUnread & ")"
                 else: chat.serverLabel
       serverTabs.add(tabItem(lbl, active = (i == ms.activeChat)))
-    chatChildren.add(tabBar(serverTabs,
+    let msRef3 = ms
+    chatChildren.add(interactiveTabs(serverTabs,
+      onSwitch = proc(idx: int) =
+        if idx >= 0 and idx < msRef3.chats.len:
+          msRef3.switchChat(idx),
       tabSt = style(clWhite, clBlack),
       activeSt = style(clBrightWhite, clBlue).bold(),
     ))
@@ -2469,8 +2791,14 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
   chatChildren.add(keyHelpBar(helpItems))
 
   let chatArea = vbox(chatChildren)
-
-  cs.splitView.toWidget(channelList, chatArea)
+  let msRefSv = ms
+  cs.splitView.toWidgetWithEvents(channelList, chatArea)
+    .withOnMouse(proc(evt: InputEvent): bool =
+      # Trigger full redraw when split view ratio changes from drag
+      if cs.splitView.dragging:
+        msRefSv.tuiApp.fullRedraw = true
+      false  # Let the split view's internal handler process it
+    )
 
 # ============================================================
 # Master render
@@ -2501,6 +2829,8 @@ proc renderQuickSwitcher(ms: MasterState, width, height: int): Widget =
   # Capture full screen dimensions for the overlay
   let fullW = width
   let fullH = height
+  let msRefQs = ms
+  let csRefQs = ms.chat
   custom(proc(buf: var CellBuffer, rect: Rect) =
     # Semi-transparent dim overlay across the full screen
     for y in 0 ..< fullH:
@@ -2526,7 +2856,33 @@ proc renderQuickSwitcher(ms: MasterState, width, height: int): Widget =
     buf.writeStr(dx + 2, dy, " Quick Switch ", ms.theme.inputPrompt.bold())
     # Render body inside
     renderWidget(buf, body, Rect(x: dx + 1, y: dy + 1, w: dw - 2, h: dh - 2))
-  )
+  ).withFocusTrap(true)
+   .withFocus(true)
+   .withOnKey(proc(evt: InputEvent): bool =
+     if evt.isKey(kcEscape):
+       msRefQs.dismissQuickSwitcher()
+       return true
+     if evt.isKey(kcEnter):
+       if msRefQs.quickSwitcher.filtered.len > 0 and
+          msRefQs.quickSwitcher.selected < msRefQs.quickSwitcher.filtered.len:
+         let idx = msRefQs.quickSwitcher.filtered[msRefQs.quickSwitcher.selected].idx
+         csRefQs.switchChannel(idx)
+       msRefQs.dismissQuickSwitcher()
+       return true
+     if evt.isKey(kcUp):
+       if msRefQs.quickSwitcher.selected > 0:
+         msRefQs.quickSwitcher.selected -= 1
+       return true
+     if evt.isKey(kcDown):
+       if msRefQs.quickSwitcher.selected < msRefQs.quickSwitcher.filtered.len - 1:
+         msRefQs.quickSwitcher.selected += 1
+       return true
+     let oldText = msRefQs.quickSwitcher.input.text
+     let handled = msRefQs.quickSwitcher.input.handleInput(evt)
+     if handled and msRefQs.quickSwitcher.input.text != oldText:
+       msRefQs.updateQuickSwitcher()
+     return handled
+   )
 
 proc renderMaster(ms: MasterState, width, height: int): Widget =
   let main = case ms.screen
@@ -2538,17 +2894,34 @@ proc renderMaster(ms: MasterState, width, height: int): Widget =
   if ms.helpDialog.visible:
     # Help dialog is a custom overlay — render main first, then overlay on top
     let helpWidget = ms.helpDialog.toWidget(width, height)
-    custom(proc(buf: var CellBuffer, rect: Rect) =
+    let msRefHelp = ms
+    var overlay = custom(proc(buf: var CellBuffer, rect: Rect) =
       renderWidget(buf, main, rect)
       renderWidget(buf, helpWidget, rect)
     )
+    overlay.customChildren = @[main]
+    overlay.customChildRects = @[Rect(x: 0, y: 0, w: width, h: height)]
+    overlay.withFocusTrap(true)
+     .withFocus(true)
+     .withOnKey(proc(evt: InputEvent): bool =
+       if evt.isKey(kcEscape) or evt.isKey(kcF1):
+         msRefHelp.helpDialog.hide()
+         return true
+       return true  # Trap all keys when help is visible
+     )
   elif ms.quickSwitcher.active:
     # Quick switcher is a custom overlay — render main first, then overlay on top
     let qsWidget = ms.renderQuickSwitcher(width, height)
-    custom(proc(buf: var CellBuffer, rect: Rect) =
+    var overlay = custom(proc(buf: var CellBuffer, rect: Rect) =
       renderWidget(buf, main, rect)
       renderWidget(buf, qsWidget, rect)
     )
+    # Register both main and qsWidget as custom children for event routing.
+    # qsWidget has withFocusTrap + withOnKey; main has channel list handlers etc.
+    overlay.customChildren = @[main, qsWidget]
+    overlay.customChildRects = @[Rect(x: 0, y: 0, w: width, h: height),
+                                  Rect(x: 0, y: 0, w: width, h: height)]
+    overlay
   else:
     main
 
@@ -2709,31 +3082,9 @@ proc handleServerListInput(ms: MasterState, evt: InputEvent): bool =
 proc handleChatInput(ms: MasterState, evt: InputEvent): bool =
   let cs = ms.chat
 
-  # Paste confirmation intercepts
-  if ms.pasteConfirm.active:
-    if evt.kind == iekKey and evt.key == kcChar:
-      case evt.ch
-      of 'y', 'Y':
-        # Send all lines as PRIVMSG
-        let ch = cs.currentChannel.name
-        if ch != ServerChannel:
-          for line in ms.pasteConfirm.lines:
-            if line.len > 0:
-              discard cs.client.privMsg(ch, line)
-              cs.addMsg(ch, cs.myNick, line)
-        else:
-          cs.addError(ch, "Cannot paste to server console")
-        ms.pasteConfirm = PasteConfirm()
-        return true
-      of 'n', 'N':
-        ms.pasteConfirm = PasteConfirm()
-        return true
-      else:
-        return true
-    if evt.isKey(kcEscape):
-      ms.pasteConfirm = PasteConfirm()
-      return true
-    return true
+  # DCC and paste confirmation dialogs are now handled declaratively via
+  # withOnKey + withFocusTrap in the render functions (renderChat).
+  # The framework's event routing handles their input automatically.
 
   # Handle paste events from bracketed paste
   if evt.kind == iekPaste:
@@ -2765,80 +3116,12 @@ proc handleChatInput(ms: MasterState, evt: InputEvent): bool =
         )
     return true
 
-  # Help dialog intercepts
-  if ms.helpDialog.visible:
-    if evt.isKey(kcEscape) or evt.isKey(kcF1):
-      ms.helpDialog.hide()
-      return true
-    return false
+  # Help dialog, quick-switcher, and search are now handled declaratively via
+  # withFocusTrap + withOnKey in renderMaster, renderQuickSwitcher, and renderChat.
+  # The framework's event routing handles their input automatically.
 
-  # Quick-switcher intercepts
-  if ms.quickSwitcher.active:
-    if evt.isKey(kcEscape):
-      ms.dismissQuickSwitcher()
-      return true
-    if evt.isKey(kcEnter):
-      if ms.quickSwitcher.filtered.len > 0 and
-         ms.quickSwitcher.selected < ms.quickSwitcher.filtered.len:
-        let idx = ms.quickSwitcher.filtered[ms.quickSwitcher.selected].idx
-        cs.switchChannel(idx)
-      ms.dismissQuickSwitcher()
-      return true
-    if evt.isKey(kcUp):
-      if ms.quickSwitcher.selected > 0:
-        ms.quickSwitcher.selected -= 1
-      return true
-    if evt.isKey(kcDown):
-      if ms.quickSwitcher.selected < ms.quickSwitcher.filtered.len - 1:
-        ms.quickSwitcher.selected += 1
-      return true
-    let oldText = ms.quickSwitcher.input.text
-    let handled = ms.quickSwitcher.input.handleInput(evt)
-    if handled and ms.quickSwitcher.input.text != oldText:
-      ms.updateQuickSwitcher()
-    return handled
-
-  # Search mode intercepts
-  if ms.search.active:
-    if evt.isKey(kcEscape):
-      ms.dismissSearch()
-      return true
-    if evt.isKey(kcEnter):
-      ms.dismissSearch()
-      return true
-    if evt.isCtrl('n'):
-      ms.searchNext()
-      return true
-    if evt.isCtrl('p'):
-      ms.searchPrev()
-      return true
-    let oldText = ms.search.input.text
-    let handled = ms.search.input.handleInput(evt)
-    if handled and ms.search.input.text != oldText:
-      ms.search.query = ms.search.input.text
-      ms.updateSearchMatches()
-    return handled
-
-  # @-mention autocomplete interception (when popup is active)
-  if ms.nickComplete.active:
-    if evt.isKey(kcEscape):
-      ms.dismissComplete()
-      return true
-    if evt.isKey(kcUp):
-      if ms.nickComplete.selected > 0:
-        ms.nickComplete.selected -= 1
-      else:
-        ms.nickComplete.selected = ms.nickComplete.matches.len - 1
-      return true
-    if evt.isKey(kcDown):
-      if ms.nickComplete.selected < ms.nickComplete.matches.len - 1:
-        ms.nickComplete.selected += 1
-      else:
-        ms.nickComplete.selected = 0
-      return true
-    if evt.isKey(kcTab) or evt.isKey(kcEnter):
-      ms.acceptComplete()
-      return true
+  # @-mention autocomplete navigation is now handled declaratively via
+  # withFocusTrap + withOnKey on the popup widget in renderChat.
 
   # Ctrl+F: search
   if evt.isCtrl('f'):
@@ -2922,81 +3205,21 @@ proc handleChatInput(ms: MasterState, evt: InputEvent): bool =
     ms.handleChatSend()
     return true
 
-  # Mouse
+  # Mouse — most clicks are now handled declaratively via onClick handlers on
+  # widgets (channel list, tab bar, message view, split view, input field).
+  # Only clipboard copy on selection release remains here.
   if evt.kind == iekMouse:
-    let w = ms.tuiApp.terminal.width
-    let h = ms.tuiApp.terminal.height
-    let rect = Rect(x: 0, y: 0, w: w, h: h)
     let msgView = cs.currentChannel.messages
-
-    # Text selection: route press/motion/release to message view first.
-    # On release after a selection, copy to clipboard via OSC 52.
-    if msgView.handleMouse(evt):
-      if evt.action == maRelease and msgView.hasSelection:
-        let selected = msgView.getSelectedText()
-        if selected.len > 0:
-          ms.clipboardText = selected
-          writeOsc52(selected)
-          ms.notifications.notify("Copied to clipboard", nlInfo)
-      return true
-
-    if cs.splitView.handleMouse(evt, rect):
-      ms.tuiApp.fullRedraw = true
-      return true
-
-    let usable = max(0, w - 1)
-    let firstSize = cs.splitView.computeFirstSize(usable)
-    let secondStart = firstSize + 1
-    let secondWidth = w - secondStart
-    let promptLen = cs.channels[cs.activeChannel].name.len + 2
-
+    # Clipboard copy on selection release (complements toWidgetWithEvents scroll/selection)
+    if evt.action == maRelease and msgView.hasSelection:
+      let selected = msgView.getSelectedText()
+      if selected.len > 0:
+        ms.clipboardText = selected
+        writeOsc52(selected)
+        ms.notifications.notify("Copied to clipboard", nlInfo)
+    # Left click clears any active selection
     if evt.action == maPress and evt.button == mbLeft:
-      # Clear any active selection when clicking elsewhere
       msgView.clearSelection()
-      # Channel list click
-      if evt.mx >= 1 and evt.mx < firstSize - 1 and
-         evt.my >= 1 and evt.my < h - 1:
-        let clickedIdx = evt.my - 1
-        if clickedIdx >= 0 and clickedIdx < cs.channels.len:
-          cs.switchChannel(clickedIdx)
-          return true
-      # Tab bar click (channel tabs at top of chat area)
-      if evt.my == 0 and evt.mx >= secondStart and evt.mx < w:
-        var tabItems: seq[TabItem] = @[]
-        for i, c in cs.channels:
-          let label = if c.unread > 0: c.name & "(" & $c.unread & ")"
-                      else: c.name
-          tabItems.add(tabItem(label, active = (i == cs.activeChannel)))
-        let tabRect = Rect(x: secondStart, y: 0, w: secondWidth, h: 1)
-        let tabIdx = hitTestTabBar(tabItems, evt.mx, evt.my, tabRect)
-        if tabIdx >= 0 and tabIdx < cs.channels.len:
-          cs.switchChannel(tabIdx)
-          return true
-      # Server tab bar click (multi-server, near bottom)
-      if ms.chats.len > 1:
-        let serverTabY = h - 2  # server tabs row (above key help bar at h-1)
-        if evt.my == serverTabY and evt.mx >= secondStart and evt.mx < w:
-          var serverTabs: seq[TabItem] = @[]
-          for i, chat in ms.chats:
-            let totalUnread = block:
-              var u = 0
-              for c in chat.channels:
-                u += c.unread
-              u
-            let lbl = if totalUnread > 0: chat.serverLabel & "(" & $totalUnread & ")"
-                      else: chat.serverLabel
-            serverTabs.add(tabItem(lbl, active = (i == ms.activeChat)))
-          let tabRect = Rect(x: secondStart, y: serverTabY, w: secondWidth, h: 1)
-          let tabIdx = hitTestTabBar(serverTabs, evt.mx, evt.my, tabRect)
-          if tabIdx >= 0 and tabIdx < ms.chats.len:
-            ms.switchChat(tabIdx)
-            return true
-      # Input field click
-      if evt.my == h - 2 and evt.mx >= secondStart + promptLen and evt.mx < w:
-        let inputRect = Rect(x: secondStart + promptLen, y: h - 2,
-                             w: secondWidth - promptLen, h: 1)
-        if ms.inputField.handleMouse(evt, inputRect):
-          return true
 
   # Text input
   let oldText = ms.inputField.text

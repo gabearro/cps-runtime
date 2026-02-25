@@ -2,7 +2,7 @@
 
 import std/[tables, strutils, os]
 import std/nativesockets
-from std/posix import Sockaddr_storage, SockLen
+import ../private/platform
 import ../runtime
 import ../io/udp
 

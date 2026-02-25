@@ -5,10 +5,11 @@
 import ../../runtime
 import ../../transform
 import ../../eventloop
-import ../../concurrency/signals
+when defined(posix):
+  import ../../concurrency/signals
 import ../../concurrency/taskgroup
 import std/[nativesockets, tables, strutils, os, net]
-from std/posix import TCP_NODELAY
+import ../../private/platform
 import ../../io/streams
 import ../../io/tcp
 import ../../tls/server as tls_server
@@ -533,13 +534,14 @@ proc shutdown*(server: HttpServer, drainTimeoutMs: int = 5000): CpsVoidFuture {.
       echo "Shutdown timeout: " & $server.connGroup.activeCount & " connections still active, cancelling"
       server.connGroup.cancelAll()
 
-proc shutdownOnSignal*(server: HttpServer, drainTimeoutMs: int = 5000): CpsVoidFuture {.cps.} =
-  ## Register SIGINT/SIGTERM handlers that trigger graceful shutdown.
-  ## Blocks until the signal is received and shutdown completes.
-  initSignalHandling()
-  await waitForShutdown()
-  await shutdown(server, drainTimeoutMs)
-  deinitSignalHandling()
+when defined(posix):
+  proc shutdownOnSignal*(server: HttpServer, drainTimeoutMs: int = 5000): CpsVoidFuture {.cps.} =
+    ## Register SIGINT/SIGTERM handlers that trigger graceful shutdown.
+    ## Blocks until the signal is received and shutdown completes.
+    initSignalHandling()
+    await waitForShutdown()
+    await shutdown(server, drainTimeoutMs)
+    deinitSignalHandling()
 
 proc serve*(handler: HttpHandler, port: int = 8080,
             host: string = "127.0.0.1",

@@ -6,9 +6,10 @@
 ## stream. Supports proxy chaining (connecting through multiple proxies
 ## in sequence).
 
-import std/[nativesockets, net, strutils, posix]
+import std/[nativesockets, net, strutils]
 import ../runtime
 import ../eventloop
+import ../private/platform
 import ./streams
 import ./tcp
 import ./buffered
