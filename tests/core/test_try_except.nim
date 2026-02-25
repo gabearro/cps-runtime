@@ -11,6 +11,7 @@
 import cps/runtime
 import cps/eventloop
 import cps/transform
+import std/strutils
 
 # Helper: a CPS proc that always fails
 proc failWith(msg: string): CpsVoidFuture {.cps.} =
@@ -337,6 +338,155 @@ block testExceptNoAsVarWithAwait:
   assert result == -1,
     "Expected -1, got: " & $result
   echo "PASS: Except handler without 'as' variable but with await"
+
+# ============================================================
+# Test 16: try-expression binding with await in except branch
+# ============================================================
+
+block testTryExprBindingAwaitInExceptBranch:
+  proc mayFailValue(shouldFail: bool): CpsFuture[int] {.cps.} =
+    if shouldFail:
+      raise newException(ValueError, "boom")
+    return 41
+
+  proc asyncCleanup(): CpsVoidFuture {.cps.} =
+    await cpsYield()
+
+  proc main(shouldFail: bool): CpsFuture[int] {.cps.} =
+    let value =
+      try:
+        await mayFailValue(shouldFail)
+      except ValueError:
+        await asyncCleanup()
+        return -1
+    return value + 1
+
+  let okResult = runCps(main(false))
+  assert okResult == 42, "Expected 42, got: " & $okResult
+  let errResult = runCps(main(true))
+  assert errResult == -1, "Expected -1, got: " & $errResult
+  echo "PASS: try-expression binding with await in except branch"
+
+# ============================================================
+# Test 17: While-loop back-edge inside try/except with awaits
+# ============================================================
+
+block testWhileBackEdgeInTryExcept:
+  proc stepForward(x: int): CpsFuture[int] {.cps.} =
+    await cpsYield()
+    return x + 1
+
+  proc main(): CpsFuture[int] {.cps.} =
+    var i = 0
+    try:
+      while i < 3:
+        let optionalBranch = i < 0
+        if optionalBranch:
+          await cpsYield()
+        let nextVal = await stepForward(i)
+        i = nextVal
+    except CatchableError:
+      return -1
+    return i
+
+  let result = runCps(main())
+  assert result == 3, "Expected 3 after three loop iterations, got: " & $result
+  echo "PASS: while-loop back-edge inside try/except with awaits"
+
+# ============================================================
+# Test 18: `except ... as e` after awaited loop in try body
+# ============================================================
+
+block testExceptAsAfterAwaitedLoop:
+  proc main(): CpsFuture[string] {.cps.} =
+    var i = 0
+    try:
+      while i < 2:
+        await cpsYield()
+        inc i
+      raise newException(IOError, "loop boom")
+    except CatchableError as e:
+      let msg = e.msg.toLowerAscii
+      return msg
+
+  let result = runCps(main())
+  assert result == "loop boom", "Expected 'loop boom', got: " & result
+  echo "PASS: except-as binding works after awaited loop in try body"
+
+# ============================================================
+# Test 19: Sync for-loop locals after await compile and run
+# ============================================================
+
+block testSyncForLocalsAfterAwait:
+  proc main(): CpsFuture[uint32] {.cps.} =
+    await cpsYield()
+    let settings = @[
+      (1'u16, 11'u32),
+      (5'u16, 99'u32)
+    ]
+    var selected = 0'u32
+    for i in 0 ..< settings.len:
+      let setting = settings[i]
+      let id = setting[0]
+      let value = setting[1]
+      if id == 5'u16:
+        selected = value
+    return selected
+
+  let result = runCps(main())
+  assert result == 99'u32, "Expected 99, got: " & $result
+  echo "PASS: sync for-loop locals after await"
+
+# ============================================================
+# Test: Nested if-with-await in try body + await in except handler
+# Regression test for a bug where Phase C of splitTryBlock did not
+# re-wrap nnkTryStmt nodes inside IfBranchInfo preStmts, causing
+# the handler body (with raw 'await') to survive into the output.
+# ============================================================
+
+block testNestedIfAwaitInTryWithAwaitHandler:
+  proc nestedIfTry(flag: bool): CpsFuture[int] {.cps.} =
+    try:
+      if flag:
+        if true:
+          await cpsYield()
+        else:
+          await cpsYield()
+      else:
+        await cpsYield()
+      return 42
+    except CatchableError as e:
+      await cpsYield()
+      return -1
+
+  let result = runCps(nestedIfTry(true))
+  assert result == 42, "Expected 42, got: " & $result
+  let result2 = runCps(nestedIfTry(false))
+  assert result2 == 42, "Expected 42, got: " & $result2
+  echo "PASS: nested if-with-await in try + await in except handler"
+
+block testNestedIfAwaitInTryWithAwaitHandlerError:
+  proc nestedIfTryFail(flag: bool): CpsFuture[int] {.cps.} =
+    try:
+      if flag:
+        if true:
+          let x = await mayFail(1, true)  # will raise
+          return x
+        else:
+          await cpsYield()
+      else:
+        let y = await mayFail(2, true)  # will raise
+        return y
+      return 99
+    except CatchableError as e:
+      await cpsYield()
+      return -1
+
+  let result = runCps(nestedIfTryFail(true))
+  assert result == -1, "Expected -1 (handler), got: " & $result
+  let result2 = runCps(nestedIfTryFail(false))
+  assert result2 == -1, "Expected -1 (handler), got: " & $result2
+  echo "PASS: nested if-with-await in try, error routed to await-handler"
 
 echo ""
 echo "All try/except tests passed!"

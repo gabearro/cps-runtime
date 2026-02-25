@@ -84,15 +84,35 @@ benchmark cfg:
     complete(fut, 42)
     blackBox read(fut)
 
+  proc benchFutureCreateCompleteLocal() {.measure.} =
+    ## Raw local-fast CpsFuture: alloc + complete + read (single-owner path)
+    let fut = newLocalCpsFuture[int]()
+    complete(fut, 42)
+    blackBox read(fut)
+
   proc benchVoidFutureCreateComplete() {.measure.} =
     ## Raw CpsVoidFuture: alloc + complete (no CPS proc)
     let fut = newCpsVoidFuture()
     complete(fut)
     blackBox fut.finished()
 
+  proc benchVoidFutureCreateCompleteLocal() {.measure.} =
+    ## Raw local-fast CpsVoidFuture: alloc + complete (single-owner path)
+    let fut = newLocalCpsVoidFuture()
+    complete(fut)
+    blackBox fut.finished()
+
   proc benchFutureWithCallback() {.measure.} =
-    ## Future + callback: alloc + register callback + complete (fires callback)
+    ## Future + callback (shared-safe default): alloc + callback + complete.
     let fut = newCpsFuture[int]()
+    var called = false
+    addCallback(fut, proc() = called = true)
+    complete(fut, 42)
+    blackBox called
+
+  proc benchFutureWithCallbackLocal() {.measure.} =
+    ## Future + callback (local-fast): alloc + callback + complete.
+    let fut = newLocalCpsFuture[int]()
     var called = false
     addCallback(fut, proc() = called = true)
     complete(fut, 42)
@@ -103,8 +123,17 @@ benchmark cfg:
       yield n
 
   proc benchFutureCallbackFanout(n: int) {.measure: callbackFanouts.} =
-    ## Registration + completion cost with many callbacks on one future.
+    ## Shared-safe registration + completion with many callbacks on one future.
     let fut = newCpsVoidFuture()
+    var fired = 0
+    for _ in 0 ..< n:
+      addCallback(fut, proc() = inc fired)
+    complete(fut)
+    blackBox fired
+
+  proc benchFutureCallbackFanoutLocal(n: int) {.measure: callbackFanouts.} =
+    ## Local-fast registration + completion with many callbacks on one future.
+    let fut = newLocalCpsVoidFuture()
     var fired = 0
     for _ in 0 ..< n:
       addCallback(fut, proc() = inc fired)

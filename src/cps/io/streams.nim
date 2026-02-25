@@ -19,6 +19,13 @@ type
     readProc*: proc(s: AsyncStream, size: int): CpsFuture[string]
     writeProc*: proc(s: AsyncStream, data: string): CpsVoidFuture
     closeProc*: proc(s: AsyncStream)
+    ## Optional zero-copy read API for buffered consumers.
+    ## readIntoProc: read up to `size` bytes directly into `buf`.
+    ##   Returns >0 = bytes read, 0 = EOF, -1 = EAGAIN, < -1 = error.
+    ## waitReadableProc: register for readability, complete when data available.
+    ## If nil, BufferedReader falls back to the allocating read() path.
+    readIntoProc*: proc(s: AsyncStream, buf: pointer, size: int): int
+    waitReadableProc*: proc(s: AsyncStream): CpsVoidFuture
 
 # ============================================================
 # Stream dispatch procs

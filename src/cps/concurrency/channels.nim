@@ -139,6 +139,22 @@ proc ringPop[T](ch: AsyncChannel[T]): T {.inline.} =
   ch.head = (ch.head + 1) mod ch.cap
   dec ch.count
 
+proc popLiveReceiver[T](ch: AsyncChannel[T], receiver: var WaitingReceiver[T]): bool {.inline.} =
+  while ch.waitingReceivers.len > 0:
+    let candidate = ch.waitingReceivers.popFirst()
+    if not candidate.fut.finished:
+      receiver = candidate
+      return true
+  return false
+
+proc popLiveSender[T](ch: AsyncChannel[T], sender: var WaitingSender[T]): bool {.inline.} =
+  while ch.waitingSenders.len > 0:
+    let candidate = ch.waitingSenders.popFirst()
+    if not candidate.fut.finished:
+      sender = candidate
+      return true
+  return false
+
 # ============================================================
 # Close
 # ============================================================
@@ -153,16 +169,24 @@ proc close*[T](ch: AsyncChannel[T]) =
     acquire(ch.lock)
     ch.closed = true
     while ch.waitingReceivers.len > 0:
-      pendingReceivers.add(ch.waitingReceivers.popFirst().fut)
+      let receiver = ch.waitingReceivers.popFirst()
+      if not receiver.fut.finished:
+        pendingReceivers.add(receiver.fut)
     while ch.waitingSenders.len > 0:
-      pendingSenders.add(ch.waitingSenders.popFirst().fut)
+      let sender = ch.waitingSenders.popFirst()
+      if not sender.fut.finished:
+        pendingSenders.add(sender.fut)
     release(ch.lock)
   else:
     ch.closed = true
     while ch.waitingReceivers.len > 0:
-      pendingReceivers.add(ch.waitingReceivers.popFirst().fut)
+      let receiver = ch.waitingReceivers.popFirst()
+      if not receiver.fut.finished:
+        pendingReceivers.add(receiver.fut)
     while ch.waitingSenders.len > 0:
-      pendingSenders.add(ch.waitingSenders.popFirst().fut)
+      let sender = ch.waitingSenders.popFirst()
+      if not sender.fut.finished:
+        pendingSenders.add(sender.fut)
   # Fail all waiters outside the lock
   let err = newException(ChannelClosed, "Channel is closed")
   for f in pendingReceivers:
@@ -183,8 +207,8 @@ proc trySend*[T](ch: AsyncChannel[T], value: sink T): bool =
       release(ch.lock)
       return false
     # Direct handoff to a waiting receiver
-    if ch.waitingReceivers.len > 0:
-      let receiver = ch.waitingReceivers.popFirst()
+    var receiver: WaitingReceiver[T]
+    if ch.popLiveReceiver(receiver):
       release(ch.lock)
       receiver.fut.complete(move(value))
       return true
@@ -200,8 +224,8 @@ proc trySend*[T](ch: AsyncChannel[T], value: sink T): bool =
   else:
     if ch.closed:
       return false
-    if ch.waitingReceivers.len > 0:
-      let receiver = ch.waitingReceivers.popFirst()
+    var receiver: WaitingReceiver[T]
+    if ch.popLiveReceiver(receiver):
       receiver.fut.complete(move(value))
       return true
     if ch.bounded:
@@ -222,8 +246,8 @@ proc tryRecv*[T](ch: AsyncChannel[T]): Option[T] =
         var val = ch.ringPop()
         # If a sender is waiting (buffer was full), push their value
         # into the now-open slot and complete their future.
-        if ch.waitingSenders.len > 0:
-          var sender = ch.waitingSenders.popFirst()
+        var sender: WaitingSender[T]
+        if ch.popLiveSender(sender):
           ch.ringPush(move(sender.value))
           release(ch.lock)
           sender.fut.complete()
@@ -245,8 +269,8 @@ proc tryRecv*[T](ch: AsyncChannel[T]): Option[T] =
     if ch.bounded:
       if ch.count > 0:
         var val = ch.ringPop()
-        if ch.waitingSenders.len > 0:
-          var sender = ch.waitingSenders.popFirst()
+        var sender: WaitingSender[T]
+        if ch.popLiveSender(sender):
           ch.ringPush(move(sender.value))
           sender.fut.complete()
         return some(move(val))
@@ -272,8 +296,8 @@ proc send*[T](ch: AsyncChannel[T], value: sink T): CpsVoidFuture =
       fut.fail(newException(ChannelClosed, "Cannot send on closed channel"))
       return fut
     # Direct handoff to a waiting receiver
-    if ch.waitingReceivers.len > 0:
-      let receiver = ch.waitingReceivers.popFirst()
+    var receiver: WaitingReceiver[T]
+    if ch.popLiveReceiver(receiver):
       release(ch.lock)
       receiver.fut.complete(move(value))
       fut.complete()
@@ -301,8 +325,8 @@ proc send*[T](ch: AsyncChannel[T], value: sink T): CpsVoidFuture =
     if ch.closed:
       fut.fail(newException(ChannelClosed, "Cannot send on closed channel"))
       return fut
-    if ch.waitingReceivers.len > 0:
-      let receiver = ch.waitingReceivers.popFirst()
+    var receiver: WaitingReceiver[T]
+    if ch.popLiveReceiver(receiver):
       receiver.fut.complete(move(value))
       fut.complete()
       return fut
@@ -330,8 +354,8 @@ proc recv*[T](ch: AsyncChannel[T]): CpsFuture[T] =
       if ch.count > 0:
         var val = ch.ringPop()
         # If a sender is waiting, push their value and wake them
-        if ch.waitingSenders.len > 0:
-          var sender = ch.waitingSenders.popFirst()
+        var sender: WaitingSender[T]
+        if ch.popLiveSender(sender):
           ch.ringPush(move(sender.value))
           release(ch.lock)
           sender.fut.complete()
@@ -342,8 +366,8 @@ proc recv*[T](ch: AsyncChannel[T]): CpsFuture[T] =
         return fut
       else:
         # Buffer empty — check for direct handoff from waiting sender
-        if ch.waitingSenders.len > 0:
-          var sender = ch.waitingSenders.popFirst()
+        var sender: WaitingSender[T]
+        if ch.popLiveSender(sender):
           release(ch.lock)
           sender.fut.complete()
           fut.complete(move(sender.value))
@@ -365,15 +389,15 @@ proc recv*[T](ch: AsyncChannel[T]): CpsFuture[T] =
     if ch.bounded:
       if ch.count > 0:
         var val = ch.ringPop()
-        if ch.waitingSenders.len > 0:
-          var sender = ch.waitingSenders.popFirst()
+        var sender: WaitingSender[T]
+        if ch.popLiveSender(sender):
           ch.ringPush(move(sender.value))
           sender.fut.complete()
         fut.complete(move(val))
         return fut
       else:
-        if ch.waitingSenders.len > 0:
-          var sender = ch.waitingSenders.popFirst()
+        var sender: WaitingSender[T]
+        if ch.popLiveSender(sender):
           sender.fut.complete()
           fut.complete(move(sender.value))
           return fut

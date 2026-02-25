@@ -11,6 +11,13 @@
 import std/[macros, sets, tables, sequtils]
 import ./runtime
 
+template cpsFutureMode*(mode: untyped) {.pragma.}
+
+type
+  CpsFutureCtorMode = enum
+    fcmLocal
+    fcmShared
+
 type
   VarInfo = object
     name: string
@@ -27,7 +34,310 @@ proc hasNestedAwait(n: NimNode): bool =
     if hasNestedAwait(child): return true
   return false
 
+proc liftAwaitInBody(body: NimNode): NimNode
+var tryFinallyCounter {.compileTime.}: int = 0
+
+proc findUnsupportedTryFinallyControl(n: NimNode): NimNode =
+  ## Find unsupported control transfer inside transformed try/finally code.
+  case n.kind
+  of nnkProcDef, nnkFuncDef, nnkLambda, nnkDo:
+    return nil
+  of nnkReturnStmt, nnkBreakStmt, nnkContinueStmt:
+    return n
+  else:
+    for child in n:
+      let bad = findUnsupportedTryFinallyControl(child)
+      if bad != nil:
+        return bad
+  return nil
+
+proc findUnsafeTryFinallyProtectedControl(n: NimNode; inLoop = false): NimNode =
+  ## Find control transfer that can escape the lowered protected body and
+  ## bypass appended finally statements.
+  case n.kind
+  of nnkProcDef, nnkFuncDef, nnkLambda, nnkDo:
+    return nil
+  of nnkReturnStmt:
+    return n
+  of nnkBreakStmt:
+    if n.len > 0 and n[0].kind != nnkEmpty:
+      return n
+    if not inLoop:
+      return n
+    return nil
+  of nnkContinueStmt:
+    if not inLoop:
+      return n
+    return nil
+  else:
+    let nextInLoop = inLoop or n.kind in {nnkWhileStmt, nnkForStmt}
+    for child in n:
+      let bad = findUnsafeTryFinallyProtectedControl(child, nextInLoop)
+      if bad != nil:
+        return bad
+  return nil
+
+proc lowerTryFinallyStmt(s: NimNode): NimNode =
+  ## Lower try/except/else/finally into CPS-safe try/except + trailing finally body.
+  ## This keeps finally execution on both success and exception paths while
+  ## preserving await support through existing try/except splitting logic.
+  expectKind s, nnkTryStmt
+
+  var finallyBody: NimNode = nil
+  var elseBody: NimNode = nil
+  let liftedTryBody = liftAwaitInBody(s[0])
+  var innerExcepts: seq[NimNode]
+
+  for i in 1 ..< s.len:
+    let branch = s[i]
+    case branch.kind
+    of nnkExceptBranch:
+      var newExcept = nnkExceptBranch.newTree()
+      for j in 0 ..< branch.len - 1:
+        newExcept.add branch[j].copyNimTree()
+      newExcept.add liftAwaitInBody(branch[^1])
+      innerExcepts.add newExcept
+    of nnkElse:
+      if elseBody != nil:
+        error("Unsupported CPS try/finally: multiple else branches", branch)
+      elseBody = liftAwaitInBody(branch[0])
+    of nnkFinally:
+      if finallyBody != nil:
+        error("Unsupported CPS try/finally: multiple finally branches", branch)
+      finallyBody = branch[0]
+    else:
+      error("Unsupported CPS try/finally branch kind: " & $branch.kind, branch)
+
+  var innerTryBody = newStmtList()
+  for st in liftedTryBody:
+    innerTryBody.add st.copyNimTree()
+  var elseFlagSym: NimNode = nil
+  if elseBody != nil:
+    let elseId = $tryFinallyCounter
+    elseFlagSym = ident("_cpsTryElseRan_" & elseId)
+    innerTryBody.add newAssignment(elseFlagSym, newLit(true))
+
+  if finallyBody == nil:
+    if innerExcepts.len == 0:
+      result = newStmtList()
+      for st in innerTryBody:
+        result.add st.copyNimTree()
+      if elseBody != nil:
+        result.insert(0, nnkVarSection.newTree(
+          nnkIdentDefs.newTree(elseFlagSym.copyNimTree(), ident"bool", newLit(false))
+        ))
+        result.add nnkIfStmt.newTree(
+          nnkElifBranch.newTree(
+            elseFlagSym.copyNimTree(),
+            elseBody.copyNimTree()
+          )
+        )
+      return result
+    else:
+      var innerTry = nnkTryStmt.newTree(innerTryBody)
+      for eb in innerExcepts:
+        innerTry.add eb.copyNimTree()
+      if elseBody != nil:
+        result = newStmtList()
+        result.add nnkVarSection.newTree(
+          nnkIdentDefs.newTree(elseFlagSym.copyNimTree(), ident"bool", newLit(false))
+        )
+        result.add innerTry
+        result.add nnkIfStmt.newTree(
+          nnkElifBranch.newTree(
+            elseFlagSym.copyNimTree(),
+            elseBody.copyNimTree()
+          )
+        )
+        return result
+      return innerTry
+
+  var protectedBody = newStmtList()
+  if elseBody != nil:
+    protectedBody.add nnkVarSection.newTree(
+      nnkIdentDefs.newTree(elseFlagSym.copyNimTree(), ident"bool", newLit(false))
+    )
+  if innerExcepts.len > 0:
+    var innerTry = nnkTryStmt.newTree(innerTryBody)
+    for eb in innerExcepts:
+      innerTry.add eb.copyNimTree()
+    protectedBody.add innerTry
+  else:
+    for st in innerTryBody:
+      protectedBody.add st.copyNimTree()
+  if elseBody != nil:
+    protectedBody.add nnkIfStmt.newTree(
+      nnkElifBranch.newTree(
+        elseFlagSym.copyNimTree(),
+        elseBody.copyNimTree()
+      )
+    )
+
+  let badFinally = findUnsupportedTryFinallyControl(finallyBody)
+  if badFinally != nil:
+    error("Unsupported CPS try/finally control transfer: return/break/continue inside finally is not supported", badFinally)
+
+  # Return is never safe in lowered protected bodies. break/continue are only
+  # safe when they target loops nested inside the protected body.
+  let badTryBody = findUnsafeTryFinallyProtectedControl(protectedBody)
+  if badTryBody != nil:
+    error("Unsupported CPS try/finally control transfer: return or escaping break/continue inside try/except/else body is not supported", badTryBody)
+
+  let liftedFinally = liftAwaitInBody(finallyBody)
+  let finallyId = $tryFinallyCounter
+  inc tryFinallyCounter
+  let hadExcSym = ident("_cpsFinallyHadExc_" & finallyId)
+  let excSym = ident("_cpsFinallyExc_" & finallyId)
+  let caughtSym = ident("_cpsFinallyCaught_" & finallyId)
+
+  result = newStmtList()
+  result.add nnkVarSection.newTree(
+    nnkIdentDefs.newTree(hadExcSym, ident"bool", newLit(false))
+  )
+  result.add nnkVarSection.newTree(
+    nnkIdentDefs.newTree(excSym, nnkRefTy.newTree(ident"CatchableError"), newNilLit())
+  )
+
+  var tryNode = nnkTryStmt.newTree(protectedBody)
+
+  var catchBody = newStmtList()
+  catchBody.add newAssignment(hadExcSym, newLit(true))
+  catchBody.add newAssignment(excSym, caughtSym)
+  tryNode.add nnkExceptBranch.newTree(
+    nnkInfix.newTree(ident"as", ident"CatchableError", caughtSym),
+    catchBody
+  )
+  result.add tryNode
+
+  for fs in liftedFinally:
+    result.add fs.copyNimTree()
+
+  result.add nnkIfStmt.newTree(
+    nnkElifBranch.newTree(
+      hadExcSym.copyNimTree(),
+      newStmtList(nnkRaiseStmt.newTree(excSym.copyNimTree()))
+    )
+  )
+  return result
+
 var liftAwaitCounter {.compileTime.}: int = 0
+
+proc isControlTransferStmt(n: NimNode): bool =
+  n.kind in {nnkReturnStmt, nnkBreakStmt, nnkContinueStmt, nnkRaiseStmt}
+
+proc desugarAwaitTryExprBinding(s: NimNode): seq[NimNode] =
+  ## Rewrites:
+  ##   let x = try: ... except: ...
+  ## into:
+  ##   var _tmp: T
+  ##   try: _tmp = ...
+  ##   except: ...
+  ##   let x = _tmp
+  ##
+  ## This preserves try/except semantics while making awaits visible to the
+  ## CPS splitter as top-level await statements inside a try block.
+  if s.kind notin {nnkLetSection, nnkVarSection} or s.len != 1:
+    return @[]
+  let def = s[0]
+  if def.kind != nnkIdentDefs or def.len < 3:
+    return @[]
+  if def.len != 3:
+    error("CPS macro does not support multi-binding let/var with await in try expression; split declarations", s)
+  let rhs = def[^1]
+  if rhs.kind != nnkTryStmt or not hasNestedAwait(rhs):
+    return @[]
+
+  let tryBody = rhs[0]
+  if tryBody.kind != nnkStmtList or tryBody.len == 0:
+    error("CPS macro requires non-empty try body for await try-expression binding", rhs)
+
+  let tryValue = tryBody[^1]
+  var tmpType: NimNode
+  if def[1].kind != nnkEmpty:
+    tmpType = def[1].copyNimTree()
+  else:
+    if isControlTransferStmt(tryValue):
+      error("CPS macro cannot infer type for await try-expression binding whose try body ends with control transfer; add an explicit type", s)
+    if tryValue.isAwaitCall:
+      tmpType = nnkCall.newTree(
+        ident"typeof",
+        nnkCall.newTree(ident"read", tryValue[1].copyNimTree())
+      )
+    else:
+      tmpType = nnkCall.newTree(ident"typeof", tryValue.copyNimTree())
+
+  let tmpName = ident("_cpsTryExprTmp_" & $liftAwaitCounter)
+  inc liftAwaitCounter
+
+  proc assignOrKeep(tmp: NimNode, n: NimNode): NimNode =
+    if isControlTransferStmt(n):
+      n.copyNimTree()
+    else:
+      nnkAsgn.newTree(tmp.copyNimTree(), n.copyNimTree())
+
+  var rewrittenTryBody = newStmtList()
+  for i in 0 ..< tryBody.len - 1:
+    rewrittenTryBody.add tryBody[i].copyNimTree()
+  rewrittenTryBody.add assignOrKeep(tmpName, tryBody[^1])
+
+  var rewrittenTry = nnkTryStmt.newTree(rewrittenTryBody)
+  for i in 1 ..< rhs.len:
+    let branch = rhs[i]
+    case branch.kind
+    of nnkExceptBranch:
+      var eb = nnkExceptBranch.newTree()
+      for j in 0 ..< branch.len - 1:
+        eb.add branch[j].copyNimTree()
+      let exceptBody = branch[^1]
+      var rewrittenExceptBody = newStmtList()
+      if exceptBody.kind == nnkStmtList and exceptBody.len > 0:
+        for j in 0 ..< exceptBody.len - 1:
+          rewrittenExceptBody.add exceptBody[j].copyNimTree()
+        rewrittenExceptBody.add assignOrKeep(tmpName, exceptBody[^1])
+      elif exceptBody.kind != nnkStmtList:
+        rewrittenExceptBody.add assignOrKeep(tmpName, exceptBody)
+      eb.add rewrittenExceptBody
+      rewrittenTry.add eb
+    of nnkElse:
+      let elseBody = branch[0]
+      var rewrittenElseBody = newStmtList()
+      if elseBody.kind == nnkStmtList and elseBody.len > 0:
+        for j in 0 ..< elseBody.len - 1:
+          rewrittenElseBody.add elseBody[j].copyNimTree()
+        rewrittenElseBody.add assignOrKeep(tmpName, elseBody[^1])
+      elif elseBody.kind != nnkStmtList:
+        rewrittenElseBody.add assignOrKeep(tmpName, elseBody)
+      rewrittenTry.add nnkElse.newTree(rewrittenElseBody)
+    else:
+      # Keep finally/other branches as-is.
+      rewrittenTry.add branch.copyNimTree()
+
+  let tmpDecl = nnkVarSection.newTree(
+    nnkIdentDefs.newTree(
+      tmpName.copyNimTree(),
+      newEmptyNode(),
+      nnkCall.newTree(ident"default", tmpType.copyNimTree())
+    )
+  )
+  let finalBinding =
+    if s.kind == nnkLetSection:
+      nnkLetSection.newTree(
+        nnkIdentDefs.newTree(
+          def[0].copyNimTree(),
+          def[1].copyNimTree(),
+          tmpName.copyNimTree()
+        )
+      )
+    else:
+      nnkVarSection.newTree(
+        nnkIdentDefs.newTree(
+          def[0].copyNimTree(),
+          def[1].copyNimTree(),
+          tmpName.copyNimTree()
+        )
+      )
+
+  result = @[tmpDecl, rewrittenTry, finalBinding]
 
 proc liftAwaitArgs(n: NimNode, lifted: var seq[NimNode]): NimNode =
   ## Recursively walk an expression and lift any `await` calls that appear
@@ -54,6 +364,10 @@ proc liftAwaitInStmt(s: NimNode): seq[NimNode] =
   ## If a statement has await calls nested inside call arguments (not at
   ## the top level), hoist them into preceding let statements.
   ## Returns one or more statements (the lifts + the rewritten original).
+
+  let desugaredTryBinding = desugarAwaitTryExprBinding(s)
+  if desugaredTryBinding.len > 0:
+    return desugaredTryBinding
 
   # Top-level patterns already handled by splitStmtForAwait — skip them
   if s.isAwaitCall:
@@ -111,6 +425,17 @@ proc liftAwaitInBody(body: NimNode): NimNode =
       newFor.add liftAwaitInBody(s[^1])
       result.add newFor
     of nnkTryStmt:
+      var hasFinally = false
+      for i in 1 ..< s.len:
+        if s[i].kind == nnkFinally:
+          hasFinally = true
+          break
+      if hasFinally:
+        let loweredTry = lowerTryFinallyStmt(s)
+        for loweredStmt in loweredTry:
+          result.add loweredStmt
+        continue
+
       var newTry = nnkTryStmt.newTree()
       newTry.add liftAwaitInBody(s[0])
       for i in 1 ..< s.len:
@@ -121,6 +446,8 @@ proc liftAwaitInBody(body: NimNode): NimNode =
             newExcept.add branch[j].copyNimTree()
           newExcept.add liftAwaitInBody(branch[^1])
           newTry.add newExcept
+        elif branch.kind == nnkElse:
+          newTry.add nnkElse.newTree(liftAwaitInBody(branch[0]))
         else:
           newTry.add branch.copyNimTree()
       result.add newTry
@@ -442,7 +769,13 @@ proc collectLocals(body: NimNode, vars: var seq[VarInfo]) =
           vars.add VarInfo(name: elemVar, typ: newEmptyNode(),
                            defVal: nnkBracketExpr.newTree(container.copyNimTree(), newIntLitNode(0)))
 
-      collectLocals(n[^1], vars)
+        collectLocals(n[^1], vars)
+    of nnkExceptBranch:
+      # Locals in except handlers only need env storage when that handler
+      # itself crosses an await boundary. Collecting sync-only handlers causes
+      # type inference to reference out-of-scope `as` bindings.
+      if n.len > 0 and hasNestedAwait(n[^1]):
+        collectLocals(n[^1], vars)
     else:
       if n.len > 0:
         collectLocals(n, vars)
@@ -550,9 +883,40 @@ macro cps*(prc: untyped): untyped =
   let params = prc[3]
   let body = liftAwaitInBody(prc[6])
   let returnType = params[0]
+  let procPragmas = prc[4]
+
+  var futureCtorMode =
+    when defined(cpsSharedFuturesOnly):
+      fcmShared
+    else:
+      fcmShared
+
+  if procPragmas.kind == nnkPragma:
+    for pragma in procPragmas:
+      if pragma.kind == nnkExprColonExpr and pragma.len == 2 and
+         pragma[0].kind == nnkIdent and $pragma[0] == "cpsFutureMode":
+        let modeNode = pragma[1]
+        if modeNode.kind != nnkIdent:
+          error("cpsFutureMode must be 'local' or 'shared'", modeNode)
+        let modeName = $modeNode
+        if modeName == "shared":
+          futureCtorMode = fcmShared
+        elif modeName == "local":
+          when defined(cpsSharedFuturesOnly):
+            futureCtorMode = fcmShared
+          else:
+            futureCtorMode = fcmLocal
+        else:
+          error("cpsFutureMode must be 'local' or 'shared'", modeNode)
 
   # Extract base name without export marker for generating internal identifiers
   let procBaseName = if procName.kind == nnkPostfix: $procName[1] else: $procName
+  let cpsContractErrorSym = ident"CpsContractError"
+  let missingReturnMsg = newLit(
+    "CPS contract violation: non-void CPS proc '" &
+    procBaseName &
+    "' reached end without return"
+  )
 
   # Extract generic parameters
   let genericParams = prc[2]  # nnkGenericParams or nnkEmpty
@@ -575,6 +939,44 @@ macro cps*(prc: untyped): untyped =
   var innerResultType: NimNode
   var isVoid: bool
   var futureType: NimNode
+  let newTypedFutureSym =
+    if futureCtorMode == fcmShared: bindSym"newCpsFuture"
+    else: bindSym"newLocalCpsFuture"
+  let newVoidFutureSym =
+    if futureCtorMode == fcmShared: bindSym"newCpsVoidFuture"
+    else: bindSym"newLocalCpsVoidFuture"
+  let completedTypedFutureSym =
+    if futureCtorMode == fcmShared: bindSym"completedFuture"
+    else: bindSym"completedLocalFuture"
+  let completedVoidFutureSym =
+    if futureCtorMode == fcmShared: bindSym"completedVoidFuture"
+    else: bindSym"completedLocalVoidFuture"
+  let failedTypedFutureSym =
+    if futureCtorMode == fcmShared: bindSym"failedFuture"
+    else: bindSym"failedLocalFuture"
+  let failedVoidFutureSym =
+    if futureCtorMode == fcmShared: bindSym"failedVoidFuture"
+    else: bindSym"failedLocalVoidFuture"
+
+  proc addUnreachableWarningPragma(procNode: NimNode) =
+    ## CPS lowering intentionally emits terminal transitions (`return env`) in
+    ## many branches; Nim's static analysis can report false positive
+    ## `UnreachableCode` warnings at macro expansion sites. Scope suppression to
+    ## generated CPS procs only.
+    if procNode.kind != nnkProcDef:
+      return
+    var pragmaNode = procNode[4]
+    if pragmaNode.kind == nnkEmpty:
+      pragmaNode = nnkPragma.newTree()
+    pragmaNode.add nnkExprColonExpr.newTree(
+      nnkBracketExpr.newTree(ident"warning", ident"UnreachableCode"),
+      bindSym"off"
+    )
+    pragmaNode.add nnkExprColonExpr.newTree(
+      nnkBracketExpr.newTree(ident"hint", ident"XDeclaredButNotUsed"),
+      bindSym"off"
+    )
+    procNode[4] = pragmaNode
 
   if returnType.kind == nnkEmpty or
      (returnType.kind == nnkIdent and $returnType == "void"):
@@ -618,12 +1020,10 @@ macro cps*(prc: untyped): untyped =
         return n  # don't rewrite returns inside nested procs
       of nnkReturnStmt:
         if isVoid or n[0].kind == nnkEmpty:
-          let sym = bindSym"completedVoidFuture"
-          return nnkReturnStmt.newTree(newCall(sym))
+          return nnkReturnStmt.newTree(newCall(completedVoidFutureSym))
         else:
-          let sym = bindSym"completedFuture"
           return nnkReturnStmt.newTree(
-            nnkBracketExpr.newTree(sym, innerResultType).newCall(n[0])
+            nnkBracketExpr.newTree(completedTypedFutureSym, innerResultType).newCall(n[0])
           )
       else:
         result = n.copyNimNode()
@@ -634,32 +1034,32 @@ macro cps*(prc: untyped): untyped =
     var fastBody = newStmtList()
 
     if isVoid:
-      let compSym = bindSym"completedVoidFuture"
-      let failSym = bindSym"failedVoidFuture"
       let e = ident"e"
       fastBody.add quote do:
         try:
           `rewrittenBody`
-          return `compSym`()
+          return `completedVoidFutureSym`()
         except CatchableError as `e`:
-          return `failSym`(`e`)
+          return `failedVoidFutureSym`(`e`)
     else:
-      let failSym = bindSym"failedFuture"
       let e = ident"e"
       # For typed procs, the body should contain return statements (rewritten above).
       # The try/except catches any raised exceptions and returns a failed future.
       fastBody.add quote do:
         try:
           `rewrittenBody`
+          return `failedTypedFutureSym`[`innerResultType`](
+            newException(`cpsContractErrorSym`, `missingReturnMsg`)
+          )
         except CatchableError as `e`:
-          return `failSym`[`innerResultType`](`e`)
+          return `failedTypedFutureSym`[`innerResultType`](`e`)
 
     var wrapperParams: seq[NimNode] = @[returnType]
     for i in 1 ..< params.len:
       wrapperParams.add params[i].copyNimTree()
 
     let fastProc = newProc(name = procName, params = wrapperParams, body = fastBody)
-    fastProc[4] = newEmptyNode()  # no pragmas
+    addUnreachableWarningPragma(fastProc)
     if isGeneric:
       fastProc[2] = genericParams.copyNimTree()
 
@@ -811,7 +1211,7 @@ macro cps*(prc: untyped): untyped =
       var handled = false
 
       # Handle try/except containing await
-      if not handled and s.kind == nnkTryStmt and hasNestedAwait(s[0]):
+      if not handled and s.kind == nnkTryStmt and hasNestedAwait(s):
         # Flush currentPre as a normal segment before processing try block
         if currentPre.len > 0:
           if exceptCtx.len > 0:
@@ -1077,12 +1477,12 @@ macro cps*(prc: untyped): untyped =
     # bodies (which contain await calls that can't be processed in Phase 3).
     let hasAwaitHandlers = branches.anyIt(it.hasAwait)
     if hasAwaitHandlers:
-      for idx in segsBefore ..< tryBodyEnd:
+      proc rewrapPreStmts(preStmts: var seq[NimNode], branches: seq[ExceptBranch]) =
+        ## Re-wrap any nnkTryStmt nodes in preStmts with updated branches.
         var newPreStmts: seq[NimNode]
         var changed = false
-        for s in segments[idx].preStmts:
+        for s in preStmts:
           if s.kind == nnkTryStmt:
-            # Extract sync stmts from the try body and re-wrap with updated branches
             var syncStmts: seq[NimNode]
             for child in s[0]:
               syncStmts.add child
@@ -1091,10 +1491,47 @@ macro cps*(prc: untyped): untyped =
           else:
             newPreStmts.add s
         if changed:
-          segments[idx].preStmts = newPreStmts
+          preStmts = newPreStmts
+
+      for idx in segsBefore ..< tryBodyEnd:
+        rewrapPreStmts(segments[idx].preStmts, branches)
+
+        # Also re-wrap nnkTryStmt in IfBranchInfo preStmts (for sync branches
+        # inside if-with-await that were wrapped before Phase B set hasAwait).
+        if segments[idx].kind == skIfDispatch:
+          for brIdx in 0 ..< segments[idx].ifBranches.len:
+            rewrapPreStmts(segments[idx].ifBranches[brIdx].preStmts, branches)
+
+        # Same for while body branch preStmts.
+        if segments[idx].kind == skWhileEntry:
+          rewrapPreStmts(segments[idx].whileBodyBranch.preStmts, branches)
 
     # afterTryIdx = after ALL segments (including handler continuations)
     let afterIdx = segments.len
+
+    # Ensure successful completion of the final try-body segment continues
+    # after the try/except, not into handler continuation segments.
+    #
+    # Do not clobber an explicit control-flow override (for example a while
+    # loop-back segment that already points to its condition step).
+    if tryBodyEnd > segsBefore and segments[tryBodyEnd - 1].overrideNextIdx < 0:
+      segments[tryBodyEnd - 1].overrideNextIdx = afterIdx
+
+    # If await handlers appended extra continuation segments, try-body control
+    # targets that pointed at the original try-body boundary must be retargeted
+    # to the real after-try index.
+    if afterIdx > tryBodyEnd:
+      for idx in segsBefore ..< tryBodyEnd:
+        if segments[idx].overrideNextIdx == tryBodyEnd:
+          segments[idx].overrideNextIdx = afterIdx
+        if segments[idx].breakTargetIdx == tryBodyEnd:
+          segments[idx].breakTargetIdx = afterIdx
+        if segments[idx].continueTargetIdx == tryBodyEnd:
+          segments[idx].continueTargetIdx = afterIdx
+        if segments[idx].kind == skIfDispatch and segments[idx].afterIfIdx == tryBodyEnd:
+          segments[idx].afterIfIdx = afterIdx
+        elif segments[idx].kind == skWhileEntry and segments[idx].afterWhileIdx == tryBodyEnd:
+          segments[idx].afterWhileIdx = afterIdx
 
     # Update all try-body segments with the updated branches and afterTryIdx.
     for idx in segsBefore ..< tryBodyEnd:
@@ -1107,7 +1544,8 @@ macro cps*(prc: untyped): untyped =
     for branch in branches:
       if branch.hasAwait and branch.handlerContCount > 0:
         let lastIdx = branch.handlerContStartIdx + branch.handlerContCount - 1
-        segments[lastIdx].overrideNextIdx = afterIdx
+        if segments[lastIdx].overrideNextIdx < 0:
+          segments[lastIdx].overrideNextIdx = afterIdx
 
   var segments: seq[Segment]
   var currentPre: seq[NimNode]
@@ -1224,6 +1662,20 @@ macro cps*(prc: untyped): untyped =
       result = n.copyNimNode()
       result.add n[0].copyNimTree()
       result.add rewriteForTypeof(n[1], typeMap)
+    of nnkCommand:
+      # `addr expr` in untyped context is nnkCommand(ident"addr", operand).
+      # Since identifiers get rewritten to default(Type) — rvalues that have
+      # no address — `addr rvalue[0]` would fail. Replace with
+      # `default(ptr typeof(operand))` which preserves the type correctly.
+      if n.len == 2 and n[0].kind == nnkIdent and $n[0] == "addr":
+        let operand = rewriteForTypeof(n[1], typeMap)
+        return nnkCall.newTree(
+          ident"default",
+          nnkPtrTy.newTree(nnkCall.newTree(ident"typeof", operand))
+        )
+      result = n.copyNimNode()
+      for child in n:
+        result.add rewriteForTypeof(child, typeMap)
     else:
       result = n.copyNimNode()
       for child in n:
@@ -1247,6 +1699,11 @@ macro cps*(prc: untyped): untyped =
   # Pass 2: await targets (raw typeof, no aliases — so local vars can reference them)
   # Pass 3: re-process local vars with await targets now available
   # Then: create aliases for all typeof entries
+  proc buildTypeofExpr(defVal: NimNode): NimNode =
+    ## Build the type expression for a local variable's default value.
+    let rewritten = rewriteForTypeof(defVal, typeMap)
+    return nnkCall.newTree(ident"typeof", rewritten)
+
   for v in localVars:
     if v.typ.kind != nnkEmpty:
       typeMap[v.name] = v.typ
@@ -1258,8 +1715,7 @@ macro cps*(prc: untyped): untyped =
       )
       typeMap[v.name] = closureType
     elif v.defVal.kind != nnkEmpty:
-      let rewritten = rewriteForTypeof(v.defVal, typeMap)
-      typeMap[v.name] = nnkCall.newTree(ident"typeof", rewritten)
+      typeMap[v.name] = buildTypeofExpr(v.defVal)
 
   proc prePopulateAwaitTargets() =
     for seg in segments:
@@ -1290,8 +1746,7 @@ macro cps*(prc: untyped): untyped =
   proc reProcessLocals() =
     for v in localVars:
       if v.typ.kind == nnkEmpty and v.defVal.kind notin {nnkEmpty, nnkLambda, nnkDo}:
-        let rewritten = rewriteForTypeof(v.defVal, typeMap)
-        typeMap[v.name] = nnkCall.newTree(ident"typeof", rewritten)
+        typeMap[v.name] = buildTypeofExpr(v.defVal)
 
   proc reProcessAwaitTargets() =
     for seg in segments:
@@ -1344,9 +1799,32 @@ macro cps*(prc: untyped): untyped =
           typeMap[seg.whileBodyBranch.awaitTarget] = getOrCreateAlias(entry)
 
   # Add local variable fields first (original ordering preserved for env layout)
+  proc hasClosureProcPragma(typeExpr: NimNode): bool =
+    if typeExpr.kind != nnkProcTy or typeExpr.len < 2:
+      return false
+    let pragmaNode = typeExpr[1]
+    if pragmaNode.kind != nnkPragma:
+      return false
+    for p in pragmaNode:
+      if p.kind == nnkIdent and $p == "closure":
+        return true
+      if p.kind == nnkExprColonExpr and p.len == 2 and
+         p[0].kind == nnkIdent and $p[0] == "closure":
+        return true
+    return false
+
+  proc envFieldIdent(name: string, cursorField: bool): NimNode =
+    if cursorField:
+      return nnkPragmaExpr.newTree(
+        ident(name),
+        nnkPragma.newTree(ident"cursor")
+      )
+    ident(name)
+
   for v in localVars:
     if v.typ.kind != nnkEmpty:
-      envFields.add nnkIdentDefs.newTree(ident(v.name), v.typ, newEmptyNode())
+      let useCursor = hasClosureProcPragma(v.typ)
+      envFields.add nnkIdentDefs.newTree(envFieldIdent(v.name, useCursor), v.typ, newEmptyNode())
     elif v.defVal.kind in {nnkLambda, nnkDo}:
       # Lambda values: build explicit proc type with {.closure.} pragma
       # to avoid nimcall/closure mismatch after rewriting captures env
@@ -1355,7 +1833,9 @@ macro cps*(prc: untyped): untyped =
         lambdaParams.copyNimTree(),
         nnkPragma.newTree(ident"closure")
       )
-      envFields.add nnkIdentDefs.newTree(ident(v.name), closureType, newEmptyNode())
+      # Closure values that persist across await points are stored in env fields.
+      # Marking those fields as `.cursor` breaks env->closure->env ARC cycles.
+      envFields.add nnkIdentDefs.newTree(envFieldIdent(v.name, true), closureType, newEmptyNode())
     elif v.defVal.kind != nnkEmpty:
       # Type was already aliased in typeMap during pre-population
       let alias = typeMap[v.name]
@@ -1414,6 +1894,7 @@ macro cps*(prc: untyped): untyped =
   let hasErrorSym = ident"hasError"
   let getErrorSym = ident"getError"
   let addCallbackSym = ident"addCallback"
+  let finishedSym = ident"finished"
   let failSym = bindSym"fail"
   let completeSym = bindSym"complete"
   let runSym = bindSym"run"
@@ -1483,7 +1964,8 @@ macro cps*(prc: untyped): untyped =
 
   proc rewrite(n: NimNode, knownNames: HashSet[string],
                breakTarget: NimNode = nil,
-               continueTarget: NimNode = nil): NimNode =
+               continueTarget: NimNode = nil,
+               inTryScope: bool = false): NimNode =
     let envId = ident"env"
     case n.kind
     of nnkIdent:
@@ -1495,13 +1977,31 @@ macro cps*(prc: untyped): untyped =
       for def in n:
         if def.kind == nnkIdentDefs:
           let defVal = def[^1]
+          var allKnown = true
           for j in 0 ..< def.len - 2:
-            let varName = $def[j]
+            if $def[j] notin knownNames:
+              allKnown = false
+              break
+
+          if allKnown:
+            for j in 0 ..< def.len - 2:
+              let varName = $def[j]
+              if defVal.kind != nnkEmpty:
+                result.add newAssignment(
+                  newDotExpr(envId, ident(varName)),
+                  rewrite(defVal, knownNames, breakTarget, continueTarget, inTryScope)
+                )
+          else:
+            var section = n.copyNimNode()
+            var defCopy = def.copyNimNode()
+            for j in 0 ..< def.len - 1:
+              defCopy.add def[j].copyNimTree()
             if defVal.kind != nnkEmpty:
-              result.add newAssignment(
-                newDotExpr(envId, ident(varName)),
-                rewrite(defVal, knownNames, breakTarget, continueTarget)
-              )
+              defCopy.add rewrite(defVal, knownNames, breakTarget, continueTarget, inTryScope)
+            else:
+              defCopy.add defVal.copyNimTree()
+            section.add defCopy
+            result.add section
       return result
     of nnkReturnStmt:
       if n[0].kind == nnkEmpty or isVoid:
@@ -1511,22 +2011,27 @@ macro cps*(prc: untyped): untyped =
           `envId`.fn = nil
           return `envId`
       else:
-        let retVal = rewrite(n[0], knownNames, breakTarget, continueTarget)
+        let retVal = rewrite(n[0], knownNames, breakTarget, continueTarget, inTryScope)
         return quote do:
           `completeSym`(`envId`.fut, `retVal`)
           `envId`.state = csFinished
           `envId`.fn = nil
           return `envId`
     of nnkRaiseStmt:
+      if inTryScope:
+        if n[0].kind == nnkEmpty:
+          return n.copyNimTree()
+        let errExpr = rewrite(n[0], knownNames, breakTarget, continueTarget, inTryScope)
+        return nnkRaiseStmt.newTree(errExpr)
       if n[0].kind == nnkEmpty:
         let getCurExc = ident"getCurrentException"
         return quote do:
-          `failSym`(`envId`.fut, `getCurExc`())
+          `failSym`(`envId`.fut, cast[ref CatchableError](`getCurExc`()))
           `envId`.state = csFinished
           `envId`.fn = nil
           return `envId`
       else:
-        let errExpr = rewrite(n[0], knownNames, breakTarget, continueTarget)
+        let errExpr = rewrite(n[0], knownNames, breakTarget, continueTarget, inTryScope)
         return quote do:
           `failSym`(`envId`.fut, `errExpr`)
           `envId`.state = csFinished
@@ -1548,12 +2053,18 @@ macro cps*(prc: untyped): untyped =
       # Object constructor field or keyword arg: don't rewrite the field name (first child)
       result = n.copyNimNode()
       result.add n[0].copyNimTree()  # field name stays as-is
-      result.add rewrite(n[1], knownNames, breakTarget, continueTarget)  # value is rewritten
+      result.add rewrite(n[1], knownNames, breakTarget, continueTarget, inTryScope)  # value is rewritten
     of nnkDotExpr:
       # Field access: rewrite the object (left) but not the field name (right)
       result = n.copyNimNode()
-      result.add rewrite(n[0], knownNames, breakTarget, continueTarget)
+      result.add rewrite(n[0], knownNames, breakTarget, continueTarget, inTryScope)
       result.add n[1].copyNimTree()  # field name stays as-is
+    of nnkTryStmt:
+      # Preserve raise semantics within try/except/finally regions so local
+      # handlers can intercept before we fail the root future.
+      result = n.copyNimNode()
+      for child in n:
+        result.add rewrite(child, knownNames, breakTarget, continueTarget, true)
     of nnkExceptBranch:
       # Don't rewrite the `as` variable binding in `except Type as e:`.
       # Also exclude the `as` variable from knownNames when rewriting the body.
@@ -1573,7 +2084,7 @@ macro cps*(prc: untyped): untyped =
         else:
           result.add child.copyNimTree()
       # Rewrite the body (last child) with the as var excluded
-      result.add rewrite(n[^1], exceptKnown, breakTarget, continueTarget)
+      result.add rewrite(n[^1], exceptKnown, breakTarget, continueTarget, inTryScope)
     of nnkSym:
       return n
     of nnkProcDef, nnkFuncDef, nnkLambda, nnkDo:
@@ -1610,11 +2121,14 @@ macro cps*(prc: untyped): untyped =
       # Normal call — rewrite children
       result = n.copyNimNode()
       for child in n:
-        result.add rewrite(child, knownNames, breakTarget, continueTarget)
+        result.add rewrite(child, knownNames, breakTarget, continueTarget, inTryScope)
     else:
       result = n.copyNimNode()
       for child in n:
-        result.add rewrite(child, knownNames, breakTarget, continueTarget)
+        result.add rewrite(child, knownNames, breakTarget, continueTarget, inTryScope)
+      result = n.copyNimNode()
+      for child in n:
+        result.add rewrite(child, knownNames, breakTarget, continueTarget, inTryScope)
 
   # Helper: in callback context, `return env` is invalid (callback returns void).
   # Replace `return <expr>` with bare `return`.
@@ -1767,6 +2281,19 @@ macro cps*(prc: untyped): untyped =
 
   var stepProcs: seq[NimNode]
 
+  proc contractFailReturn(envId: NimNode): NimNode =
+    quote do:
+      `failSym`(`envId`.fut, newException(`cpsContractErrorSym`, `missingReturnMsg`))
+      `envId`.state = csFinished
+      `envId`.fn = nil
+      return `envId`
+
+  proc contractFailInCallback(envId: NimNode): NimNode =
+    quote do:
+      `failSym`(`envId`.fut, newException(`cpsContractErrorSym`, `missingReturnMsg`))
+      `envId`.state = csFinished
+      `envId`.fn = nil
+
   # Helper: generate the await handling code for a normal segment.
   proc generateNormalAwaitStep(seg: Segment, i: int, stepBody: var NimNode,
                                 envId, envTypeName: NimNode) =
@@ -1917,10 +2444,34 @@ macro cps*(prc: untyped): untyped =
               `envId`.state = csSuspended
               return `envId`
         else:
+          let callbackContractFail = contractFailInCallback(envId)
+          let inlineContractFail = contractFailReturn(envId)
           stepBody.add quote do:
             if `af`.finished:
-              `envId`.`tf` = `readSym`(`af`)
-              `completeSym`(`envId`.fut, `envId`.`tf`)
+              if `hasErrorSym`(`af`):
+                `failSym`(`envId`.fut, `getErrorSym`(`af`))
+                `envId`.state = csFinished
+                `envId`.fn = nil
+                return `envId`
+              `inlineContractFail`
+            else:
+              `addCallbackSym`(`af`, proc() =
+                if `hasErrorSym`(`af`):
+                  `failSym`(`envId`.fut, `getErrorSym`(`af`))
+                else:
+                  `callbackContractFail`
+              )
+              `envId`.fn = nil
+              `envId`.state = csSuspended
+              return `envId`
+      else:
+        if isVoid:
+          stepBody.add quote do:
+            if `af`.finished:
+              if `hasErrorSym`(`af`):
+                `failSym`(`envId`.fut, `getErrorSym`(`af`))
+              else:
+                `completeSym`(`envId`.fut)
               `envId`.state = csFinished
               `envId`.fn = nil
               return `envId`
@@ -1929,32 +2480,32 @@ macro cps*(prc: untyped): untyped =
                 if `hasErrorSym`(`af`):
                   `failSym`(`envId`.fut, `getErrorSym`(`af`))
                 else:
-                  `envId`.`tf` = `readSym`(`af`)
-                  `completeSym`(`envId`.fut, `envId`.`tf`)
+                  `completeSym`(`envId`.fut)
               )
               `envId`.fn = nil
               `envId`.state = csSuspended
               return `envId`
-      else:
-        stepBody.add quote do:
-          if `af`.finished:
-            if `hasErrorSym`(`af`):
-              `failSym`(`envId`.fut, `getErrorSym`(`af`))
-            else:
-              `completeSym`(`envId`.fut)
-            `envId`.state = csFinished
-            `envId`.fn = nil
-            return `envId`
-          else:
-            `addCallbackSym`(`af`, proc() =
+        else:
+          let callbackContractFail = contractFailInCallback(envId)
+          let inlineContractFail = contractFailReturn(envId)
+          stepBody.add quote do:
+            if `af`.finished:
               if `hasErrorSym`(`af`):
                 `failSym`(`envId`.fut, `getErrorSym`(`af`))
-              else:
-                `completeSym`(`envId`.fut)
-            )
-            `envId`.fn = nil
-            `envId`.state = csSuspended
-            return `envId`
+                `envId`.state = csFinished
+                `envId`.fn = nil
+                return `envId`
+              `inlineContractFail`
+            else:
+              `addCallbackSym`(`af`, proc() =
+                if `hasErrorSym`(`af`):
+                  `failSym`(`envId`.fut, `getErrorSym`(`af`))
+                else:
+                  `callbackContractFail`
+              )
+              `envId`.fn = nil
+              `envId`.state = csSuspended
+              return `envId`
 
   # Helper: generate transition to next step (no await).
   proc generateTransition(seg: Segment, i: int, stepBody: var NimNode,
@@ -1973,10 +2524,7 @@ macro cps*(prc: untyped): untyped =
           `envId`.fn = nil
           return `envId`
       else:
-        stepBody.add quote do:
-          `envId`.state = csFinished
-          `envId`.fn = nil
-          return `envId`
+        stepBody.add contractFailReturn(envId)
 
   for i in 0 ..< numSteps:
     let seg = segments[i]
@@ -1986,6 +2534,10 @@ macro cps*(prc: untyped): untyped =
 
     stepBody.add quote do:
       let `envId` = `envTypeInst`(`cParam`)
+      if `finishedSym`(`envId`.fut):
+        `envId`.state = csFinished
+        `envId`.fn = nil
+        return `envId`
 
     case seg.kind
     of skNormal:
@@ -2038,9 +2590,12 @@ macro cps*(prc: untyped): untyped =
           branchBody.add rewrite(s, knownNames, ifBrTarget, ifCtTarget)
 
         if br.hasAwait and br.contCount > 0:
-          # Branch has await - check if first continuation is a direct await
+          # Branch has await - check if first continuation is a direct await.
+          # Don't inline if the await is inside a try/except (exceptBranches),
+          # because the inlined error handling wouldn't route to except handlers.
+          # Let the continuation step's generateNormalAwaitStep handle it.
           let firstCont = segments[br.contStartIdx]
-          if firstCont.hasAwait:
+          if firstCont.hasAwait and firstCont.exceptBranches.len == 0:
             # Inline the await handling directly in the branch
             let futExpr = rewrite(firstCont.awaitExpr, knownNames)
             let af = genSym(nskLet, "awaitFut")
@@ -2126,10 +2681,34 @@ macro cps*(prc: untyped): untyped =
                       `envId`.state = csSuspended
                       return `envId`
                 else:
+                  let callbackContractFail = contractFailInCallback(envId)
+                  let inlineContractFail = contractFailReturn(envId)
                   branchBody.add quote do:
                     if `af`.finished:
-                      `envId`.`tf` = `readSym`(`af`)
-                      `completeSym`(`envId`.fut, `envId`.`tf`)
+                      if `hasErrorSym`(`af`):
+                        `failSym`(`envId`.fut, `getErrorSym`(`af`))
+                        `envId`.state = csFinished
+                        `envId`.fn = nil
+                        return `envId`
+                      `inlineContractFail`
+                    else:
+                      `addCallbackSym`(`af`, proc() =
+                        if `hasErrorSym`(`af`):
+                          `failSym`(`envId`.fut, `getErrorSym`(`af`))
+                        else:
+                          `callbackContractFail`
+                      )
+                      `envId`.fn = nil
+                      `envId`.state = csSuspended
+                      return `envId`
+              else:
+                if isVoid:
+                  branchBody.add quote do:
+                    if `af`.finished:
+                      if `hasErrorSym`(`af`):
+                        `failSym`(`envId`.fut, `getErrorSym`(`af`))
+                      else:
+                        `completeSym`(`envId`.fut)
                       `envId`.state = csFinished
                       `envId`.fn = nil
                       return `envId`
@@ -2138,32 +2717,32 @@ macro cps*(prc: untyped): untyped =
                         if `hasErrorSym`(`af`):
                           `failSym`(`envId`.fut, `getErrorSym`(`af`))
                         else:
-                          `envId`.`tf` = `readSym`(`af`)
-                          `completeSym`(`envId`.fut, `envId`.`tf`)
+                          `completeSym`(`envId`.fut)
                       )
                       `envId`.fn = nil
                       `envId`.state = csSuspended
                       return `envId`
-              else:
-                branchBody.add quote do:
-                  if `af`.finished:
-                    if `hasErrorSym`(`af`):
-                      `failSym`(`envId`.fut, `getErrorSym`(`af`))
-                    else:
-                      `completeSym`(`envId`.fut)
-                    `envId`.state = csFinished
-                    `envId`.fn = nil
-                    return `envId`
-                  else:
-                    `addCallbackSym`(`af`, proc() =
+                else:
+                  let callbackContractFail = contractFailInCallback(envId)
+                  let inlineContractFail = contractFailReturn(envId)
+                  branchBody.add quote do:
+                    if `af`.finished:
                       if `hasErrorSym`(`af`):
                         `failSym`(`envId`.fut, `getErrorSym`(`af`))
-                      else:
-                        `completeSym`(`envId`.fut)
-                    )
-                    `envId`.fn = nil
-                    `envId`.state = csSuspended
-                    return `envId`
+                        `envId`.state = csFinished
+                        `envId`.fn = nil
+                        return `envId`
+                      `inlineContractFail`
+                    else:
+                      `addCallbackSym`(`af`, proc() =
+                        if `hasErrorSym`(`af`):
+                          `failSym`(`envId`.fut, `getErrorSym`(`af`))
+                        else:
+                          `callbackContractFail`
+                      )
+                      `envId`.fn = nil
+                      `envId`.state = csSuspended
+                      return `envId`
           else:
             # First continuation is not a direct await (e.g. nested control flow)
             # Transition to the first continuation segment
@@ -2185,10 +2764,7 @@ macro cps*(prc: untyped): untyped =
                 `envId`.fn = nil
                 return `envId`
             else:
-              branchBody.add quote do:
-                `envId`.state = csFinished
-                `envId`.fn = nil
-                return `envId`
+              branchBody.add contractFailReturn(envId)
 
         if br.condition.kind == nnkEmpty:
           # else branch
@@ -2218,10 +2794,7 @@ macro cps*(prc: untyped): untyped =
               `envId`.fn = nil
               return `envId`
           else:
-            stepBody.add quote do:
-              `envId`.state = csFinished
-              `envId`.fn = nil
-              return `envId`
+            stepBody.add contractFailReturn(envId)
 
     of skWhileEntry:
       # Break target = afterWhile, continue target = this condition step
@@ -2251,7 +2824,7 @@ macro cps*(prc: untyped): untyped =
 
       if br.hasAwait and br.contCount > 0:
         let firstCont = segments[br.contStartIdx]
-        if firstCont.hasAwait:
+        if firstCont.hasAwait and firstCont.exceptBranches.len == 0:
           # Inline the await handling in the while body
           let futExpr = rewrite(firstCont.awaitExpr, knownNames)
           let af = genSym(nskLet, "awaitFut")
@@ -2363,10 +2936,7 @@ macro cps*(prc: untyped): untyped =
             `envId`.fn = nil
             return `envId`
         else:
-          falseBody.add quote do:
-            `envId`.state = csFinished
-            `envId`.fn = nil
-            return `envId`
+          falseBody.add contractFailReturn(envId)
 
       stepBody.add nnkIfStmt.newTree(
         nnkElifBranch.newTree(whileCond, trueBody),
@@ -2377,6 +2947,7 @@ macro cps*(prc: untyped): untyped =
     let stepProc = quote do:
       proc `stepBareName`(`cParam`: sink Continuation): Continuation {.nimcall.} =
         `stepBody`
+    addUnreachableWarningPragma(stepProc)
     if isGeneric:
       stepProc[2] = genericParams.copyNimTree()
 
@@ -2398,10 +2969,10 @@ macro cps*(prc: untyped): untyped =
 
   if isVoid:
     wrapperBody.add quote do:
-      `envLocal`.fut = newCpsVoidFuture()
+      `envLocal`.fut = `newVoidFutureSym`()
   else:
     wrapperBody.add quote do:
-      `envLocal`.fut = newCpsFuture[`innerResultType`]()
+      `envLocal`.fut = `newTypedFutureSym`[`innerResultType`]()
 
   for (name, _) in procParams:
     let nameId = ident(name)
@@ -2454,3 +3025,4 @@ macro cps*(prc: untyped): untyped =
   for sp in stepProcs:
     result.add sp
   result.add wrapperProc
+

@@ -4,10 +4,12 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  schedule:
+    - cron: "0 3 * * *"
 
 jobs:
   core-st:
-    name: Core ST (ORC)
+    name: Core ST (ARC)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,9 +20,9 @@ jobs:
         run: nimble install -d -y
       - name: Core tests
         run: |
-          nim c -r --mm:orc tests/core/test_event_loop.nim
-          nim c -r --mm:orc tests/core/test_tasks.nim
-          nim c -r --mm:orc tests/concurrency/test_channels.nim
+          nim c -r --mm:arc tests/core/test_event_loop.nim
+          nim c -r --mm:arc tests/core/test_tasks.nim
+          nim c -r --mm:arc tests/concurrency/test_channels.nim
 
   mt-atomicarc:
     name: MT (atomicArc)
@@ -43,3 +45,213 @@ jobs:
             echo "stress run $i"
             nim c -r --mm:atomicArc tests/mt/test_mt_concurrent.nim
           done
+
+  quic-http3-linux:
+    name: QUIC + HTTP/3 (Linux, useBoringSSL)
+    runs-on: ubuntu-latest
+    env:
+      NIMFLAGS: -d:useBoringSSL
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.6'
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-venv openssl
+      - name: Install Nim deps
+        run: nimble install -d -y
+      - name: QUIC full tests (v1+v2)
+        run: nimble -d:useBoringSSL test_quic_full
+      - name: HTTP/3 full tests
+        run: nimble -d:useBoringSSL test_http3_full
+      - name: WebTransport core tests
+        run: nimble -d:useBoringSSL test_webtransport_core
+      - name: MASQUE core tests
+        run: nimble -d:useBoringSSL test_masque_core
+      - name: QUIC+HTTP3 Python interop full
+        run: nimble -d:useBoringSSL test_quic_http3_python_interop_full
+      - name: H1/H2 regression compile checks
+        run: |
+          nim c tests/http/test_http_server.nim
+          nim c tests/http/test_https_client.nim
+
+  http3-browser-interop:
+    name: HTTP/3 Browser Interop (Chromium)
+    runs-on: ubuntu-latest
+    env:
+      NIMFLAGS: -d:useBoringSSL
+      CPS_HTTP3_INTEROP_URL: https://cloudflare-quic.com/cdn-cgi/trace
+      CPS_HTTP3_EXPECTED_PROTOCOL: h3
+      CPS_HTTP3_REQUIRE_TARGET: "1"
+      CPS_HTTP3_REQUIRE_WEBTRANSPORT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.6'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-venv openssl
+      - name: Install Nim deps
+        run: nimble install -d -y
+      - name: Browser interop checks
+        run: nimble -d:useBoringSSL test_http3_browser_interop
+      - name: Browser live local interop checks
+        run: nimble -d:useBoringSSL test_http3_browser_live_local
+
+  quic-http3-soak-nightly:
+    name: QUIC + HTTP/3 Soak (Nightly, non-blocking)
+    if: github.event_name == 'schedule'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    env:
+      NIMFLAGS: -d:useBoringSSL
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.6'
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-venv openssl
+      - name: Install Nim deps
+        run: nimble install -d -y
+      - name: Soak loop
+        run: |
+          for i in $(seq 1 5); do
+            echo "Soak iteration $i"
+            nimble -d:useBoringSSL test_quic_http3_python_interop_full
+            nimble -d:useBoringSSL test_webtransport_core
+            nimble -d:useBoringSSL test_masque_core
+          done
+
+  ui-wasm:
+    name: UI DSL + WASM (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.6'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Install system toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld binaryen wasi-libc
+      - name: Install Nim dependencies
+        run: nimble install -d -y
+      - name: UI schema freshness
+        run: |
+          chmod +x scripts/check_ui_schema_generated.sh
+          bash scripts/check_ui_schema_generated.sh
+      - name: UI unit tests
+        run: |
+          nim c -r tests/ui/test_dsl_all_html_svg_mathml_tags.nim
+          nim c -r tests/ui/test_dsl_unknown_tag_compile_error.nim
+          nim c -r tests/ui/test_dsl_custom_tag_explicit.nim
+          nim c -r tests/ui/test_dsl_all_event_rewrites.nim
+          nim c -r tests/ui/test_event_options_capture_passive_once.nim
+          nim c -r tests/ui/test_attr_validation_global_data_aria.nim
+          nim c -r tests/ui/test_attr_validation_element_specific.nim
+          nim c -r tests/ui/test_constraints_literal_validation.nim
+          nim c -r tests/ui/test_constraints_dynamic_provable_policy.nim
+          nim c -r tests/ui/test_event_extras_payload_accessors.nim
+          nim c -r tests/ui/test_dsl_macro.nim
+          nim c -r tests/ui/test_components_nested_hooks.nim
+          nim c -r tests/ui/test_component_identity_keyed_reorder.nim
+          nim c -r tests/ui/test_hooks_ref_memo_callback.nim
+          nim c -r tests/ui/test_hooks_reducer.nim
+          nim c -r tests/ui/test_context_provider_consumer.nim
+          nim c -r tests/ui/test_layout_effect_order.nim
+          nim c -r tests/ui/test_error_boundary_render_effect.nim
+          nim c -r tests/ui/test_event_prevent_default_stop_propagation.nim
+          nim c -r tests/ui/test_prop_kind_attr_prop_style.nim
+          nim c -r tests/ui/test_router_match_precedence.nim
+          nim c -r tests/ui/test_router_nested_outlet.nim
+          nim c -r tests/ui/test_router_link_navigate.nim
+          nim c -r tests/ui/test_router_popstate.nim
+          nim c -r tests/ui/test_router_query_params.nim
+          nim c -r tests/ui/test_reconciler_unkeyed.nim
+          nim c -r tests/ui/test_reconciler_keyed.nim
+          nim c -r tests/ui/test_duplicate_keys_error.nim
+          nim c -r tests/ui/test_mixed_keys_error.nim
+          nim c -r tests/ui/test_unkeyed_replace_order.nim
+          nim c -r tests/ui/test_hooks_state.nim
+          nim c -r tests/ui/test_hooks_effects.nim
+          nim c -r tests/ui/test_effect_tree_order.nim
+          nim c -r tests/ui/test_hooks_render_guard.nim
+          nim c -r tests/ui/test_runtime_error_isolation.nim
+          nim c -r tests/ui/test_fragment_portal.nim
+          nim c -r tests/ui/test_portal_mount_update_unmount.nim
+          nim c -r tests/ui/test_event_listener_cleanup.nim
+          nim c -r tests/ui/test_controlled_input_props.nim
+          nim c -r tests/ui/test_scheduler_reentrant_updates.nim
+      - name: UI wasm integration
+        run: |
+          chmod +x scripts/check_wasm_toolchain.sh scripts/build_ui_wasm.sh scripts/check_wasm_imports.sh tests/ui/test_wasm_integration.sh tests/ui/test_wasm_fail_soft.sh
+          bash tests/ui/test_wasm_integration.sh
+          bash tests/ui/test_wasm_fail_soft.sh
+
+  ui-browser:
+    name: UI Browser Matrix (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.6'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Install system toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld binaryen wasi-libc
+      - name: Build wasm fixtures
+        run: |
+          chmod +x scripts/check_wasm_toolchain.sh scripts/build_ui_wasm.sh scripts/check_wasm_imports.sh
+          mkdir -p tests/ui/out
+          bash scripts/check_wasm_toolchain.sh
+          bash scripts/build_ui_wasm.sh examples/ui/counter_app.nim tests/ui/out/counter_app.wasm
+          bash scripts/build_ui_wasm.sh examples/ui/controlled_input_app.nim tests/ui/out/controlled_input_app.wasm
+          bash scripts/build_ui_wasm.sh examples/ui/router_app.nim tests/ui/out/router_app.wasm
+          bash scripts/build_ui_wasm.sh examples/ui/test_spa_app.nim tests/ui/out/test_spa_app.wasm
+          bash scripts/build_ui_wasm.sh examples/ui/fail_soft_app.nim tests/ui/out/fail_soft_app.wasm
+      - name: Install Playwright
+        run: |
+          cd tests/ui/browser
+          npm install
+          npx playwright install --with-deps chromium firefox webkit
+      - name: Run browser integration suite
+        run: |
+          cd tests/ui/browser
+          npm test
+
+  ui-soak:
+    name: UI Soak
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.6'
+      - name: UI soak mount/unmount + route loops
+        run: |
+          nim c -r tests/ui/test_soak_mount_router_cycles.nim
