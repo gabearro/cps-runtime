@@ -852,6 +852,67 @@ nim c -r -d:useBoringSSL myapp.nim
 - **CPS procs capture block-local variables by value.** Assignments inside CPS procs write to the env copy, not the original. Pass mutable state via `ptr` or use channels/futures.
 - **Generic CPS procs**: await target variables must have explicit type annotations (e.g., `let val: T = await someFunc[T](x)`).
 
+## Testing
+
+Every component in this framework is validated by an extensive test suite. There are **210 test files** containing over **1,500 individual test assertions** spread across 10 test directories, covering every layer from the CPS macro transform up through HTTP/3 and browser interop.
+
+Tests use `assert` + `echo "PASS: ..."` with no external test framework. Each test file is self-contained and runs as a standalone binary.
+
+### Running Tests
+
+```bash
+# Core test suite (CPS runtime, macro, event loop, HTTP, compression)
+nimble test
+
+# Multi-threaded tests (must use atomicArc)
+nim c -r --mm:atomicArc tests/mt/test_mt_basic.nim
+
+# Run a single test file
+nim c -r tests/core/test_cps_core.nim
+
+# TUI tests
+nim c -r tests/tui/test_tui_core.nim
+nim c -r tests/tui/test_tui_components.nim
+nim c -r tests/tui/test_tui_events.nim
+
+# UI / WASM tests
+for f in tests/ui/test_*.nim; do nim c -r "$f"; done
+bash tests/ui/test_wasm_integration.sh
+
+# QUIC full suite (requires BoringSSL)
+nimble test_quic_core
+
+# HTTP/3 full suite (requires BoringSSL)
+nimble test_http3_core
+
+# Browser interop (Playwright -- Chromium, Firefox, WebKit)
+cd tests/ui/browser && npm test
+```
+
+### Test Coverage by Component
+
+| Directory | Test files | What's covered |
+|-----------|-----------|----------------|
+| `tests/core/` | 16 | CPS macro transform, control flow with await, try/except/finally, generics, case statements, cancellation, race/select combinators, lock-free futures, task types, event loop timers, tracing |
+| `tests/concurrency/` | 9 | Bounded/unbounded channels, broadcast channels, semaphore/mutex/event, signals, task groups (structured concurrency), async iterators, cancellation propagation |
+| `tests/io/` | 12 | TCP client/server, UDP, Unix domain sockets, buffered I/O, async files, DNS resolution, subprocess pipes, proxy tunneling (SOCKS4/4a/5, HTTP CONNECT), timeouts, graceful shutdown |
+| `tests/mt/` | 6 | Work-stealing scheduler, spawnBlocking, cross-thread future completion, I/O from worker threads, scheduler fairness, concurrent task fan-out |
+| `tests/http/` | 51 | HTTP/1.1 and HTTP/2 client and server, HPACK, connection pooling, TLS fingerprinting, WebSocket (plain + compressed + hardening), SSE (plain + compressed), chunked streaming, server DSL (111 PASS assertions), session middleware, multipart uploads, HTTP/3 frame codec, QPACK, HTTP/3 header validation, request state machine, push promises, WebTransport, MASQUE proxy, Python h2/aioquic interop, browser interop |
+| `tests/quic/` | 28 | QUIC v1+v2 codec, varint encoding, frame codec, transport params, fault injection, loss recovery/PTO, retry/restart, flow control, CID rotation, path migration, 0-RTT, key update, duplicate packet suppression, TLS handshake crypto levels, datagrams, stateless reset, Python aioquic interop |
+| `tests/tui/` | 3 | Styles/colors, cell buffer diff rendering, flexbox layout, all widget types, SplitView/ScrollableTextView/Dialog/TreeView components, hit map event routing, focus management/trapping |
+| `tests/ui/` | 64 | VDOM reconciler (keyed + unkeyed), all React hooks, error boundaries, suspense, portals, fragments, context providers, client-side router (matching, params, query strings, loaders, actions, redirects, popstate), DSL macro (all HTML/SVG/MathML tags, event rewrites), attribute validation, scheduler reentrancy, WASM integration, SSR hydration |
+| `tests/irc/` | 3 | IRC message parsing/formatting, client event state machine, XDCC pack listing |
+| `tests/gui/` | 18 | SwiftUI code generator (parser, sema, bridge generation, codegen golden tests) |
+
+### Interop Testing
+
+Protocol correctness is validated against external implementations:
+
+- **Python h2/hpack**: HTTP/2 interop tests using Python's `h2` library to verify frame-level correctness
+- **Python aioquic**: QUIC and HTTP/3 interop tests using Python's `aioquic` library
+- **Playwright**: Browser matrix testing (Chromium, Firefox, WebKit) for the WASM frontend framework and HTTP/3 Alt-Svc negotiation
+- **Cloudflare**: Live TLS fingerprint validation against Cloudflare's fingerprint detection endpoint
+
 ## Project Structure
 
 ```
