@@ -3,7 +3,7 @@
 ## Wraps OpenSSL to provide TLS encryption over TcpStream via AsyncStream vtable.
 ## Supports ALPN negotiation for HTTP/2.
 
-import std/[nativesockets, net, os, strutils, openssl]
+import std/[nativesockets, net, strutils, openssl]
 import ../runtime
 import ../eventloop
 import ../io/tcp
@@ -12,8 +12,7 @@ import ./fingerprint
 
 when defined(useBoringSSL):
   import ./boringssl
-  # Compile BoringSSL compatibility shims (SSL_CTX_ctrl, SSL_ctrl, SSL_CTX_set_ciphersuites)
-  {.compile: "boringssl_compat.c".}
+  import ./boringssl_compat
 
 # ============================================================
 # Helper: ensure a closure runs on the reactor thread
@@ -36,18 +35,25 @@ proc ensureOnReactor(cb: proc() {.closure.}) =
 # SSL_CTX_set_min/max_proto_version are macros in OpenSSL 3.x,
 # implemented via SSL_CTX_ctrl. We call ctrl directly for OpenSSL.
 # In BoringSSL these are real functions (imported via boringssl.nim).
-const SSL_CTRL_SET_MIN_PROTO_VERSION = 123.clong
-const SSL_CTRL_SET_MAX_PROTO_VERSION = 124.clong
 const TLS1_2_VERSION* = 0x0303.clong
 
 proc SSL_CTX_ctrl*(ctx: SslCtx, cmd: clong, larg: clong, parg: pointer): clong
   {.cdecl, dynlib: DLLSSLName, importc.}
 
 proc sslCtxSetMinProtoVersion(ctx: SslCtx, version: clong): bool =
-  SSL_CTX_ctrl(ctx, SSL_CTRL_SET_MIN_PROTO_VERSION, version, nil) != 0
+  when defined(useBoringSSL):
+    boringssl.SSL_CTX_set_min_proto_version(ctx, uint16(version)) != 0
+  else:
+    const SSL_CTRL_SET_MIN_PROTO_VERSION = 123.clong
+    SSL_CTX_ctrl(ctx, SSL_CTRL_SET_MIN_PROTO_VERSION, version, nil) != 0
 
-proc sslCtxSetMaxProtoVersion(ctx: SslCtx, version: clong): bool =
-  SSL_CTX_ctrl(ctx, SSL_CTRL_SET_MAX_PROTO_VERSION, version, nil) != 0
+when not defined(useBoringSSL):
+  const SSL_CTRL_SET_MAX_PROTO_VERSION = 124.clong
+  proc sslCtxSetMaxProtoVersion(ctx: SslCtx, version: clong): bool =
+    SSL_CTX_ctrl(ctx, SSL_CTRL_SET_MAX_PROTO_VERSION, version, nil) != 0
+else:
+  proc sslCtxSetMaxProtoVersion(ctx: SslCtx, version: clong): bool =
+    boringssl.SSL_CTX_set_max_proto_version(ctx, uint16(version)) != 0
 
 # SSL_CTX_set_ciphersuites for TLS 1.3 (OpenSSL 1.1.1+ / BoringSSL)
 proc SSL_CTX_set_ciphersuites*(ctx: SslCtx, str: cstring): cint
@@ -56,10 +62,9 @@ proc SSL_CTX_set_ciphersuites*(ctx: SslCtx, str: cstring): cint
 # SSL_CTX_set1_groups_list / SSL_CTX_set1_sigalgs_list
 # In OpenSSL 3.x these are macros via SSL_CTX_ctrl.
 # In BoringSSL they are real functions (imported via boringssl.nim).
-const SSL_CTRL_SET_GROUPS_LIST = 92.clong
-const SSL_CTRL_SET_SIGALGS_LIST = 98.clong
-
 when not defined(useBoringSSL):
+  const SSL_CTRL_SET_GROUPS_LIST = 92.clong
+  const SSL_CTRL_SET_SIGALGS_LIST = 98.clong
   proc SSL_CTX_set1_groups_list*(ctx: SslCtx, list: cstring): clong =
     SSL_CTX_ctrl(ctx, SSL_CTRL_SET_GROUPS_LIST, 0, cast[pointer](list))
   proc SSL_CTX_set1_sigalgs_list*(ctx: SslCtx, str: cstring): clong =
@@ -123,7 +128,8 @@ proc tlsStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
   proc doSend() =
     while sent < totalLen:
       let remaining = totalLen - sent
-      let ret = SSL_write(tls.ssl, unsafeAddr data[sent], remaining.cint)
+      let writePtr = cast[cstring](unsafeAddr data[sent])
+      let ret = SSL_write(tls.ssl, writePtr, remaining.cint)
       if ret > 0:
         sent += ret
       else:
@@ -182,12 +188,8 @@ proc newTlsStream*(tcpStream: TcpStream, hostname: string,
     # Apply fingerprint profile
 
     # Version control
-    when defined(useBoringSSL):
-      discard boringssl.SSL_CTX_set_min_proto_version(ctx, fp.minVersion)
-      discard boringssl.SSL_CTX_set_max_proto_version(ctx, fp.maxVersion)
-    else:
-      discard sslCtxSetMinProtoVersion(ctx, fp.minVersion.clong)
-      discard sslCtxSetMaxProtoVersion(ctx, fp.maxVersion.clong)
+    discard sslCtxSetMinProtoVersion(ctx, fp.minVersion.clong)
+    discard sslCtxSetMaxProtoVersion(ctx, fp.maxVersion.clong)
 
     # Cipher suites (TLS 1.2) — works in both OpenSSL and BoringSSL
     if fp.cipherList.len > 0:

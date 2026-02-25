@@ -1,0 +1,31 @@
+component Root {
+  Text("Macro Fixture")
+}
+
+app MacroFixture {
+  state {
+    count: Int = 0
+  }
+
+  action Increment owner swift
+  action Refresh owner nim
+  action Sync owner both
+
+  reducer {
+    on Increment {
+      set count = count + 1
+    }
+
+    on Refresh {
+      set count = count + 2
+    }
+
+    on Sync {
+      set count = count + 3
+    }
+  }
+
+  bridge {
+    nimEntry: "bridge.nim"
+  }
+}

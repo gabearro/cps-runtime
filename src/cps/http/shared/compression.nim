@@ -271,31 +271,45 @@ proc rawDeflateCompress*(data: string, level: CompressionLevel = clDefault): str
   if rc != Z_OK:
     raise newException(CompressionError, "deflateInit2 failed for raw deflate: " & $rc)
 
-  let outBufSize = data.len + 256
-  var outBuf = newString(outBufSize)
+  let chunkSize = 16 * 1024
+  var outChunk = newString(chunkSize)
+  var output = newStringOfCap(data.len + 256)
   strm.next_in = if data.len > 0: cast[ptr uint8](unsafeAddr data[0]) else: nil
   strm.avail_in = cuint(data.len)
-  strm.next_out = cast[ptr uint8](addr outBuf[0])
-  strm.avail_out = cuint(outBufSize)
 
-  let drc = deflate(addr strm, Z_SYNC_FLUSH)
-  if drc != Z_OK and drc != Z_BUF_ERROR:
-    discard deflateEnd(addr strm)
-    raise newException(CompressionError, "deflate failed for raw deflate: " & $drc)
+  while true:
+    strm.next_out = cast[ptr uint8](addr outChunk[0])
+    strm.avail_out = cuint(chunkSize)
+    let drc = deflate(addr strm, Z_SYNC_FLUSH)
+    if drc != Z_OK and drc != Z_BUF_ERROR and drc != Z_STREAM_END:
+      discard deflateEnd(addr strm)
+      raise newException(CompressionError, "deflate failed for raw deflate: " & $drc)
 
-  let produced = outBufSize - strm.avail_out.int
+    let produced = chunkSize - strm.avail_out.int
+    if produced > 0:
+      output.add outChunk[0 ..< produced]
+
+    # Done when all input has been consumed and the output buffer was not filled.
+    if strm.avail_in == 0 and strm.avail_out > 0:
+      break
+
+    # No progress indicates a malformed zlib state.
+    if produced == 0 and strm.avail_in > 0 and strm.avail_out > 0:
+      discard deflateEnd(addr strm)
+      raise newException(CompressionError, "deflate made no progress for raw deflate")
+
   discard deflateEnd(addr strm)
 
   # Strip trailing 0x00 0x00 0xFF 0xFF per RFC 7692
-  if produced >= 4 and
-     outBuf[produced - 4].byte == 0x00 and outBuf[produced - 3].byte == 0x00 and
-     outBuf[produced - 2].byte == 0xFF and outBuf[produced - 1].byte == 0xFF:
-    result = outBuf[0 ..< produced - 4]
-  else:
-    result = outBuf[0 ..< produced]
+  if output.len >= 4 and
+     output[output.len - 4].byte == 0x00 and output[output.len - 3].byte == 0x00 and
+     output[output.len - 2].byte == 0xFF and output[output.len - 1].byte == 0xFF:
+    output.setLen(output.len - 4)
+  result = output
 
-proc rawDeflateDecompress*(data: string): string =
+proc rawDeflateDecompressLimited*(data: string, maxOutputBytes: int = -1): string =
   ## Decompress raw deflate data, appending 0x00 0x00 0xFF 0xFF tail per RFC 7692.
+  ## When maxOutputBytes > 0, fails if decompressed output would exceed that limit.
   var withTail = data
   withTail.add '\x00'
   withTail.add '\x00'
@@ -308,28 +322,50 @@ proc rawDeflateDecompress*(data: string): string =
   if rc != Z_OK:
     raise newException(CompressionError, "inflateInit2 failed for raw deflate: " & $rc)
 
-  let outBufSize = data.len * 4 + 256
-  var outBuf = newString(outBufSize)
-  var output = ""
+  let chunkSize = 16 * 1024
+  var outChunk = newString(chunkSize)
+  var output =
+    if maxOutputBytes > 0:
+      newStringOfCap(min(maxOutputBytes, chunkSize))
+    else:
+      newStringOfCap(max(data.len * 2, chunkSize))
 
   strm.next_in = cast[ptr uint8](unsafeAddr withTail[0])
   strm.avail_in = cuint(withTail.len)
 
-  while strm.avail_in > 0:
-    strm.next_out = cast[ptr uint8](addr outBuf[0])
-    strm.avail_out = cuint(outBufSize)
+  while true:
+    strm.next_out = cast[ptr uint8](addr outChunk[0])
+    strm.avail_out = cuint(chunkSize)
     let irc = inflate(addr strm, Z_NO_FLUSH)
     if irc != Z_OK and irc != Z_STREAM_END and irc != Z_BUF_ERROR:
       discard inflateEnd(addr strm)
       raise newException(CompressionError, "inflate failed for raw deflate: " & $irc)
-    let produced = outBufSize - strm.avail_out.int
+
+    let produced = chunkSize - strm.avail_out.int
     if produced > 0:
-      output.add outBuf[0 ..< produced]
+      if maxOutputBytes > 0 and output.len + produced > maxOutputBytes:
+        discard inflateEnd(addr strm)
+        raise newException(CompressionError, "raw deflate output exceeds configured max size")
+      output.add outChunk[0 ..< produced]
+
     if irc == Z_STREAM_END:
       break
 
+    # For permessage-deflate, a sync-flush terminated block can complete
+    # without reaching Z_STREAM_END once all input is consumed.
+    if strm.avail_in == 0:
+      break
+
+    # If input remains but inflate cannot make progress, the stream is invalid.
+    if produced == 0 and strm.avail_out > 0:
+      discard inflateEnd(addr strm)
+      raise newException(CompressionError, "inflate made no progress for raw deflate")
+
   discard inflateEnd(addr strm)
   result = output
+
+proc rawDeflateDecompress*(data: string): string =
+  rawDeflateDecompressLimited(data, -1)
 
 # ============================================================
 # zstd FFI (optional, compile with -d:useZstd)

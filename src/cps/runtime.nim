@@ -18,6 +18,13 @@ type
   CancellationError* = object of CatchableError
     ## Raised when a future or task is cancelled.
 
+  CpsContractError* = object of CatchableError
+    ## Raised when CPS-generated code violates required control-flow contracts.
+
+  FuturePerfMode* = enum
+    fpSharedSafe
+    fpLocalFast
+
   ContinuationState* = enum
     csRunning    ## Currently executing
     csSuspended  ## Waiting for external event (I/O, timer, etc.)
@@ -51,6 +58,7 @@ type
     schedulerPtr*: RootRef
     blockingPoolPtr*: RootRef
     callbackDispatcher*: proc(cb: proc() {.closure.}) {.closure, gcsafe.}
+    pinnedCallbackDispatcher*: proc(workerId: int, cb: proc() {.closure.}): bool {.closure, gcsafe.}
     yieldDispatcher*: proc(cb: proc() {.closure, gcsafe.}) {.closure, gcsafe.}
     wakeReactor*: proc() {.closure, gcsafe.}
     waitWakeSeq: Atomic[uint64]
@@ -85,12 +93,18 @@ type
   CpsFuture*[T] = ref object
     ## A future value produced by a CPS computation.
     ## Uses atomic state + lock-free callback stack.
+    perfMode: FuturePerfMode
     value: T
     error: ref CatchableError
     atomicState: Atomic[int]      ## 0=pending, 1=done, 2=cancelled, 3=completing, 4=cancelling
     callbackHead: Atomic[pointer]
     inlineCallback: proc() {.closure.}
     inlineTargetRuntime: CpsRuntime
+    localState: int
+    localOwnerThreadToken: pointer
+    localOwnerSchedulerPtr: pointer
+    localOwnerWorkerId: int
+    localCallbacks: seq[CallbackThunk]
     ownerRuntime*: CpsRuntime
     runtimePinned: Atomic[bool]
     rootContinuationPtr: pointer
@@ -98,11 +112,17 @@ type
   CpsVoidFuture* = ref object
     ## A future for void-returning CPS computations.
     ## Uses atomic state + lock-free callback stack.
+    perfMode: FuturePerfMode
     error: ref CatchableError
     atomicState: Atomic[int]      ## 0=pending, 1=done, 2=cancelled, 3=completing, 4=cancelling
     callbackHead: Atomic[pointer]
     inlineCallback: proc() {.closure.}
     inlineTargetRuntime: CpsRuntime
+    localState: int
+    localOwnerThreadToken: pointer
+    localOwnerSchedulerPtr: pointer
+    localOwnerWorkerId: int
+    localCallbacks: seq[CallbackThunk]
     ownerRuntime*: CpsRuntime
     runtimePinned: Atomic[bool]
     rootContinuationPtr: pointer
@@ -133,6 +153,15 @@ type
 
 proc isTerminalFutureState(state: int): bool {.inline.} =
   state == FutureStateDone or state == FutureStateCancelled
+
+proc ensureLocalAffinity[T](fut: CpsFuture[T], opName: string) {.inline.}
+proc ensureLocalAffinity(fut: CpsVoidFuture, opName: string) {.inline.}
+proc ensureShared*[T](fut: CpsFuture[T])
+proc ensureShared*(fut: CpsVoidFuture)
+proc complete*[T](fut: CpsFuture[T], val: T)
+proc complete*(fut: CpsVoidFuture)
+proc fail*[T](fut: CpsFuture[T], err: ref CatchableError)
+proc fail*(fut: CpsVoidFuture, err: ref CatchableError)
 
 var rtCompletions: Atomic[int]
 var rtFailures: Atomic[int]
@@ -198,6 +227,7 @@ var mtCallbackDispatcher*: proc(cb: proc() {.closure.}) {.closure, gcsafe.} = ni
 var mtYieldDispatcher*: proc(cb: proc() {.closure, gcsafe.}) {.closure, gcsafe.} = nil
 var mtWakeReactor*: proc() {.closure, gcsafe.} = nil
 var isSchedulerWorker* {.threadvar.}: bool
+var currentWorkerId* {.threadvar.}: int
 var isReactorThread* {.threadvar.}: bool
 
 proc ensureRuntimeLockReady() {.inline.} =
@@ -259,6 +289,8 @@ proc runtimeFlavor*(h: RuntimeHandle): RuntimeFlavor {.inline.} =
 
 proc setCurrentRuntime*(rt: CpsRuntime) =
   currentRuntimeCtx = rt
+  if not isSchedulerWorker:
+    currentWorkerId = -1
   applyCompatMtHooks(rt)
 
 proc tryCurrentRuntime*(): RuntimeHandle =
@@ -272,6 +304,7 @@ proc newCurrentThreadRuntime*(): CpsRuntime =
   result.schedulerPtr = nil
   result.blockingPoolPtr = nil
   result.callbackDispatcher = nil
+  result.pinnedCallbackDispatcher = nil
   result.yieldDispatcher = nil
   result.wakeReactor = nil
   result.waitInitState.store(0, moRelaxed)
@@ -391,6 +424,9 @@ proc runCpsWaitLeave*() {.inline.} =
   runCpsWaitLeave(currentRuntime().runtime)
 
 proc waitRunCpsSignal*[T](rt: CpsRuntime, fut: CpsFuture[T]) =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("waitRunCpsSignal")
+    return
   if rt == nil:
     return
   var seenSeq = rt.waitWakeSeq.load(moAcquire)
@@ -409,6 +445,9 @@ proc waitRunCpsSignal*[T](rt: CpsRuntime, fut: CpsFuture[T]) =
       spins = 32
 
 proc waitRunCpsSignal*(rt: CpsRuntime, fut: CpsVoidFuture) =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("waitRunCpsSignal")
+    return
   if rt == nil:
     return
   var seenSeq = rt.waitWakeSeq.load(moAcquire)
@@ -529,43 +568,219 @@ proc runUntilSuspend*(c: sink Continuation): Continuation =
 # CpsFuture[T] operations
 # ============================================================
 
+const SharedFuturesOnly = defined(cpsSharedFuturesOnly)
+
+proc currentThreadToken(): pointer {.inline.} =
+  cast[pointer](addr currentRuntimeCtx)
+
+proc captureLocalOwner[T](fut: CpsFuture[T]) {.inline.} =
+  fut.localOwnerThreadToken = currentThreadToken()
+  fut.localOwnerSchedulerPtr = currentSchedulerPtr
+  fut.localOwnerWorkerId = if isSchedulerWorker: currentWorkerId else: -1
+
+proc captureLocalOwner(fut: CpsVoidFuture) {.inline.} =
+  fut.localOwnerThreadToken = currentThreadToken()
+  fut.localOwnerSchedulerPtr = currentSchedulerPtr
+  fut.localOwnerWorkerId = if isSchedulerWorker: currentWorkerId else: -1
+
+proc localAffinityOk[T](fut: CpsFuture[T]): bool {.inline.} =
+  if fut.localOwnerThreadToken != currentThreadToken():
+    return false
+  if fut.localOwnerSchedulerPtr != nil:
+    if not isSchedulerWorker:
+      return false
+    if currentSchedulerPtr != fut.localOwnerSchedulerPtr:
+      return false
+    if currentWorkerId != fut.localOwnerWorkerId:
+      return false
+  result = true
+
+proc localAffinityOk(fut: CpsVoidFuture): bool {.inline.} =
+  if fut.localOwnerThreadToken != currentThreadToken():
+    return false
+  if fut.localOwnerSchedulerPtr != nil:
+    if not isSchedulerWorker:
+      return false
+    if currentSchedulerPtr != fut.localOwnerSchedulerPtr:
+      return false
+    if currentWorkerId != fut.localOwnerWorkerId:
+      return false
+  result = true
+
+proc tryHopLocalOpToOwner[T](fut: CpsFuture[T], op: proc() {.closure.}): bool {.inline.} =
+  let rt = fut.ownerRuntime
+  if rt == nil or rt.pinnedCallbackDispatcher == nil or fut.localOwnerWorkerId < 0:
+    return false
+  GC_ref(fut)
+  let accepted = rt.pinnedCallbackDispatcher(fut.localOwnerWorkerId, proc() {.closure.} =
+    try:
+      op()
+    finally:
+      GC_unref(fut)
+  )
+  if not accepted:
+    GC_unref(fut)
+  result = accepted
+
+proc tryHopLocalOpToOwner(fut: CpsVoidFuture, op: proc() {.closure.}): bool {.inline.} =
+  let rt = fut.ownerRuntime
+  if rt == nil or rt.pinnedCallbackDispatcher == nil or fut.localOwnerWorkerId < 0:
+    return false
+  GC_ref(fut)
+  let accepted = rt.pinnedCallbackDispatcher(fut.localOwnerWorkerId, proc() {.closure.} =
+    try:
+      op()
+    finally:
+      GC_unref(fut)
+  )
+  if not accepted:
+    GC_unref(fut)
+  result = accepted
+
+proc raiseLocalAffinityViolation(opName: string) {.noinline.} =
+  let msg = "local-fast future " & opName &
+    " on a foreign thread/worker; call ensureShared() before crossing runtime/thread boundaries"
+  when defined(release):
+    raise newException(RuntimeAffinityError, msg)
+  else:
+    raise newException(Defect, msg)
+
+proc ensureLocalAffinity[T](fut: CpsFuture[T], opName: string) {.inline.} =
+  if not fut.localAffinityOk():
+    raiseLocalAffinityViolation(opName)
+
+proc ensureLocalAffinity(fut: CpsVoidFuture, opName: string) {.inline.} =
+  if not fut.localAffinityOk():
+    raiseLocalAffinityViolation(opName)
+
+proc localTerminalState(state: int): bool {.inline.} =
+  state == FutureStateDone or state == FutureStateCancelled
+
+proc isLocalFast*[T](fut: CpsFuture[T]): bool {.inline.} =
+  fut.perfMode == fpLocalFast
+
+proc isLocalFast*(fut: CpsVoidFuture): bool {.inline.} =
+  fut.perfMode == fpLocalFast
+
+proc isSharedSafe*[T](fut: CpsFuture[T]): bool {.inline.} =
+  fut.perfMode == fpSharedSafe
+
+proc isSharedSafe*(fut: CpsVoidFuture): bool {.inline.} =
+  fut.perfMode == fpSharedSafe
+
 proc newCpsFuture*[T](): CpsFuture[T] =
   result = CpsFuture[T]()
   # Atomic[int] zero-initializes to 0 (pending). No lock needed.
+  result.perfMode = fpSharedSafe
+  result.localState = FutureStatePending
+  result.localOwnerWorkerId = -1
   result.ownerRuntime = nil
 
 proc newCpsVoidFuture*(): CpsVoidFuture =
   result = CpsVoidFuture()
   # Atomic[int] zero-initializes to 0 (pending). No lock needed.
+  result.perfMode = fpSharedSafe
+  result.localState = FutureStatePending
+  result.localOwnerWorkerId = -1
   result.ownerRuntime = nil
+
+proc newLocalCpsFuture*[T](): CpsFuture[T] =
+  when SharedFuturesOnly:
+    result = newCpsFuture[T]()
+  else:
+    let fastRt = currentRuntimeCtx
+    let rt =
+      if fastRt != nil:
+        fastRt
+      else:
+        let mainRt = loadMainRuntimeFast()
+        if mainRt != nil: mainRt else: ensureMainRuntime()
+    if rt != nil and rt.flavor == rfMultiThread and
+       (not isSchedulerWorker or currentSchedulerPtr == nil):
+      return newCpsFuture[T]()
+    result = CpsFuture[T]()
+    result.perfMode = fpLocalFast
+    result.localState = FutureStatePending
+    result.captureLocalOwner()
+    result.ownerRuntime = rt
+
+proc newLocalCpsVoidFuture*(): CpsVoidFuture =
+  when SharedFuturesOnly:
+    result = newCpsVoidFuture()
+  else:
+    let fastRt = currentRuntimeCtx
+    let rt =
+      if fastRt != nil:
+        fastRt
+      else:
+        let mainRt = loadMainRuntimeFast()
+        if mainRt != nil: mainRt else: ensureMainRuntime()
+    if rt != nil and rt.flavor == rfMultiThread and
+       (not isSchedulerWorker or currentSchedulerPtr == nil):
+      return newCpsVoidFuture()
+    result = CpsVoidFuture()
+    result.perfMode = fpLocalFast
+    result.localState = FutureStatePending
+    result.captureLocalOwner()
+    result.ownerRuntime = rt
+
+proc completedLocalFuture*[T](val: T): CpsFuture[T] =
+  result = newLocalCpsFuture[T]()
+  complete(result, val)
+
+proc completedLocalVoidFuture*(): CpsVoidFuture =
+  result = newLocalCpsVoidFuture()
+  complete(result)
+
+proc failedLocalFuture*[T](err: ref CatchableError): CpsFuture[T] =
+  result = newLocalCpsFuture[T]()
+  fail(result, err)
+
+proc failedLocalVoidFuture*(err: ref CatchableError): CpsVoidFuture =
+  result = newLocalCpsVoidFuture()
+  fail(result, err)
 
 proc completedFuture*[T](val: T): CpsFuture[T] =
   ## Create a future that is already completed with a value.
   ## Uses relaxed store (no CAS needed since the future hasn't been shared yet).
-  result = CpsFuture[T](value: val, ownerRuntime: nil)
+  result = CpsFuture[T](value: val, ownerRuntime: nil, perfMode: fpSharedSafe,
+                        localState: FutureStateDone, localOwnerWorkerId: -1)
   result.atomicState.store(FutureStateDone, moRelaxed)
+  result.callbackHead.store(CallbackClosed, moRelaxed)
 
 proc completedVoidFuture*(): CpsVoidFuture =
   ## Create a void future that is already completed.
-  result = CpsVoidFuture(ownerRuntime: nil)
+  result = CpsVoidFuture(ownerRuntime: nil, perfMode: fpSharedSafe,
+                         localState: FutureStateDone, localOwnerWorkerId: -1)
   result.atomicState.store(FutureStateDone, moRelaxed)
+  result.callbackHead.store(CallbackClosed, moRelaxed)
 
 proc failedFuture*[T](err: ref CatchableError): CpsFuture[T] =
   ## Create a future that is already failed with an error.
-  result = CpsFuture[T](error: err, ownerRuntime: nil)
+  result = CpsFuture[T](error: err, ownerRuntime: nil, perfMode: fpSharedSafe,
+                        localState: FutureStateDone, localOwnerWorkerId: -1)
   result.atomicState.store(FutureStateDone, moRelaxed)
+  result.callbackHead.store(CallbackClosed, moRelaxed)
 
 proc failedVoidFuture*(err: ref CatchableError): CpsVoidFuture =
   ## Create a void future that is already failed with an error.
-  result = CpsVoidFuture(error: err, ownerRuntime: nil)
+  result = CpsVoidFuture(error: err, ownerRuntime: nil, perfMode: fpSharedSafe,
+                         localState: FutureStateDone, localOwnerWorkerId: -1)
   result.atomicState.store(FutureStateDone, moRelaxed)
+  result.callbackHead.store(CallbackClosed, moRelaxed)
 
 proc finished*[T](fut: CpsFuture[T]): bool {.inline.} =
   ## Check if the future has completed (successfully or with error).
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("finished")
+    return localTerminalState(fut.localState)
   isTerminalFutureState(fut.atomicState.load(moAcquire))
 
 proc finished*(fut: CpsVoidFuture): bool {.inline.} =
   ## Check if the void future has completed (successfully or with error).
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("finished")
+    return localTerminalState(fut.localState)
   isTerminalFutureState(fut.atomicState.load(moAcquire))
 
 proc ownerRuntimeRef[T](fut: CpsFuture[T]): CpsRuntime {.inline.} =
@@ -581,9 +796,17 @@ proc futureRuntime*(fut: CpsVoidFuture): RuntimeHandle {.inline.} =
   toHandle(ownerRuntimeRef(fut))
 
 proc bindFutureRuntime*[T](fut: CpsFuture[T], handle: RuntimeHandle) {.inline.} =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("bindFutureRuntime")
+    if handle.runtime != fut.ownerRuntime:
+      fut.ensureShared()
   fut.ownerRuntime = handle.runtime
 
 proc bindFutureRuntime*(fut: CpsVoidFuture, handle: RuntimeHandle) {.inline.} =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("bindFutureRuntime")
+    if handle.runtime != fut.ownerRuntime:
+      fut.ensureShared()
   fut.ownerRuntime = handle.runtime
 
 proc setFutureRootContinuation*[T](fut: CpsFuture[T], c: Continuation) {.inline.} =
@@ -597,6 +820,8 @@ proc setFutureRootContinuation*(fut: CpsVoidFuture, c: Continuation) {.inline.} 
     fut.ownerRuntime = c.runtimeOwner
 
 proc pinFutureRuntime*[T](fut: CpsFuture[T]) {.inline.} =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("pinFutureRuntime")
   if fut.ownerRuntime == nil:
     let rt = currentRuntimeCtx
     if rt != nil:
@@ -610,6 +835,8 @@ proc pinFutureRuntime*[T](fut: CpsFuture[T]) {.inline.} =
   fut.runtimePinned.store(true, moRelease)
 
 proc pinFutureRuntime*(fut: CpsVoidFuture) {.inline.} =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("pinFutureRuntime")
   if fut.ownerRuntime == nil:
     let rt = currentRuntimeCtx
     if rt != nil:
@@ -629,6 +856,8 @@ proc isRuntimePinned*(fut: CpsVoidFuture): bool {.inline.} =
   fut.runtimePinned.load(moAcquire)
 
 proc tryMigrateTo*[T](fut: CpsFuture[T], handle: RuntimeHandle): bool =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureShared()
   if handle.runtime == nil:
     return false
   if fut.isRuntimePinned():
@@ -640,6 +869,8 @@ proc tryMigrateTo*[T](fut: CpsFuture[T], handle: RuntimeHandle): bool =
   result = true
 
 proc tryMigrateTo*(fut: CpsVoidFuture, handle: RuntimeHandle): bool =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureShared()
   if handle.runtime == nil:
     return false
   if fut.isRuntimePinned():
@@ -665,6 +896,40 @@ proc migrateTo*(fut: CpsVoidFuture, handle: RuntimeHandle) =
 proc isCurrentRuntimeWorker(rt: CpsRuntime): bool {.inline.} =
   rt != nil and isSchedulerWorker and currentSchedulerPtr != nil and
     currentSchedulerPtr == cast[pointer](rt.schedulerPtr)
+
+proc schedulePinnedLocalCallback[T](fut: CpsFuture[T], targetRt: CpsRuntime,
+                                    cb: proc() {.closure.}): bool {.inline.} =
+  if targetRt == nil or cb == nil:
+    return false
+  if targetRt.pinnedCallbackDispatcher == nil:
+    return false
+  if fut.localOwnerSchedulerPtr == nil:
+    return false
+  if targetRt != fut.ownerRuntime:
+    return false
+  let onOwnerWorker = isSchedulerWorker and
+    currentSchedulerPtr == fut.localOwnerSchedulerPtr and
+    currentWorkerId == fut.localOwnerWorkerId
+  if onOwnerWorker:
+    return false
+  targetRt.pinnedCallbackDispatcher(fut.localOwnerWorkerId, cb)
+
+proc schedulePinnedLocalCallback(fut: CpsVoidFuture, targetRt: CpsRuntime,
+                                 cb: proc() {.closure.}): bool {.inline.} =
+  if targetRt == nil or cb == nil:
+    return false
+  if targetRt.pinnedCallbackDispatcher == nil:
+    return false
+  if fut.localOwnerSchedulerPtr == nil:
+    return false
+  if targetRt != fut.ownerRuntime:
+    return false
+  let onOwnerWorker = isSchedulerWorker and
+    currentSchedulerPtr == fut.localOwnerSchedulerPtr and
+    currentWorkerId == fut.localOwnerWorkerId
+  if onOwnerWorker:
+    return false
+  targetRt.pinnedCallbackDispatcher(fut.localOwnerWorkerId, cb)
 
 proc dispatchCallback(rt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
   ## Fire a single callback on the target runtime, dispatching to workers
@@ -798,6 +1063,102 @@ proc fireCallbacks(fut: CpsVoidFuture, head: pointer) {.inline.} =
   if firstErr != nil:
     raise firstErr
 
+proc fireLocalCallback[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
+  if cb == nil:
+    return
+  if targetRt == nil:
+    cb()
+    return
+  if fut.schedulePinnedLocalCallback(targetRt, cb):
+    return
+  dispatchCallback(targetRt, cb)
+
+proc fireLocalCallback(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
+  if cb == nil:
+    return
+  if targetRt == nil:
+    cb()
+    return
+  if fut.schedulePinnedLocalCallback(targetRt, cb):
+    return
+  dispatchCallback(targetRt, cb)
+
+proc fireLocalCallbacks[T](fut: CpsFuture[T]) =
+  if fut.localCallbacks.len == 0:
+    let inlineCb = fut.inlineCallback
+    if inlineCb == nil:
+      return
+    let inlineRt = fut.inlineTargetRuntime
+    fut.inlineCallback = nil
+    fut.inlineTargetRuntime = nil
+    fut.fireLocalCallback(inlineRt, inlineCb)
+    return
+
+  var firstErr: ref CatchableError = nil
+  if fut.localCallbacks.len > 0:
+    var i = fut.localCallbacks.len - 1
+    while true:
+      let thunk = fut.localCallbacks[i]
+      try:
+        if thunk != nil:
+          fut.fireLocalCallback(thunk.targetRuntime, thunk.cb)
+      except CatchableError as e:
+        if firstErr == nil:
+          firstErr = e
+      if i == 0:
+        break
+      dec i
+    fut.localCallbacks.setLen(0)
+  let inlineCb = fut.inlineCallback
+  let inlineRt = fut.inlineTargetRuntime
+  fut.inlineCallback = nil
+  fut.inlineTargetRuntime = nil
+  try:
+    fut.fireLocalCallback(inlineRt, inlineCb)
+  except CatchableError as e:
+    if firstErr == nil:
+      firstErr = e
+  if firstErr != nil:
+    raise firstErr
+
+proc fireLocalCallbacks(fut: CpsVoidFuture) =
+  if fut.localCallbacks.len == 0:
+    let inlineCb = fut.inlineCallback
+    if inlineCb == nil:
+      return
+    let inlineRt = fut.inlineTargetRuntime
+    fut.inlineCallback = nil
+    fut.inlineTargetRuntime = nil
+    fut.fireLocalCallback(inlineRt, inlineCb)
+    return
+
+  var firstErr: ref CatchableError = nil
+  if fut.localCallbacks.len > 0:
+    var i = fut.localCallbacks.len - 1
+    while true:
+      let thunk = fut.localCallbacks[i]
+      try:
+        if thunk != nil:
+          fut.fireLocalCallback(thunk.targetRuntime, thunk.cb)
+      except CatchableError as e:
+        if firstErr == nil:
+          firstErr = e
+      if i == 0:
+        break
+      dec i
+    fut.localCallbacks.setLen(0)
+  let inlineCb = fut.inlineCallback
+  let inlineRt = fut.inlineTargetRuntime
+  fut.inlineCallback = nil
+  fut.inlineTargetRuntime = nil
+  try:
+    fut.fireLocalCallback(inlineRt, inlineCb)
+  except CatchableError as e:
+    if firstErr == nil:
+      firstErr = e
+  if firstErr != nil:
+    raise firstErr
+
 proc wakeReactorIfNeeded(rt: CpsRuntime) {.inline.} =
   if rt != nil and rt.wakeReactor != nil:
     rt.wakeReactor()
@@ -810,6 +1171,24 @@ proc wakeRunCpsWaitersIfNeeded(rt: CpsRuntime) {.inline.} =
     discard rt.waitWakeSeq.fetchAdd(1'u64, moAcquireRelease)
 
 proc complete*[T](fut: CpsFuture[T], val: T) =
+  if fut.perfMode == fpLocalFast:
+    if not fut.localAffinityOk():
+      let localVal = val
+      if fut.tryHopLocalOpToOwner(proc() {.closure.} =
+        complete(fut, localVal)
+      ):
+        return
+      raiseLocalAffinityViolation("complete")
+    if fut.localState != FutureStatePending:
+      return
+    fut.value = val
+    fut.localState = FutureStateDone
+    fut.rootContinuationPtr = nil
+    statInc(rtCompletions)
+    fut.fireLocalCallbacks()
+    wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
+    wakeReactorIfNeeded(ownerRuntimeRef(fut))
+    return
   ## Complete a typed future with a value. Lock-free.
   ## 1. CAS state pending→completing (exclusive ownership)
   ## 2. Write payload
@@ -827,6 +1206,22 @@ proc complete*[T](fut: CpsFuture[T], val: T) =
   wakeReactorIfNeeded(ownerRuntimeRef(fut))
 
 proc complete*(fut: CpsVoidFuture) =
+  if fut.perfMode == fpLocalFast:
+    if not fut.localAffinityOk():
+      if fut.tryHopLocalOpToOwner(proc() {.closure.} =
+        complete(fut)
+      ):
+        return
+      raiseLocalAffinityViolation("complete")
+    if fut.localState != FutureStatePending:
+      return
+    fut.localState = FutureStateDone
+    fut.rootContinuationPtr = nil
+    statInc(rtCompletions)
+    fut.fireLocalCallbacks()
+    wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
+    wakeReactorIfNeeded(ownerRuntimeRef(fut))
+    return
   ## Complete a void future. Lock-free.
   var expected = FutureStatePending
   if not fut.atomicState.compareExchange(expected, FutureStateCompleting, moAcquireRelease, moAcquire):
@@ -839,6 +1234,24 @@ proc complete*(fut: CpsVoidFuture) =
   wakeReactorIfNeeded(ownerRuntimeRef(fut))
 
 proc fail*[T](fut: CpsFuture[T], err: ref CatchableError) =
+  if fut.perfMode == fpLocalFast:
+    if not fut.localAffinityOk():
+      let localErr = err
+      if fut.tryHopLocalOpToOwner(proc() {.closure.} =
+        fail(fut, localErr)
+      ):
+        return
+      raiseLocalAffinityViolation("fail")
+    if fut.localState != FutureStatePending:
+      return
+    fut.error = err
+    fut.localState = FutureStateDone
+    fut.rootContinuationPtr = nil
+    statInc(rtFailures)
+    fut.fireLocalCallbacks()
+    wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
+    wakeReactorIfNeeded(ownerRuntimeRef(fut))
+    return
   ## Fail a typed future with an error. Lock-free.
   var expected = FutureStatePending
   if not fut.atomicState.compareExchange(expected, FutureStateCompleting, moAcquireRelease, moAcquire):
@@ -852,6 +1265,24 @@ proc fail*[T](fut: CpsFuture[T], err: ref CatchableError) =
   wakeReactorIfNeeded(ownerRuntimeRef(fut))
 
 proc fail*(fut: CpsVoidFuture, err: ref CatchableError) =
+  if fut.perfMode == fpLocalFast:
+    if not fut.localAffinityOk():
+      let localErr = err
+      if fut.tryHopLocalOpToOwner(proc() {.closure.} =
+        fail(fut, localErr)
+      ):
+        return
+      raiseLocalAffinityViolation("fail")
+    if fut.localState != FutureStatePending:
+      return
+    fut.error = err
+    fut.localState = FutureStateDone
+    fut.rootContinuationPtr = nil
+    statInc(rtFailures)
+    fut.fireLocalCallbacks()
+    wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
+    wakeReactorIfNeeded(ownerRuntimeRef(fut))
+    return
   ## Fail a void future with an error. Lock-free.
   var expected = FutureStatePending
   if not fut.atomicState.compareExchange(expected, FutureStateCompleting, moAcquireRelease, moAcquire):
@@ -865,18 +1296,28 @@ proc fail*(fut: CpsVoidFuture, err: ref CatchableError) =
   wakeReactorIfNeeded(ownerRuntimeRef(fut))
 
 proc hasError*[T](fut: CpsFuture[T]): bool {.inline.} =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("hasError")
   fut.error != nil
 
 proc hasError*(fut: CpsVoidFuture): bool {.inline.} =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("hasError")
   fut.error != nil
 
 proc getError*[T](fut: CpsFuture[T]): ref CatchableError {.inline.} =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("getError")
   fut.error
 
 proc getError*(fut: CpsVoidFuture): ref CatchableError {.inline.} =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("getError")
   fut.error
 
 proc read*[T](fut: CpsFuture[T]): T =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("read")
   assert fut.finished, "Future not yet completed"
   if fut.error != nil:
     raise fut.error
@@ -897,6 +1338,18 @@ proc defaultCallbackRuntime(): CpsRuntime {.inline.} =
   result = loadMainRuntimeFast()
 
 proc addCallbackOnRuntime[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("addCallback")
+    statInc(rtCallbacksRegistered)
+    if fut.localState != FutureStatePending:
+      fut.fireLocalCallback(targetRt, cb)
+      return
+    if fut.inlineCallback == nil and fut.localCallbacks.len == 0:
+      fut.inlineCallback = cb
+      fut.inlineTargetRuntime = targetRt
+      return
+    fut.localCallbacks.add CallbackThunk(cb: cb, targetRuntime: targetRt)
+    return
   statInc(rtCallbacksRegistered)
   while true:
     let head = fut.callbackHead.load(moAcquire)
@@ -971,6 +1424,18 @@ proc addCallbackOnRuntime[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc()
       cpuRelax()
 
 proc addCallbackOnRuntime(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("addCallback")
+    statInc(rtCallbacksRegistered)
+    if fut.localState != FutureStatePending:
+      fut.fireLocalCallback(targetRt, cb)
+      return
+    if fut.inlineCallback == nil and fut.localCallbacks.len == 0:
+      fut.inlineCallback = cb
+      fut.inlineTargetRuntime = targetRt
+      return
+    fut.localCallbacks.add CallbackThunk(cb: cb, targetRuntime: targetRt)
+    return
   statInc(rtCallbacksRegistered)
   while true:
     let head = fut.callbackHead.load(moAcquire)
@@ -1056,19 +1521,110 @@ proc addCallback*[T](fut: CpsFuture[T], cb: proc() {.closure.}) {.inline.} =
 proc addCallback*(fut: CpsVoidFuture, cb: proc() {.closure.}) {.inline.} =
   addCallbackOnRuntime(fut, defaultCallbackRuntime(), cb)
 
+proc ensureShared*[T](fut: CpsFuture[T]) =
+  if fut.perfMode == fpSharedSafe:
+    return
+  fut.ensureLocalAffinity("ensureShared")
+  let localState = fut.localState
+  let inlineCb = fut.inlineCallback
+  let inlineRt = fut.inlineTargetRuntime
+  let localCbs = fut.localCallbacks
+
+  fut.perfMode = fpSharedSafe
+  fut.localOwnerThreadToken = nil
+  fut.localOwnerSchedulerPtr = nil
+  fut.localOwnerWorkerId = -1
+  fut.localCallbacks.setLen(0)
+  fut.inlineCallback = nil
+  fut.inlineTargetRuntime = nil
+
+  case localState
+  of FutureStatePending:
+    fut.atomicState.store(FutureStatePending, moRelaxed)
+    fut.callbackHead.store(nil, moRelaxed)
+    if inlineCb != nil:
+      addCallbackOnRuntime(fut, inlineRt, inlineCb)
+    if localCbs.len > 0:
+      for thunk in localCbs:
+        if thunk != nil and thunk.cb != nil:
+          addCallbackOnRuntime(fut, thunk.targetRuntime, thunk.cb)
+  of FutureStateCancelled:
+    fut.atomicState.store(FutureStateCancelled, moRelaxed)
+    fut.callbackHead.store(CallbackClosed, moRelaxed)
+  else:
+    fut.atomicState.store(FutureStateDone, moRelaxed)
+    fut.callbackHead.store(CallbackClosed, moRelaxed)
+
+proc ensureShared*(fut: CpsVoidFuture) =
+  if fut.perfMode == fpSharedSafe:
+    return
+  fut.ensureLocalAffinity("ensureShared")
+  let localState = fut.localState
+  let inlineCb = fut.inlineCallback
+  let inlineRt = fut.inlineTargetRuntime
+  let localCbs = fut.localCallbacks
+
+  fut.perfMode = fpSharedSafe
+  fut.localOwnerThreadToken = nil
+  fut.localOwnerSchedulerPtr = nil
+  fut.localOwnerWorkerId = -1
+  fut.localCallbacks.setLen(0)
+  fut.inlineCallback = nil
+  fut.inlineTargetRuntime = nil
+
+  case localState
+  of FutureStatePending:
+    fut.atomicState.store(FutureStatePending, moRelaxed)
+    fut.callbackHead.store(nil, moRelaxed)
+    if inlineCb != nil:
+      addCallbackOnRuntime(fut, inlineRt, inlineCb)
+    if localCbs.len > 0:
+      for thunk in localCbs:
+        if thunk != nil and thunk.cb != nil:
+          addCallbackOnRuntime(fut, thunk.targetRuntime, thunk.cb)
+  of FutureStateCancelled:
+    fut.atomicState.store(FutureStateCancelled, moRelaxed)
+    fut.callbackHead.store(CallbackClosed, moRelaxed)
+  else:
+    fut.atomicState.store(FutureStateDone, moRelaxed)
+    fut.callbackHead.store(CallbackClosed, moRelaxed)
+
 # ============================================================
 # Cancellation
 # ============================================================
 
 proc isCancelled*[T](fut: CpsFuture[T]): bool {.inline.} =
   ## Check if a future has been cancelled.
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("isCancelled")
+    return fut.localState == FutureStateCancelled
   fut.atomicState.load(moAcquire) == FutureStateCancelled
 
 proc isCancelled*(fut: CpsVoidFuture): bool {.inline.} =
   ## Check if a void future has been cancelled.
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("isCancelled")
+    return fut.localState == FutureStateCancelled
   fut.atomicState.load(moAcquire) == FutureStateCancelled
 
 proc cancel*[T](fut: CpsFuture[T]) =
+  if fut.perfMode == fpLocalFast:
+    if not fut.localAffinityOk():
+      if fut.tryHopLocalOpToOwner(proc() {.closure.} =
+        cancel(fut)
+      ):
+        return
+      raiseLocalAffinityViolation("cancel")
+    if fut.localState != FutureStatePending:
+      return
+    fut.error = newException(CancellationError, "cancelled")
+    fut.localState = FutureStateCancelled
+    fut.rootContinuationPtr = nil
+    statInc(rtCancellations)
+    fut.fireLocalCallbacks()
+    wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
+    wakeReactorIfNeeded(ownerRuntimeRef(fut))
+    return
   ## Cancel a future. If the future is already completed, this is a no-op.
   ## Uses CAS to atomically transition from pending to cancelling, then
   ## publishes cancelled terminal state after setting the error payload.
@@ -1084,6 +1640,23 @@ proc cancel*[T](fut: CpsFuture[T]) =
   wakeReactorIfNeeded(ownerRuntimeRef(fut))
 
 proc cancel*(fut: CpsVoidFuture) =
+  if fut.perfMode == fpLocalFast:
+    if not fut.localAffinityOk():
+      if fut.tryHopLocalOpToOwner(proc() {.closure.} =
+        cancel(fut)
+      ):
+        return
+      raiseLocalAffinityViolation("cancel")
+    if fut.localState != FutureStatePending:
+      return
+    fut.error = newException(CancellationError, "cancelled")
+    fut.localState = FutureStateCancelled
+    fut.rootContinuationPtr = nil
+    statInc(rtCancellations)
+    fut.fireLocalCallbacks()
+    wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
+    wakeReactorIfNeeded(ownerRuntimeRef(fut))
+    return
   ## Cancel a void future. If the future is already completed, this is a no-op.
   ## Uses CAS to atomically transition from pending to cancelling, then
   ## publishes cancelled terminal state after setting error payload.

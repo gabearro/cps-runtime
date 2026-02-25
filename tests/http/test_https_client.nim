@@ -3,15 +3,10 @@
 ## Starts Python HTTP/1.1 and HTTP/2 test servers,
 ## then makes requests to them using our CPS client.
 
-import std/[osproc, strutils, os, json, streams]
+import std/[osproc, strutils, os, json, streams, net]
 import cps/runtime
 import cps/eventloop
-import cps/io/tcp
-import cps/io/streams
-import cps/io/buffered
-import cps/tls/client as tls
 import cps/http/shared/hpack
-import cps/http/client/http1
 import cps/http/shared/http2
 import cps/http/client/client
 
@@ -23,8 +18,10 @@ proc startServer(script: string, port: int): Process =
   let stream = p.outputStream
   var line: string
   var ready = false
-  for i in 0 ..< 20:  # Max 20 lines / 10 seconds
+  var outputLines: seq[string] = @[]
+  for i in 0 ..< 200:  # Max 10 seconds, 50ms polling
     if stream.readLine(line):
+      outputLines.add line
       if line.startsWith("READY:"):
         echo "  Server ready on port ", port
         ready = true
@@ -33,12 +30,30 @@ proc startServer(script: string, port: int): Process =
         echo "  Server error: ", line
         p.terminate()
         raise newException(system.IOError, "Server failed: " & line)
-    sleep(500)
+    else:
+      let exitCode = p.peekExitCode()
+      if exitCode != -1:
+        let captured = outputLines.join("\n")
+        raise newException(system.IOError,
+          "Server exited before READY (exit " & $exitCode & "): " & script &
+          (if captured.len > 0: "\n" & captured else: ""))
+    sleep(50)
   if not ready:
     p.terminate()
     discard p.waitForExit()
-    raise newException(system.IOError, "Server failed to start (no READY): " & script)
+    let captured = outputLines.join("\n")
+    raise newException(system.IOError,
+      "Server failed to start (no READY): " & script &
+      (if captured.len > 0: "\n" & captured else: ""))
   return p
+
+proc pickFreePort(): int =
+  let s = newSocket()
+  s.bindAddr(Port(0), "127.0.0.1")
+  s.listen()
+  let (_, port) = s.getLocalAddr()
+  s.close()
+  return int(port)
 
 # ============================================================
 # Test HPACK encoding/decoding
@@ -95,7 +110,7 @@ block testHttp11:
   echo "--- HTTP/1.1 Test ---"
   echo "Starting HTTP/1.1 server..."
 
-  let h11Port = 18443
+  let h11Port = pickFreePort()
   var server: Process
   try:
     server = startServer("tests/http/server_http11.py", h11Port)
@@ -104,8 +119,6 @@ block testHttp11:
     # Don't fail the test, just skip
     echo "SKIP: HTTP/1.1 tests"
     break testHttp11
-
-  sleep(500)  # Give server time to fully start
 
   try:
     let client = newHttpsClient(preferHttp2 = false)
@@ -142,7 +155,7 @@ block testHttp2:
   echo "--- HTTP/2 Test ---"
   echo "Starting HTTP/2 server..."
 
-  let h2Port = 18444
+  let h2Port = pickFreePort()
   var server: Process
   try:
     server = startServer("tests/http/server_http2.py", h2Port)
@@ -150,8 +163,6 @@ block testHttp2:
     echo "SKIP: Could not start HTTP/2 server: ", getCurrentExceptionMsg()
     echo "SKIP: HTTP/2 tests"
     break testHttp2
-
-  sleep(500)
 
   try:
     let client = newHttpsClient(preferHttp2 = true)

@@ -1,0 +1,88 @@
+{
+  "enumConstraints": [
+    {
+      "namespace": "html",
+      "element": "*",
+      "attr": "crossorigin",
+      "values": ["", "anonymous", "use-credentials"]
+    },
+    {
+      "namespace": "html",
+      "element": "*",
+      "attr": "referrerpolicy",
+      "values": ["", "no-referrer", "no-referrer-when-downgrade", "origin", "origin-when-cross-origin", "same-origin", "strict-origin", "strict-origin-when-cross-origin", "unsafe-url"]
+    },
+    {
+      "namespace": "html",
+      "element": "a",
+      "attr": "target",
+      "values": ["_self", "_blank", "_parent", "_top"]
+    },
+    {
+      "namespace": "html",
+      "element": "button",
+      "attr": "type",
+      "values": ["submit", "reset", "button"]
+    },
+    {
+      "namespace": "html",
+      "element": "form",
+      "attr": "method",
+      "values": ["get", "post", "dialog"]
+    },
+    {
+      "namespace": "html",
+      "element": "img",
+      "attr": "loading",
+      "values": ["eager", "lazy"]
+    },
+    {
+      "namespace": "html",
+      "element": "img",
+      "attr": "decoding",
+      "values": ["sync", "async", "auto"]
+    },
+    {
+      "namespace": "html",
+      "element": "img",
+      "attr": "fetchpriority",
+      "values": ["high", "low", "auto"]
+    },
+    {
+      "namespace": "html",
+      "element": "input",
+      "attr": "type",
+      "values": ["button", "checkbox", "color", "date", "datetime-local", "email", "file", "hidden", "image", "month", "number", "password", "radio", "range", "reset", "search", "submit", "tel", "text", "time", "url", "week"]
+    },
+    {
+      "namespace": "html",
+      "element": "ol",
+      "attr": "type",
+      "values": ["1", "a", "A", "i", "I"]
+    },
+    {
+      "namespace": "html",
+      "element": "script",
+      "attr": "type",
+      "values": ["module", "importmap", "application/ld+json", "text/javascript"]
+    },
+    {
+      "namespace": "html",
+      "element": "track",
+      "attr": "kind",
+      "values": ["subtitles", "captions", "descriptions", "chapters", "metadata"]
+    },
+    {
+      "namespace": "svg",
+      "element": "*",
+      "attr": "preserveAspectRatio",
+      "values": ["none", "xMinYMin meet", "xMidYMin meet", "xMaxYMin meet", "xMinYMid meet", "xMidYMid meet", "xMaxYMid meet", "xMinYMax meet", "xMidYMax meet", "xMaxYMax meet", "xMinYMin slice", "xMidYMin slice", "xMaxYMin slice", "xMinYMid slice", "xMidYMid slice", "xMaxYMid slice", "xMinYMax slice", "xMidYMax slice", "xMaxYMax slice"]
+    },
+    {
+      "namespace": "mathml",
+      "element": "math",
+      "attr": "display",
+      "values": ["inline", "block"]
+    }
+  ]
+}

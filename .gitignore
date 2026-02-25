@@ -1,0 +1,26 @@
+# Nim build artifacts
+.nimcache/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Node/browser test artifacts
+tests/http/browser/node_modules/
+tests/http/browser/playwright-report/
+tests/http/browser/test-results/
+
+# Python venv/cache artifacts
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Local temporary outputs
+*.log
+*.tmp
+
+.claude
+.idea
+CLAUDE.md
+.nimcache

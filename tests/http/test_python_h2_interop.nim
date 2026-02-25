@@ -293,6 +293,7 @@ import os
 import h2.connection
 import h2.config
 import h2.events
+import h2.settings
 
 def build_ws_frame(opcode, payload, masked=False, fin=True):
     '''Build a WebSocket frame.'''
@@ -342,10 +343,14 @@ def parse_ws_frame(data):
 
 def test_ws_h2():
     sock = socket.create_connection(("127.0.0.1", """ & $port & """))
+    sock.settimeout(5.0)
 
     config = h2.config.H2Configuration(client_side=True, header_encoding='utf-8')
     conn = h2.connection.H2Connection(config=config)
     conn.initiate_connection()
+    conn.update_settings({
+        h2.settings.SettingCodes.ENABLE_CONNECT_PROTOCOL: 1,
+    })
     sock.sendall(conn.data_to_send())
 
     # Send Extended CONNECT for WebSocket (RFC 8441)
@@ -371,13 +376,15 @@ def test_ws_h2():
         for event in events:
             if isinstance(event, h2.events.ResponseReceived):
                 response_headers = {k: v for k, v in event.headers}
+            elif isinstance(event, h2.events.StreamReset):
+                raise AssertionError(f"Extended CONNECT stream reset before response headers: {event.error_code}")
         sock.sendall(conn.data_to_send())
 
     status = response_headers.get(":status", "")
     assert status == "200", f"Expected 200, got {status}"
 
     # Send a WebSocket text frame inside HTTP/2 DATA
-    ws_frame = build_ws_frame(0x1, b"hello from python h2")
+    ws_frame = build_ws_frame(0x1, b"hello from python h2", masked=True)
     conn.send_data(stream_id=1, data=ws_frame)
     sock.sendall(conn.data_to_send())
 
@@ -396,6 +403,8 @@ def test_ws_h2():
                     opcode, payload, consumed = parse_ws_frame(ws_response_data)
                     if consumed <= len(ws_response_data):
                         got_response = True
+            elif isinstance(event, h2.events.StreamReset):
+                raise AssertionError(f"Extended CONNECT stream reset while waiting for first message: {event.error_code}")
             elif isinstance(event, h2.events.WindowUpdated):
                 pass
         sock.sendall(conn.data_to_send())
@@ -405,7 +414,7 @@ def test_ws_h2():
     assert payload == b"echo:hello from python h2", f"Got: {payload}"
 
     # Send another message
-    ws_frame2 = build_ws_frame(0x1, b"second msg")
+    ws_frame2 = build_ws_frame(0x1, b"second msg", masked=True)
     conn.send_data(stream_id=1, data=ws_frame2)
     sock.sendall(conn.data_to_send())
 
@@ -422,6 +431,8 @@ def test_ws_h2():
                     opcode2, payload2, consumed2 = parse_ws_frame(ws_response_data2)
                     if consumed2 <= len(ws_response_data2):
                         got_response2 = True
+            elif isinstance(event, h2.events.StreamReset):
+                raise AssertionError(f"Extended CONNECT stream reset while waiting for second message: {event.error_code}")
             elif isinstance(event, h2.events.WindowUpdated):
                 pass
         sock.sendall(conn.data_to_send())
@@ -431,7 +442,7 @@ def test_ws_h2():
     assert payload2 == b"echo:second msg", f"Got: {payload2}"
 
     # Send WebSocket close frame
-    ws_close = build_ws_frame(0x8, struct.pack("!H", 1000))
+    ws_close = build_ws_frame(0x8, struct.pack("!H", 1000), masked=True)
     conn.send_data(stream_id=1, data=ws_close)
     sock.sendall(conn.data_to_send())
 

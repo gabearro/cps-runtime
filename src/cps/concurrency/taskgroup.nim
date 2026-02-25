@@ -29,11 +29,11 @@ type
     cancelProcs: seq[proc() {.closure.}]  ## Cancel closures for each task
     errors: seq[ref CatchableError]
     atomicActive: Atomic[int]      ## Lock-free active task count
-    completionFut: CpsVoidFuture
+    completionWaiters: seq[CpsVoidFuture]
     errorPolicy: ErrorPolicy
     atomicCancelled: Atomic[bool]  ## Lock-free cancelled flag
     atomicTaskCount: Atomic[int]   ## Lock-free total task count
-    lock: Lock                     ## Protects: errors, cancelProcs, completionFut
+    lock: Lock                     ## Protects: errors, cancelProcs, completionWaiters
     mtEnabled: bool
 
 proc newTaskGroup*(errorPolicy: ErrorPolicy = epFailFast): TaskGroup =
@@ -41,7 +41,7 @@ proc newTaskGroup*(errorPolicy: ErrorPolicy = epFailFast): TaskGroup =
   result = TaskGroup(
     cancelProcs: @[],
     errors: @[],
-    completionFut: nil,
+    completionWaiters: @[],
     errorPolicy: errorPolicy
   )
   result.atomicActive.store(0, moRelaxed)
@@ -75,52 +75,53 @@ proc activeCount*(group: TaskGroup): int {.inline.} =
 
 proc tryComplete(group: TaskGroup) =
   ## Internal: attempt to complete the group's completion future.
-  ## Called when activeCount reaches 0 and completionFut is set.
+  ## Called when activeCount reaches 0 and there are completion waiters.
   ## Fast-path: atomic check on activeCount avoids lock when not ready.
   ## Caller must NOT hold the lock.
   # Fast-path: if still active, skip lock entirely
   if group.atomicActive.load(moAcquire) != 0:
     return
 
-  var fut: CpsVoidFuture = nil
+  var waiters: seq[CpsVoidFuture]
   var errors: seq[ref CatchableError]
   var policy: ErrorPolicy
 
   if group.mtEnabled:
     acquire(group.lock)
     # Re-check under lock (another thread may have beaten us)
-    if group.atomicActive.load(moAcquire) != 0 or group.completionFut.isNil:
+    if group.atomicActive.load(moAcquire) != 0 or group.completionWaiters.len == 0:
       release(group.lock)
       return
-    if group.completionFut.finished:
-      release(group.lock)
-      return
-    fut = group.completionFut
-    group.completionFut = nil
+    waiters = group.completionWaiters
+    group.completionWaiters.setLen(0)
     errors = group.errors
     policy = group.errorPolicy
     release(group.lock)
   else:
-    if group.completionFut.isNil:
+    if group.completionWaiters.len == 0:
       return
-    if group.completionFut.finished:
-      return
-    fut = group.completionFut
-    group.completionFut = nil
+    waiters = group.completionWaiters
+    group.completionWaiters.setLen(0)
     errors = group.errors
     policy = group.errorPolicy
 
   # Complete/fail outside the lock
   if errors.len > 0:
     if policy == epFailFast:
-      fail(fut, errors[0])
+      for waiter in waiters:
+        if not waiter.finished:
+          fail(waiter, errors[0])
     else:
-      let groupErr = newException(TaskGroupError,
-        $errors.len & " task(s) failed")
-      groupErr.errors = errors
-      fail(fut, groupErr)
+      for waiter in waiters:
+        if not waiter.finished:
+          let groupErr = newException(TaskGroupError,
+            $errors.len & " task(s) failed")
+          groupErr.errors = errors
+          fail(waiter, groupErr)
   else:
-    complete(fut)
+    for waiter in waiters:
+      if not waiter.finished:
+        complete(waiter)
 
 proc spawn*(group: TaskGroup, fut: CpsVoidFuture, name: string = "") =
   ## Add a void task to the group. The task starts running immediately.
@@ -219,10 +220,10 @@ proc wait*(group: TaskGroup): CpsVoidFuture =
       else:
         complete(fut)
       return fut
-    group.completionFut = newCpsVoidFuture()
-    let res = group.completionFut
+    let waiter = newCpsVoidFuture()
+    group.completionWaiters.add(waiter)
     release(group.lock)
-    return res
+    return waiter
   else:
     if group.atomicActive.load(moAcquire) == 0:
       let fut = newCpsVoidFuture()
@@ -237,45 +238,23 @@ proc wait*(group: TaskGroup): CpsVoidFuture =
       else:
         complete(fut)
       return fut
-    group.completionFut = newCpsVoidFuture()
-    return group.completionFut
+    let waiter = newCpsVoidFuture()
+    group.completionWaiters.add(waiter)
+    return waiter
 
 proc waitAll*(group: TaskGroup): CpsFuture[seq[ref CatchableError]] =
   ## Wait for all tasks to complete and return collected errors without raising.
   ## Unlike wait(), this never fails the returned future -- errors are returned
   ## as the future's value.
   let resultFut = newCpsFuture[seq[ref CatchableError]]()
-
-  if group.mtEnabled:
-    acquire(group.lock)
-    if group.atomicActive.load(moAcquire) == 0:
+  let waiter = group.wait()
+  waiter.addCallback(proc() =
+    if group.mtEnabled:
+      acquire(group.lock)
       let errors = group.errors
       release(group.lock)
       resultFut.complete(errors)
-      return resultFut
-    let internalFut = newCpsVoidFuture()
-    group.completionFut = internalFut
-    release(group.lock)
-
-    internalFut.addCallback(proc() =
-      var errors: seq[ref CatchableError]
-      if group.mtEnabled:
-        acquire(group.lock)
-        errors = group.errors
-        release(group.lock)
-      else:
-        errors = group.errors
-      resultFut.complete(errors)
-    )
-    return resultFut
-  else:
-    if group.atomicActive.load(moAcquire) == 0:
+    else:
       resultFut.complete(group.errors)
-      return resultFut
-    let internalFut = newCpsVoidFuture()
-    group.completionFut = internalFut
-
-    internalFut.addCallback(proc() =
-      resultFut.complete(group.errors)
-    )
-    return resultFut
+  )
+  return resultFut

@@ -16,6 +16,7 @@ import ../../transform
 import ../../io/streams
 import ../../io/buffered
 import ../../io/tcp
+import ../../io/proxy
 import ../../tls/client as tls
 import ../shared/compression
 import ../../tls/fingerprint
@@ -37,21 +38,32 @@ proc connectSse*(host: string, port: int, path: string = "/events",
                  useTls: bool = false,
                  extraHeaders: seq[(string, string)] = @[],
                  enableCompression: bool = true,
-                 tlsFingerprint: TlsFingerprint = nil): CpsFuture[SseClient] {.cps.} =
+                 tlsFingerprint: TlsFingerprint = nil,
+                 proxy: seq[ProxyConfig] = @[]): CpsFuture[SseClient] {.cps.} =
   ## Connect to an SSE server. If useTls, wraps TCP with TLS (no cert verification).
   ## Sends GET with Accept: text/event-stream, validates 200 response.
   ## If enableCompression, sends Accept-Encoding: gzip and auto-decompresses.
   ## When `tlsFingerprint` is provided, applies the TLS fingerprint profile.
+  ## When `proxy` is non-empty, tunnels through the proxy chain first.
   var stream: AsyncStream
 
   if useTls:
-    let tcpConn = await tcpConnect(host, port)
-    let tlsStream = newTlsStream(tcpConn, host, @[], tlsFingerprint)  # No ALPN for SSE
+    var tcpConn: TcpStream
+    if proxy.len > 0:
+      let ps: ProxyStream = await proxyChainConnect(proxy, host, port)
+      tcpConn = ps.getUnderlyingTcpStream()
+    else:
+      tcpConn = await tcpConnect(host, port)
+    let tlsStream: TlsStream = newTlsStream(tcpConn, host, @[], tlsFingerprint)  # No ALPN for SSE
     await tlsConnect(tlsStream)
     stream = tlsStream.AsyncStream
   else:
-    let tcpConn = await tcpConnect(host, port)
-    stream = tcpConn.AsyncStream
+    if proxy.len > 0:
+      let ps: ProxyStream = await proxyChainConnect(proxy, host, port)
+      stream = ps.AsyncStream
+    else:
+      let tcpConn: TcpStream = await tcpConnect(host, port)
+      stream = tcpConn.AsyncStream
 
   # Build and send GET request with SSE headers (CRLF line endings)
   var reqStr = "GET " & path & " HTTP/1.1\r\n"

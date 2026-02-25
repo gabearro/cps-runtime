@@ -1,0 +1,39 @@
+component Dashboard {
+  VStack(spacing: token.spacing.md) {
+    Text("Momentum GUI")
+      .foregroundColor(token.color.primary)
+
+    Text("Count: " + count)
+    Text("Query: " + query)
+    Text("Network: " + networkStatus)
+    Text("Last Event: " + lastEvent)
+
+    HStack(spacing: token.spacing.sm) {
+      Button("Increment", action: Increment)
+      Button("Mark OK", action: NetSuccess)
+      Button("Mark Error", action: NetError)
+    }
+
+    NavigationLink("Open detail", value: "detail")
+      .padding(token.spacing.sm)
+  }
+  .padding(token.spacing.lg)
+}
+
+component Detail {
+  VStack(spacing: token.spacing.md) {
+    Text("Detail Screen")
+    Text("Count is " + count)
+    Button("Tick now", action: Tick)
+  }
+  .padding(token.spacing.lg)
+}
+
+component Settings {
+  VStack(spacing: token.spacing.md) {
+    Text("Settings")
+    Text("Reminders: " + remindersEnabled)
+    Button("Persist", action: Persisted)
+  }
+  .padding(token.spacing.lg)
+}

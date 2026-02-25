@@ -36,6 +36,33 @@ proc mkIdent(name: string): NimNode {.compileTime.} =
   ## Create an ident node without triggering Nim's ident/newIdentNode overload ambiguity.
   parseExpr(name)
 
+proc prefixedPathExpr(prefix: string, pathNode: NimNode): NimNode {.compileTime.} =
+  ## Build a compile-time path expression. Non-literals must still resolve to const/static strings.
+  if pathNode.kind == nnkStrLit:
+    return newStrLitNode(prefix & pathNode.strVal)
+  if prefix.len == 0:
+    return pathNode
+  result = newCall(mkIdent("&"), newStrLitNode(prefix), pathNode)
+
+proc emitRoutePathConst(stmts: var NimNode, prefix: string, pathNode: NimNode,
+                        methodLabel: string): NimNode {.compileTime.} =
+  ## Emits:
+  ##   let routePath = <prefix & pathExpr>
+  ##   static: discard parsePath(<prefix & pathExpr>)
+  ## Returns the generated route path symbol.
+  let routePathSym = genSym(nskLet, "routePath")
+  let routePathExpr = prefixedPathExpr(prefix, pathNode)
+  let methodLit = newStrLitNode(methodLabel)
+  stmts.add quote do:
+    let `routePathSym` = `routePathExpr`
+    static:
+      try:
+        discard parsePath(`routePathExpr`)
+      except ValueError as e:
+        doAssert false,
+          "Invalid route pattern for " & `methodLit` & " " & `routePathExpr` & ": " & e.msg
+  routePathSym
+
 # ============================================================
 # Rewrite context (macro hygiene)
 # ============================================================
@@ -325,13 +352,14 @@ proc rewriteHandlerBody(body: NimNode): NimNode =
       if body.len == 2:
         let key = body[1]
         return quote do:
-          req.context.getOrDefault(`key`)
+          if req.context.isNil: "" else: req.context.getOrDefault(`key`)
 
     of "setCtx":
       if body.len == 3:
         let key = body[1]
         let val = rewriteHandlerBody(body[2])
         return quote do:
+          ensureContext(req)
           req.context[`key`] = `val`
 
     # --- Form body parsing (Phase 1) ---
@@ -1027,7 +1055,8 @@ macro router*(body: untyped): untyped =
         case cmdName
         of "get", "post", "put", "delete", "patch", "head", "options", "any":
           let httpMethod = if cmdName == "any": "*" else: cmdName.toUpperAscii
-          var pattern: string
+          var pattern: string = ""
+          var patternNode: NimNode = nil
           var handlerBody: NimNode
           var routeName: string = ""
 
@@ -1043,11 +1072,9 @@ macro router*(body: untyped): untyped =
               error("Route requires a body", stmt)
               continue
 
-            # Pattern must be a string literal.
-            if stmt[1].kind != nnkStrLit:
-              error("Route path must be a string literal, e.g. get \"/users\":", stmt[1])
-              continue
-            pattern = prefix & $stmt[1].strVal
+            patternNode = stmt[1]
+            if stmt[1].kind == nnkStrLit:
+              pattern = prefix & $stmt[1].strVal
 
             handlerBody = stmt[bodyIdx]
 
@@ -1058,13 +1085,14 @@ macro router*(body: untyped): untyped =
 
           elif stmt.len == 2 and stmt[1].kind == nnkStmtList:
             pattern = prefix & "/"
+            patternNode = newStrLitNode("/")
             handlerBody = stmt[1]
           else:
             error("Invalid route syntax", stmt)
             continue
 
           # Extract OpenAPI annotations before rewriting
-          if generateOpenApi:
+          if generateOpenApi and pattern.len > 0:
             apiSpecs.add RouteOpenApiSpec(
               path: pattern,
               httpMethod: httpMethod,
@@ -1083,7 +1111,7 @@ macro router*(body: untyped): untyped =
           let handlerName = genSym(nskProc, "routeHandler_" & $routeIdx)
           inc routeIdx
 
-          let patternLit = newStrLitNode(pattern)
+          let routePathSym = emitRoutePathConst(stmts, prefix, patternNode, httpMethod)
           let methodLit = newStrLitNode(httpMethod)
           let nameLit = newStrLitNode(routeName)
 
@@ -1092,7 +1120,7 @@ macro router*(body: untyped): untyped =
           stmts.add quote do:
             `routesSym`.add RouteEntry(
               meth: `methodLit`,
-              segments: parsePath(`patternLit`),
+              segments: parsePath(`routePathSym`),
               handler: `handlerName`,
               middlewares: `globalMwSym` & `groupMwSym`,
               name: `nameLit`
@@ -1100,17 +1128,14 @@ macro router*(body: untyped): untyped =
 
         of "sse":
           # SSE route: registers as GET, generates handler with SseWriter
-          var pattern: string
+          var patternNode: NimNode
           var handlerBody: NimNode
 
           if stmt.len == 3:
-            if stmt[1].kind != nnkStrLit:
-              error("sse path must be a string literal", stmt[1])
-              continue
-            pattern = prefix & $stmt[1].strVal
+            patternNode = stmt[1]
             handlerBody = stmt[2]
           elif stmt.len == 2 and stmt[1].kind == nnkStmtList:
-            pattern = prefix & "/"
+            patternNode = newStrLitNode("/")
             handlerBody = stmt[1]
           else:
             error("Invalid sse route syntax", stmt)
@@ -1124,7 +1149,7 @@ macro router*(body: untyped): untyped =
           let handlerName = genSym(nskProc, "sseHandler_" & $routeIdx)
           inc routeIdx
 
-          let patternLit = newStrLitNode(pattern)
+          let routePathSym = emitRoutePathConst(stmts, prefix, patternNode, "GET")
 
           var handlerBodyStmts = newStmtList()
           handlerBodyStmts.add newVarStmt(rwCtx.headersId, newCall(newNimNode(nnkBracketExpr).add(mkIdent("newSeq"), newNimNode(nnkPar).add(mkIdent("string"), mkIdent("string")))))
@@ -1161,24 +1186,21 @@ macro router*(body: untyped): untyped =
           stmts.add quote do:
             `routesSym`.add RouteEntry(
               meth: "GET",
-              segments: parsePath(`patternLit`),
+              segments: parsePath(`routePathSym`),
               handler: `handlerName`,
               middlewares: `globalMwSym` & `groupMwSym`
             )
 
         of "ws":
           # WebSocket route: registers as GET, generates handler with WebSocket
-          var pattern: string
+          var patternNode: NimNode
           var handlerBody: NimNode
 
           if stmt.len == 3:
-            if stmt[1].kind != nnkStrLit:
-              error("ws path must be a string literal", stmt[1])
-              continue
-            pattern = prefix & $stmt[1].strVal
+            patternNode = stmt[1]
             handlerBody = stmt[2]
           elif stmt.len == 2 and stmt[1].kind == nnkStmtList:
-            pattern = prefix & "/"
+            patternNode = newStrLitNode("/")
             handlerBody = stmt[1]
           else:
             error("Invalid ws route syntax", stmt)
@@ -1192,7 +1214,7 @@ macro router*(body: untyped): untyped =
           let handlerName = genSym(nskProc, "wsHandler_" & $routeIdx)
           inc routeIdx
 
-          let patternLit = newStrLitNode(pattern)
+          let routePathSym = emitRoutePathConst(stmts, prefix, patternNode, "GET")
 
           var handlerBodyStmts = newStmtList()
           handlerBodyStmts.add newVarStmt(rwCtx.headersId, newCall(newNimNode(nnkBracketExpr).add(mkIdent("newSeq"), newNimNode(nnkPar).add(mkIdent("string"), mkIdent("string")))))
@@ -1229,7 +1251,7 @@ macro router*(body: untyped): untyped =
           stmts.add quote do:
             `routesSym`.add RouteEntry(
               meth: "GET",
-              segments: parsePath(`patternLit`),
+              segments: parsePath(`routePathSym`),
               handler: `handlerName`,
               middlewares: `globalMwSym` & `groupMwSym`
             )
@@ -1724,11 +1746,8 @@ macro router*(body: untyped): untyped =
         of "healthcheck":
           # healthCheck "/health" or healthCheck "/health", "OK"
           if stmt.len == 2 or stmt.len == 3:
-            if stmt[1].kind != nnkStrLit:
-              error("healthCheck path must be a string literal", stmt[1])
-              continue
-            let healthPath = prefix & $stmt[1].strVal
-            let healthPathLit = newStrLitNode(healthPath)
+            let healthPathNode = stmt[1]
+            let healthPathSym = emitRoutePathConst(stmts, prefix, healthPathNode, "GET")
             let healthBody = if stmt.len >= 3: stmt[2] else: newStrLitNode("OK")
             let handlerName = genSym(nskProc, "healthCheck_" & $routeIdx)
             inc routeIdx
@@ -1740,7 +1759,7 @@ macro router*(body: untyped): untyped =
                 return fut
               `routesSym`.add RouteEntry(
                 meth: "GET",
-                segments: parsePath(`healthPathLit`),
+                segments: parsePath(`healthPathSym`),
                 handler: `handlerName`,
                 middlewares: `globalMwSym` & `groupMwSym`
               )
@@ -1768,11 +1787,7 @@ macro router*(body: untyped): untyped =
             let rewrittenBody = rewriteWithContext(bodyNode, rwCtx)
             let handlerName = genSym(nskProc, "routeHandler_" & $routeIdx)
             inc routeIdx
-            if patternNode.kind != nnkStrLit:
-              error("route path must be a string literal", patternNode)
-              continue
-            let patternStr = prefix & $patternNode.strVal
-            let patternLit = newStrLitNode(patternStr)
+            let patternSym = emitRoutePathConst(stmts, prefix, patternNode, "route")
 
             stmts.add buildHandlerProc(handlerName, rewrittenBody, rwCtx)
 
@@ -1791,7 +1806,7 @@ macro router*(body: untyped): untyped =
               stmts.add quote do:
                 `routesSym`.add RouteEntry(
                   meth: `methodLit`,
-                  segments: parsePath(`patternLit`),
+                  segments: parsePath(`patternSym`),
                   handler: `handlerName`,
                   middlewares: `globalMwSym` & `groupMwSym`
                 )
@@ -1871,21 +1886,18 @@ macro router*(body: untyped): untyped =
           # Chunked streaming route: registers as GET by default.
           # generates handler with ChunkedWriter.
           var streamMethod = "GET"
-          var pattern: string
+          var patternNode: NimNode
           var handlerBody: NimNode
 
-          if stmt.len == 4 and stmt[1].kind == nnkStrLit and stmt[2].kind == nnkStrLit:
+          if stmt.len == 4 and stmt[1].kind == nnkStrLit:
             streamMethod = stmt[1].strVal.toUpperAscii
-            pattern = prefix & $stmt[2].strVal
+            patternNode = stmt[2]
             handlerBody = stmt[3]
           elif stmt.len == 3:
-            if stmt[1].kind != nnkStrLit:
-              error("stream path must be a string literal", stmt[1])
-              continue
-            pattern = prefix & $stmt[1].strVal
+            patternNode = stmt[1]
             handlerBody = stmt[2]
           elif stmt.len == 2 and stmt[1].kind == nnkStmtList:
-            pattern = prefix & "/"
+            patternNode = newStrLitNode("/")
             handlerBody = stmt[1]
           else:
             error("Invalid stream route syntax", stmt)
@@ -1900,7 +1912,7 @@ macro router*(body: untyped): untyped =
           inc routeIdx
 
           let methodLit = newStrLitNode(streamMethod)
-          let patternLit = newStrLitNode(pattern)
+          let routePathSym = emitRoutePathConst(stmts, prefix, patternNode, streamMethod)
 
           var handlerBodyStmts = newStmtList()
           handlerBodyStmts.add newVarStmt(rwCtx.headersId, newCall(newNimNode(nnkBracketExpr).add(mkIdent("newSeq"), newNimNode(nnkPar).add(mkIdent("string"), mkIdent("string")))))
@@ -1944,7 +1956,7 @@ macro router*(body: untyped): untyped =
           stmts.add quote do:
             `routesSym`.add RouteEntry(
               meth: `methodLit`,
-              segments: parsePath(`patternLit`),
+              segments: parsePath(`routePathSym`),
               handler: `handlerName`,
               middlewares: `globalMwSym` & `groupMwSym`
             )

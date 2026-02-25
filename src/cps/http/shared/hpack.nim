@@ -3,7 +3,6 @@
 ## Implements RFC 7541 - HPACK: Header Compression for HTTP/2.
 ## Provides encoding and decoding of HTTP/2 header fields.
 
-import std/[tables, strutils]
 
 const StaticTable*: seq[(string, string)] = @[
   ("", ""),                              # 0: unused
@@ -155,7 +154,7 @@ proc decodeInteger*(data: openArray[byte], offset: var int, prefixBits: int): in
 
 # HPACK Huffman table: (code, bitLength) for each symbol 0-256.
 # Symbol 256 is EOS (end of string).
-const HuffmanTable: array[257, (uint32, uint8)] = [
+const HuffmanTable*: array[257, (uint32, uint8)] = [
   (0x1ff8'u32, 13'u8),     # 0
   (0x7fffd8'u32, 23'u8),   # 1
   (0xfffffe2'u32, 28'u8),  # 2
@@ -415,9 +414,11 @@ const HuffmanTable: array[257, (uint32, uint8)] = [
   (0x3fffffff'u32, 30'u8), # 256 EOS
 ]
 
-proc huffmanDecode(data: openArray[byte], startOffset: int, length: int): string =
+proc huffmanDecode*(data: openArray[byte], startOffset: int, length: int): string =
   ## Decode Huffman-encoded bytes per RFC 7541 Appendix B.
   ## Uses bit-by-bit traversal against the Huffman table.
+  if startOffset < 0 or length < 0 or (startOffset + length) > data.len:
+    raise newException(ValueError, "HPACK Huffman decode bounds invalid")
   result = ""
   var bits: uint64 = 0
   var bitsAvail = 0
@@ -444,12 +445,52 @@ proc huffmanDecode(data: openArray[byte], startOffset: int, length: int): string
       if not found:
         break  # Need more bits
 
+  # RFC7541 section 5.2: trailing bits must be a prefix of EOS (all 1 bits),
+  # which means at most 7 bits and each remaining bit set to 1.
+  if bitsAvail > 7:
+    raise newException(ValueError, "HPACK Huffman padding too long")
+  if bitsAvail > 0:
+    let padMask = (1'u64 shl bitsAvail) - 1'u64
+    if bits != padMask:
+      raise newException(ValueError, "HPACK Huffman padding invalid")
+
+proc huffmanEncode*(s: string): seq[byte] =
+  ## Encode bytes with the RFC 7541 Appendix B Huffman table.
+  result = @[]
+  var bits: uint64 = 0
+  var bitsAvail = 0
+
+  for c in s:
+    let sym = ord(c) and 0xFF
+    let (code, codeLen) = HuffmanTable[sym]
+    bits = (bits shl int(codeLen)) or uint64(code)
+    bitsAvail += int(codeLen)
+
+    while bitsAvail >= 8:
+      let shift = bitsAvail - 8
+      result.add byte((bits shr shift) and 0xFF'u64)
+      bitsAvail -= 8
+      if bitsAvail == 0:
+        bits = 0
+      else:
+        bits = bits and ((1'u64 shl bitsAvail) - 1'u64)
+
+  if bitsAvail > 0:
+    let padLen = 8 - bitsAvail
+    bits = (bits shl padLen) or ((1'u64 shl padLen) - 1'u64)
+    result.add byte(bits and 0xFF'u64)
+
 # ============================================================
 # String encoding/decoding (RFC 7541 section 5.2)
 # ============================================================
 
 proc encodeString*(s: string, huffman: bool = false): seq[byte] =
-  # For simplicity, we use literal encoding (no Huffman)
+  if huffman:
+    let encoded = huffmanEncode(s)
+    result = encodeInteger(encoded.len, 7, 0x80)
+    result.add encoded
+    return
+
   result = encodeInteger(s.len, 7, 0x00)
   for c in s:
     result.add byte(c)

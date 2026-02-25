@@ -17,26 +17,35 @@ type
     buckets: Table[string, TokenBucket]
     maxTokens: int
     refillRate: float  # tokens per second
+    maxKeys: int
+    idleTtlSeconds: int
+    cleanupIntervalSeconds: int
+    lastCleanup: float
     lock: Lock
 
-proc newRateLimiter*(maxRequests: int, windowSeconds: int): RateLimiter =
+proc newRateLimiter*(maxRequests: int, windowSeconds: int,
+                     maxKeys: int = 10000,
+                     idleTtlSeconds: int = 600,
+                     cleanupIntervalSeconds: int = 60): RateLimiter =
   ## Create a new rate limiter. maxRequests per windowSeconds.
+  if maxRequests <= 0:
+    raise newException(ValueError, "maxRequests must be > 0")
+  if windowSeconds <= 0:
+    raise newException(ValueError, "windowSeconds must be > 0")
   result = RateLimiter(
     buckets: initTable[string, TokenBucket](),
     maxTokens: maxRequests,
-    refillRate: maxRequests.float / windowSeconds.float
+    refillRate: maxRequests.float / windowSeconds.float,
+    maxKeys: maxKeys,
+    idleTtlSeconds: idleTtlSeconds,
+    cleanupIntervalSeconds: cleanupIntervalSeconds,
+    lastCleanup: epochTime()
   )
   initLock(result.lock)
 
 proc extractIp*(req: HttpRequest): string =
-  ## Default key extractor: uses X-Forwarded-For or falls back to "unknown".
-  let forwarded = req.getHeader("x-forwarded-for")
-  if forwarded.len > 0:
-    return forwarded.split(',')[0].strip()
-  let realIp = req.getHeader("x-real-ip")
-  if realIp.len > 0:
-    return realIp
-  return "unknown"
+  ## Default key extractor: trusted client IP extraction.
+  extractClientIp(req)
 
 proc extractHeader*(headerName: string): proc(req: HttpRequest): string =
   ## Key extractor using a specific header value.
@@ -50,6 +59,30 @@ proc tryConsume(limiter: RateLimiter, key: string): (bool, int) =
   defer: release(limiter.lock)
 
   let now = epochTime()
+
+  if limiter.idleTtlSeconds > 0 and limiter.cleanupIntervalSeconds > 0:
+    if now - limiter.lastCleanup >= limiter.cleanupIntervalSeconds.float:
+      var staleKeys: seq[string]
+      for k, bucket in limiter.buckets:
+        if now - bucket.lastRefill >= limiter.idleTtlSeconds.float:
+          staleKeys.add k
+      for k in staleKeys:
+        limiter.buckets.del(k)
+      limiter.lastCleanup = now
+
+  var bucketExists = key in limiter.buckets
+  if not bucketExists and limiter.maxKeys > 0 and limiter.buckets.len >= limiter.maxKeys:
+    # Evict the stalest bucket to keep memory bounded.
+    var oldestKey = ""
+    var oldestTs = now
+    var haveOldest = false
+    for k, bucket in limiter.buckets:
+      if not haveOldest or bucket.lastRefill < oldestTs:
+        oldestKey = k
+        oldestTs = bucket.lastRefill
+        haveOldest = true
+    if haveOldest:
+      limiter.buckets.del(oldestKey)
 
   if key notin limiter.buckets:
     limiter.buckets[key] = TokenBucket(
@@ -73,10 +106,19 @@ proc tryConsume(limiter: RateLimiter, key: string): (bool, int) =
     return (false, retryAfter)
 
 proc rateLimitMiddleware*(maxRequests: int, windowSeconds: int,
-                           keyExtractor: proc(req: HttpRequest): string = nil): Middleware =
+                           keyExtractor: proc(req: HttpRequest): string = nil,
+                           maxKeys: int = 10000,
+                           idleTtlSeconds: int = 600,
+                           cleanupIntervalSeconds: int = 60): Middleware =
   ## Create a rate limiting middleware.
   ## Uses IP extraction by default. Pass a custom keyExtractor to use API keys etc.
-  let limiter = newRateLimiter(maxRequests, windowSeconds)
+  let limiter = newRateLimiter(
+    maxRequests,
+    windowSeconds,
+    maxKeys = maxKeys,
+    idleTtlSeconds = idleTtlSeconds,
+    cleanupIntervalSeconds = cleanupIntervalSeconds
+  )
   let capturedExtractor = keyExtractor
 
   result = proc(req: HttpRequest, next: HttpHandler): CpsFuture[HttpResponseBuilder] {.closure.} =

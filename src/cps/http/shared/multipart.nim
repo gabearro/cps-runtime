@@ -69,7 +69,6 @@ proc parseMultipart*(body: string, contentType: string): MultipartData =
     return
 
   let delimiter = "--" & boundary
-  let endDelimiter = delimiter & "--"
 
   # Split body on boundary
   var parts: seq[string]

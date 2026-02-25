@@ -1,0 +1,117 @@
+include "components/*.gui"
+include "flows/*.gui"
+
+app MomentumGui {
+  tokens {
+    color.primary = "#2dd4bf"
+    color.surface = "#0f172a"
+    spacing.sm = 8
+    spacing.md = 16
+    spacing.lg = 24
+  }
+
+  model Todo {
+    id: Int
+    title: String
+    done: Bool
+  }
+
+  state {
+    count: Int = 0
+    query: String = ""
+    networkStatus: String = "idle"
+    lastEvent: String = "none"
+    remindersEnabled: Bool = true
+  }
+
+  action Increment
+  action Tick
+  action SetQuery(value: String)
+  action NetSuccess
+  action NetError
+  action StreamEvent
+  action WsMessage
+  action ChunkSeen
+  action Persisted
+  action KeychainOk
+  action KeychainErr
+
+  reducer {
+    on Increment {
+      set count = count + 1
+      emit timer.once(ms: 250, action: Tick)
+      emit timer.debounce(id: "search", ms: 400, action: Persisted)
+      emit persist.defaults(key: "count", value: count)
+    }
+
+    on Tick {
+      set networkStatus = "tick"
+      emit timer.interval(id: "heartbeat", ms: 5000, action: Tick)
+    }
+
+    on SetQuery(value) {
+      set query = value
+      emit persist.file(key: "query", value: value)
+      emit http.request(method: "GET", url: "https://example.com", onSuccess: NetSuccess, onError: NetError)
+    }
+
+    on NetSuccess {
+      set networkStatus = "ok"
+      emit stream.sse(url: "https://example.com/events", onEvent: StreamEvent, onError: NetError)
+      emit stream.ws(url: "wss://echo.websocket.events", onMessage: WsMessage, onError: NetError, onClose: NetError)
+      emit stream.httpChunked(url: "https://example.com/chunks", onChunk: ChunkSeen, onError: NetError)
+    }
+
+    on NetError {
+      set networkStatus = "error"
+    }
+
+    on StreamEvent {
+      set lastEvent = "sse"
+    }
+
+    on WsMessage {
+      set lastEvent = "ws"
+    }
+
+    on ChunkSeen {
+      set lastEvent = "chunk"
+    }
+
+    on Persisted {
+      emit keychain.add(
+        service: "dev.cps.gui",
+        account: "session",
+        value: query,
+        attrs: {
+          "kSecAttrSynchronizable": true,
+          "kSecAttrLabel": "Momentum Session"
+        }
+      )
+      emit keychain.query(service: "dev.cps.gui", account: "session", onSuccess: KeychainOk, onError: KeychainErr)
+      emit keychain.update(service: "dev.cps.gui", account: "session", value: query)
+      emit keychain.delete(service: "dev.cps.gui", account: "obsolete")
+    }
+
+    on KeychainOk {
+      set lastEvent = "keychain-ok"
+    }
+
+    on KeychainErr {
+      set lastEvent = "keychain-error"
+    }
+  }
+
+  navigation {
+    tabs {
+      tab dashboard(root: Dashboard, stack: main)
+      tab settings(root: Settings, stack: main)
+    }
+
+    stack main {
+      route detail(component: Detail)
+    }
+  }
+
+  escape swiftFile "custom/CustomHooks.swift"
+}

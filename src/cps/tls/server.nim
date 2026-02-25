@@ -7,7 +7,7 @@
 ## on the reactor thread. In MT mode, if called from a worker thread, the
 ## initial call is proxied to the event loop via postToEventLoop.
 
-import std/[nativesockets, net, os, openssl]
+import std/[nativesockets, net, openssl]
 import ../runtime
 import ../eventloop
 import ../io/tcp
@@ -173,7 +173,8 @@ proc tlsServerStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
   proc doSend() =
     while sent < totalLen:
       let remaining = totalLen - sent
-      let ret = SSL_write(tls.ssl, unsafeAddr data[sent], remaining.cint)
+      let writePtr = cast[cstring](unsafeAddr data[sent])
+      let ret = SSL_write(tls.ssl, writePtr, remaining.cint)
       if ret > 0:
         sent += ret
       else:

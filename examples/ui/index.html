@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CPS UI Demo</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 2rem; }
+    #modal-root { margin-top: 1rem; padding: 0.75rem; border: 1px solid #ddd; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="modal-root"></div>
+
+  <script type="module">
+    import { loadNimUiWasm } from "../../src/cps/ui/js/loader.js";
+    await loadNimUiWasm("./counter_app.wasm", { selector: "#app" });
+  </script>
+</body>
+</html>

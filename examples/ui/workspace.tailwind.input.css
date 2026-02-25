@@ -1,0 +1,727 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ═══════════════════════════════════════════════════════════════
+   Momentum Workspace — "Nebula" Design System
+   Dark-first glass-morphism with mesh gradients and glow accents
+   ═══════════════════════════════════════════════════════════════ */
+
+@layer base {
+  :root {
+    --bg-deep: #020617;
+    --bg-base: #0f172a;
+    --surface: rgba(255, 255, 255, 0.024);
+    --surface-2: rgba(255, 255, 255, 0.045);
+    --surface-3: rgba(255, 255, 255, 0.065);
+    --border: rgba(255, 255, 255, 0.06);
+    --border-hover: rgba(255, 255, 255, 0.12);
+    --border-strong: rgba(255, 255, 255, 0.18);
+    --accent: #2dd4bf;
+    --accent-dim: rgba(45, 212, 191, 0.14);
+    --accent-glow: rgba(45, 212, 191, 0.25);
+  }
+
+  *,
+  *::before,
+  *::after {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.12) transparent;
+  }
+
+  body {
+    @apply min-h-screen antialiased;
+    font-family: "Outfit", system-ui, -apple-system, sans-serif;
+    color: #e2e8f0;
+    background: var(--bg-deep);
+  }
+
+  /* ─── Mesh gradient background ─── */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse 120% 70% at 12% -15%, rgba(45, 212, 191, 0.09), transparent 55%),
+      radial-gradient(ellipse 80% 55% at 88% 5%, rgba(139, 92, 246, 0.07), transparent 50%),
+      radial-gradient(ellipse 90% 70% at 50% 120%, rgba(244, 114, 182, 0.05), transparent 50%),
+      radial-gradient(ellipse 60% 40% at 60% 40%, rgba(56, 189, 248, 0.03), transparent 50%);
+  }
+
+  /* ─── Grid texture ─── */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.028;
+    background-image:
+      linear-gradient(rgba(148, 163, 184, 0.6) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.6) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(ellipse 65% 55% at center, black 10%, transparent 80%);
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    letter-spacing: -0.035em;
+    color: #f8fafc;
+  }
+}
+
+@layer components {
+  /* ═══════════════════════════════════════
+     Shell & Frame
+     ═══════════════════════════════════════ */
+
+  .workspace-shell {
+    @apply relative mx-auto max-w-[92rem] px-4 py-6 sm:px-6 lg:px-8;
+    z-index: 1;
+  }
+
+  .workspace-frame {
+    @apply relative overflow-hidden rounded-[2rem] border p-4 sm:p-5;
+    border-color: var(--border);
+    background: rgba(15, 23, 42, 0.52);
+    backdrop-filter: blur(48px) saturate(130%);
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.02) inset,
+      0 48px 120px -24px rgba(0, 0, 0, 0.55);
+  }
+
+  .workspace-frame::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 5%;
+    right: 5%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(45, 212, 191, 0.2), rgba(139, 92, 246, 0.15), transparent);
+  }
+
+  #app {
+    @apply relative;
+    z-index: 1;
+  }
+
+  /* ═══════════════════════════════════════
+     Application Shell
+     ═══════════════════════════════════════ */
+
+  .workspace-app {
+    @apply space-y-5;
+  }
+
+  /* ─── Header ─── */
+  .workspace-app > header {
+    @apply relative overflow-hidden rounded-[1.5rem] border p-6 sm:p-8;
+    border-color: var(--border);
+    background:
+      linear-gradient(140deg, rgba(15, 23, 42, 0.85), rgba(30, 41, 59, 0.55));
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.03) inset,
+      0 28px 64px -16px rgba(0, 0, 0, 0.45);
+  }
+
+  .workspace-app > header::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent 5%, rgba(45, 212, 191, 0.25), rgba(139, 92, 246, 0.18), transparent 95%);
+  }
+
+  .workspace-app > header::after {
+    content: "";
+    position: absolute;
+    top: -60%;
+    right: -15%;
+    width: 55%;
+    height: 220%;
+    pointer-events: none;
+    background: radial-gradient(circle, color-mix(in srgb, var(--accent), transparent 85%) 0%, transparent 55%);
+    opacity: 0.8;
+  }
+
+  .workspace-app > header > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .workspace-app > header [data-testid="app-title"] {
+    @apply text-4xl font-black sm:text-5xl;
+    letter-spacing: -0.045em;
+    color: white;
+    text-wrap: balance;
+  }
+
+  /* ─── Navigation Pills ─── */
+  .workspace-app nav a {
+    @apply inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold no-underline transition-all duration-200;
+    color: #94a3b8;
+    background: transparent;
+    border: 1px solid transparent;
+  }
+
+  .workspace-app nav a:hover {
+    color: #f1f5f9;
+    background: var(--surface-2);
+    border-color: var(--border-hover);
+    box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.3);
+  }
+
+  /* Active route chip */
+  .workspace-app [data-testid^="nav-"] {
+    @apply rounded-lg px-3 py-1 text-[10px] font-bold uppercase tracking-[0.15em];
+    color: var(--accent);
+    background: var(--accent-dim);
+    border: 1px solid rgba(45, 212, 191, 0.18);
+  }
+
+  /* ═══════════════════════════════════════
+     Card System
+     ═══════════════════════════════════════ */
+
+  .workspace-app section,
+  .workspace-app footer {
+    @apply relative overflow-hidden rounded-[1.25rem] border;
+    border-color: var(--border);
+    background: var(--surface);
+    backdrop-filter: blur(16px);
+  }
+
+  /* Top edge highlight */
+  .workspace-app section::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 8%;
+    right: 8%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+    z-index: 2;
+  }
+
+  /* Inner glow */
+  .workspace-app section::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(160deg, rgba(255, 255, 255, 0.03) 0%, transparent 28%);
+    z-index: 0;
+  }
+
+  .workspace-app section > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* ═══════════════════════════════════════
+     Typography Overrides
+     ═══════════════════════════════════════ */
+
+  .workspace-app h2 {
+    @apply text-2xl font-black;
+    color: white;
+  }
+
+  .workspace-app h3,
+  .workspace-app h4 {
+    color: #f1f5f9;
+  }
+
+  .workspace-app p,
+  .workspace-app span,
+  .workspace-app li,
+  .workspace-app label {
+    color: #cbd5e1;
+  }
+
+  /* Remap light-theme text utilities */
+  .workspace-app .text-slate-500,
+  .workspace-app .text-slate-600 {
+    color: #64748b !important;
+  }
+
+  .workspace-app .text-slate-700,
+  .workspace-app .text-slate-800,
+  .workspace-app .text-slate-900 {
+    color: #e2e8f0 !important;
+  }
+
+  /* Remap light-theme backgrounds */
+  .workspace-app .bg-white,
+  .workspace-app .bg-white\/85,
+  .workspace-app .bg-white\/90,
+  .workspace-app .bg-white\/95 {
+    background-color: var(--surface) !important;
+  }
+
+  .workspace-app .bg-slate-50,
+  .workspace-app .bg-slate-100 {
+    background-color: var(--surface-2) !important;
+  }
+
+  .workspace-app .border-slate-200,
+  .workspace-app .border-slate-300 {
+    border-color: var(--border) !important;
+  }
+
+  /* ═══════════════════════════════════════
+     Form Controls
+     ═══════════════════════════════════════ */
+
+  .workspace-app input,
+  .workspace-app select,
+  .workspace-app textarea {
+    @apply rounded-xl border px-4 py-2.5 text-sm transition-all duration-200;
+    color: #f1f5f9 !important;
+    background: rgba(2, 6, 23, 0.5) !important;
+    border-color: var(--border) !important;
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.2) inset;
+  }
+
+  .workspace-app input::placeholder,
+  .workspace-app textarea::placeholder {
+    color: #475569;
+  }
+
+  .workspace-app input:focus,
+  .workspace-app select:focus,
+  .workspace-app textarea:focus {
+    outline: none;
+    border-color: var(--accent) !important;
+    box-shadow:
+      0 0 0 3px var(--accent-dim),
+      0 0 24px -4px var(--accent-glow);
+  }
+
+  .workspace-app input[type="checkbox"] {
+    @apply h-4 w-4 cursor-pointer rounded;
+    accent-color: var(--accent);
+    box-shadow: none;
+  }
+
+  /* ═══════════════════════════════════════
+     Buttons
+     ═══════════════════════════════════════ */
+
+  .workspace-app button {
+    @apply cursor-pointer rounded-xl border px-3 py-2 text-sm font-semibold transition-all duration-200;
+    color: #e2e8f0;
+    background: rgba(15, 23, 42, 0.6);
+    border-color: var(--border);
+  }
+
+  .workspace-app button:hover {
+    background: rgba(30, 41, 59, 0.7);
+    border-color: var(--border-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.35);
+  }
+
+  .workspace-app button:active {
+    transform: translateY(0);
+    box-shadow: none;
+  }
+
+  /* Primary (dark bg) */
+  .workspace-app button.bg-slate-900,
+  .workspace-app button.bg-emerald-600 {
+    background: linear-gradient(135deg, rgba(45, 212, 191, 0.18), rgba(20, 184, 166, 0.08)) !important;
+    border: 1px solid rgba(45, 212, 191, 0.28) !important;
+    color: var(--accent) !important;
+  }
+
+  .workspace-app button.bg-slate-900:hover,
+  .workspace-app button.bg-emerald-600:hover {
+    background: linear-gradient(135deg, rgba(45, 212, 191, 0.28), rgba(20, 184, 166, 0.14)) !important;
+    border-color: rgba(45, 212, 191, 0.45) !important;
+    box-shadow: 0 0 32px -4px var(--accent-glow);
+  }
+
+  /* Ghost */
+  .workspace-app button.bg-white {
+    background: var(--surface-2) !important;
+    border: 1px solid var(--border) !important;
+    color: #94a3b8 !important;
+  }
+
+  .workspace-app button.bg-white:hover {
+    background: var(--surface-3) !important;
+    border-color: var(--border-hover) !important;
+    color: #e2e8f0 !important;
+  }
+
+  /* Rose / Danger */
+  .workspace-app button.bg-rose-50 {
+    background: rgba(244, 63, 94, 0.08) !important;
+    border: 1px solid rgba(244, 63, 94, 0.18) !important;
+    color: #fb7185 !important;
+  }
+
+  .workspace-app button.bg-rose-50:hover {
+    background: rgba(244, 63, 94, 0.16) !important;
+    border-color: rgba(244, 63, 94, 0.32) !important;
+    box-shadow: 0 0 24px -4px rgba(251, 113, 133, 0.2);
+  }
+
+  /* Violet / Priority */
+  .workspace-app button.bg-violet-50 {
+    background: rgba(139, 92, 246, 0.08) !important;
+    border: 1px solid rgba(139, 92, 246, 0.18) !important;
+    color: #a78bfa !important;
+  }
+
+  .workspace-app button.bg-violet-50:hover {
+    background: rgba(139, 92, 246, 0.16) !important;
+    border-color: rgba(139, 92, 246, 0.32) !important;
+  }
+
+  /* Amber / Focus */
+  .workspace-app button.bg-amber-500,
+  .workspace-app button.bg-amber-50 {
+    background: rgba(245, 158, 11, 0.08) !important;
+    border: 1px solid rgba(245, 158, 11, 0.18) !important;
+    color: #fbbf24 !important;
+  }
+
+  .workspace-app button.bg-amber-500:hover,
+  .workspace-app button.bg-amber-50:hover {
+    background: rgba(245, 158, 11, 0.16) !important;
+    border-color: rgba(245, 158, 11, 0.32) !important;
+  }
+
+  /* ═══════════════════════════════════════
+     Stat Cards (article elements)
+     ═══════════════════════════════════════ */
+
+  .workspace-app article {
+    @apply relative overflow-hidden transition-all duration-300;
+    border-color: var(--border) !important;
+  }
+
+  .workspace-app article:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 16px 40px -8px rgba(0, 0, 0, 0.35);
+  }
+
+  /* Accent top line */
+  .workspace-app article::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    z-index: 2;
+  }
+
+  /* Color-coded card backgrounds */
+  .workspace-app article.border-slate-200 {
+    background: rgba(100, 116, 139, 0.05) !important;
+  }
+  .workspace-app article.border-slate-200::before {
+    background: linear-gradient(90deg, #64748b, #94a3b8);
+  }
+
+  .workspace-app article.border-sky-200 {
+    background: rgba(14, 165, 233, 0.05) !important;
+  }
+  .workspace-app article.border-sky-200::before {
+    background: linear-gradient(90deg, #0ea5e9, #38bdf8);
+  }
+
+  .workspace-app article.border-emerald-200 {
+    background: rgba(16, 185, 129, 0.05) !important;
+  }
+  .workspace-app article.border-emerald-200::before {
+    background: linear-gradient(90deg, #10b981, #34d399);
+  }
+
+  .workspace-app article.border-amber-200 {
+    background: rgba(245, 158, 11, 0.05) !important;
+  }
+  .workspace-app article.border-amber-200::before {
+    background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  }
+
+  /* Stat value typography */
+  .workspace-app article .text-3xl {
+    @apply text-4xl tabular-nums;
+    color: white !important;
+    letter-spacing: -0.04em;
+  }
+
+  /* ═══════════════════════════════════════
+     Badge System
+     ═══════════════════════════════════════ */
+
+  /* Status badges */
+  .workspace-app .bg-slate-100.text-slate-700 {
+    background: rgba(100, 116, 139, 0.1) !important;
+    color: #94a3b8 !important;
+    border-color: rgba(100, 116, 139, 0.18) !important;
+  }
+
+  .workspace-app .bg-sky-100.text-sky-700 {
+    background: rgba(14, 165, 233, 0.1) !important;
+    color: #38bdf8 !important;
+    border-color: rgba(14, 165, 233, 0.18) !important;
+  }
+
+  .workspace-app .bg-emerald-100.text-emerald-700 {
+    background: rgba(16, 185, 129, 0.1) !important;
+    color: #34d399 !important;
+    border-color: rgba(16, 185, 129, 0.18) !important;
+  }
+
+  .workspace-app .bg-violet-100.text-violet-700 {
+    background: rgba(139, 92, 246, 0.1) !important;
+    color: #a78bfa !important;
+    border-color: rgba(139, 92, 246, 0.18) !important;
+  }
+
+  .workspace-app .bg-rose-100.text-rose-700 {
+    background: rgba(244, 63, 94, 0.1) !important;
+    color: #fb7185 !important;
+    border-color: rgba(244, 63, 94, 0.18) !important;
+  }
+
+  .workspace-app .bg-amber-100.text-amber-700 {
+    background: rgba(245, 158, 11, 0.1) !important;
+    color: #fbbf24 !important;
+    border-color: rgba(245, 158, 11, 0.18) !important;
+  }
+
+  /* Theme badges */
+  .workspace-app .bg-emerald-100.text-emerald-800 {
+    background: rgba(45, 212, 191, 0.1) !important;
+    color: #2dd4bf !important;
+    border-color: rgba(45, 212, 191, 0.22) !important;
+  }
+
+  .workspace-app .bg-blue-100.text-blue-800 {
+    background: rgba(59, 130, 246, 0.1) !important;
+    color: #60a5fa !important;
+    border-color: rgba(59, 130, 246, 0.22) !important;
+  }
+
+  .workspace-app .bg-amber-100.text-amber-800 {
+    background: rgba(245, 158, 11, 0.1) !important;
+    color: #fbbf24 !important;
+    border-color: rgba(245, 158, 11, 0.22) !important;
+  }
+
+  /* ═══════════════════════════════════════
+     Task List
+     ═══════════════════════════════════════ */
+
+  .workspace-app [data-testid="task-list"] > li {
+    @apply transition-all duration-200;
+    background: rgba(15, 23, 42, 0.4) !important;
+    border-color: var(--border) !important;
+  }
+
+  .workspace-app [data-testid="task-list"] > li:hover {
+    background: rgba(30, 41, 59, 0.45) !important;
+    border-color: var(--border-hover) !important;
+    transform: translateY(-1px);
+    box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.3);
+  }
+
+  /* ═══════════════════════════════════════
+     Progress Bar
+     ═══════════════════════════════════════ */
+
+  .workspace-app .h-3.rounded-full.bg-slate-200,
+  .workspace-app .progress-track {
+    background: rgba(255, 255, 255, 0.04) !important;
+    overflow: hidden;
+  }
+
+  .workspace-app .h-3.rounded-full.bg-slate-200 > div,
+  .workspace-app .progress-fill {
+    box-shadow: 0 0 16px 2px var(--accent-glow);
+  }
+
+  /* ═══════════════════════════════════════
+     SVG Progress Ring
+     ═══════════════════════════════════════ */
+
+  .workspace-app .progress-ring-track {
+    stroke: rgba(255, 255, 255, 0.05);
+  }
+
+  .workspace-app .progress-ring-fill {
+    filter: drop-shadow(0 0 6px var(--accent-glow));
+    transition: stroke-dashoffset 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* ═══════════════════════════════════════
+     Modal
+     ═══════════════════════════════════════ */
+
+  [data-testid="task-modal"] {
+    background: rgba(2, 6, 23, 0.65) !important;
+    backdrop-filter: blur(12px);
+  }
+
+  [data-testid="task-modal"] > div {
+    border-color: var(--border-hover) !important;
+    background:
+      linear-gradient(150deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.92)) !important;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.04) inset,
+      0 48px 96px -24px rgba(0, 0, 0, 0.55);
+    animation: modal-enter 280ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* ═══════════════════════════════════════
+     Command Palette
+     ═══════════════════════════════════════ */
+
+  [data-testid="command-palette"] {
+    border-color: rgba(45, 212, 191, 0.16) !important;
+    background: rgba(15, 23, 42, 0.92) !important;
+    backdrop-filter: blur(32px);
+    box-shadow:
+      0 0 0 1px rgba(45, 212, 191, 0.06) inset,
+      0 32px 64px -16px rgba(0, 0, 0, 0.5),
+      0 0 64px -8px var(--accent-dim);
+    animation: modal-enter 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* ═══════════════════════════════════════
+     Dashboard Map
+     ═══════════════════════════════════════ */
+
+  [data-testid="dashboard-map"] {
+    border-color: rgba(45, 212, 191, 0.1) !important;
+  }
+
+  /* ═══════════════════════════════════════
+     Focus Queue
+     ═══════════════════════════════════════ */
+
+  [data-testid="focus-queue"] {
+    border-color: rgba(245, 158, 11, 0.1) !important;
+  }
+
+  /* ═══════════════════════════════════════
+     Contextual Banners
+     ═══════════════════════════════════════ */
+
+  /* Saved / success */
+  .workspace-app .border-emerald-200.bg-emerald-50 {
+    background: rgba(16, 185, 129, 0.08) !important;
+    border-color: rgba(16, 185, 129, 0.18) !important;
+    color: #34d399 !important;
+  }
+
+  /* Goal preview */
+  [data-testid="goal-preview"] {
+    background: rgba(16, 185, 129, 0.06) !important;
+    border-color: rgba(16, 185, 129, 0.16) !important;
+    color: #34d399 !important;
+  }
+
+  /* Goal error */
+  [data-testid="goal-fallback"] {
+    background: rgba(244, 63, 94, 0.06) !important;
+    border-color: rgba(244, 63, 94, 0.16) !important;
+    color: #fb7185 !important;
+  }
+
+  /* Tip / warning */
+  .workspace-app .border-amber-200.bg-amber-50 {
+    background: rgba(245, 158, 11, 0.06) !important;
+    border-color: rgba(245, 158, 11, 0.16) !important;
+    color: #fbbf24 !important;
+  }
+
+  /* Not found / error */
+  .workspace-app .border-rose-200.bg-rose-50 {
+    background: rgba(244, 63, 94, 0.06) !important;
+    border-color: rgba(244, 63, 94, 0.16) !important;
+    color: #fb7185 !important;
+  }
+
+  /* ═══════════════════════════════════════
+     SVG Charts
+     ═══════════════════════════════════════ */
+
+  .workspace-app svg text {
+    fill: #cbd5e1 !important;
+    font-family: "Outfit", system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .workspace-app svg rect {
+    rx: 6;
+  }
+
+  /* ═══════════════════════════════════════
+     Footer
+     ═══════════════════════════════════════ */
+
+  .workspace-app > footer {
+    @apply px-5 py-3;
+    background: var(--surface) !important;
+  }
+
+  .workspace-app > footer p {
+    color: #475569 !important;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 0.02em;
+  }
+
+  /* ═══════════════════════════════════════
+     Focus Mode Breathing
+     ═══════════════════════════════════════ */
+
+  .breathe-ring {
+    animation: breathe 4s ease-in-out infinite;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--accent-dim) 0%, transparent 70%);
+  }
+
+  /* ═══════════════════════════════════════
+     Custom focus-chip / board-chip
+     ═══════════════════════════════════════ */
+
+  focus-chip,
+  board-chip {
+    @apply inline-flex items-center rounded-full;
+  }
+}
+
+/* ═══════════════════════════════════════
+   Utility animations
+   ═══════════════════════════════════════ */
+
+@layer utilities {
+  @keyframes modal-enter {
+    from {
+      opacity: 0;
+      transform: translateY(16px) scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  @keyframes breathe {
+    0%, 100% { transform: scale(1); opacity: 0.6; }
+    50% { transform: scale(1.06); opacity: 1; }
+  }
+}

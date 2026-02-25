@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CPS UI Tailwind SPA</title>
+  <link rel="stylesheet" href="/ui/test_spa.tailwind.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <div class="surface-panel ambient-glow p-2 sm:p-3">
+      <div id="app"></div>
+    </div>
+    <div class="mt-6 rounded-2xl border border-emerald-200/70 bg-emerald-50/85 p-2 shadow-lg shadow-emerald-900/10">
+      <div id="modal-root"></div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { loadNimUiWasm } from "/src/cps/ui/js/loader.js";
+    await loadNimUiWasm("/ui/test_spa_app.wasm", { selector: "#app" });
+  </script>
+</body>
+</html>

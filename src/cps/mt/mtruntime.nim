@@ -64,6 +64,15 @@ proc makeCallbackDispatcher(rt: CpsRuntime): proc(cb: proc() {.closure.}) {.clos
         let task = cast[SchedulerTask](cb)
         sched.schedule(task)
 
+proc makePinnedCallbackDispatcher(rt: CpsRuntime): proc(workerId: int, cb: proc() {.closure.}): bool {.closure, gcsafe.} =
+  result = proc(workerId: int, cb: proc() {.closure.}): bool {.closure, gcsafe.} =
+    {.cast(gcsafe).}:
+      let sched = asScheduler(rt)
+      if sched == nil:
+        return false
+      let task = cast[SchedulerTask](cb)
+      sched.schedulePinned(workerId, task)
+
 proc makeYieldDispatcher(rt: CpsRuntime): proc(cb: proc() {.closure, gcsafe.}) {.closure, gcsafe.} =
   result = proc(cb: proc() {.closure, gcsafe.}) {.closure, gcsafe.} =
     {.cast(gcsafe).}:
@@ -115,6 +124,7 @@ proc createMtRuntime(config: RuntimeConfig): CpsRuntime {.nimcall.} =
     rt.schedulerPtr = cast[RootRef](cast[pointer](sched))
 
     rt.callbackDispatcher = makeCallbackDispatcher(rt)
+    rt.pinnedCallbackDispatcher = makePinnedCallbackDispatcher(rt)
     rt.yieldDispatcher = makeYieldDispatcher(rt)
     rt.wakeReactor = makeWakeDispatcher(rt)
 
@@ -250,6 +260,7 @@ proc shutdownMtRuntime*(rt: CpsRuntime) =
       loop.markWakeDrained()
 
     rt.callbackDispatcher = nil
+    rt.pinnedCallbackDispatcher = nil
     rt.yieldDispatcher = nil
     rt.wakeReactor = nil
     rt.mtActive = false

@@ -42,6 +42,11 @@ proc initChunked*(stream: AsyncStream, statusCode: int = 200,
   ## For HTTP/1.1, uses Transfer-Encoding: chunked.
   let fut = newCpsFuture[ChunkedWriter]()
 
+  for (k, v) in extraHeaders:
+    if not validateHeaderPair(k, v):
+      fut.fail(newException(ValueError, "Invalid chunked response header"))
+      return fut
+
   if stream of Http2StreamAdapter:
     # HTTP/2: send HEADERS frame (no END_STREAM) via the adapter
     let adapter = Http2StreamAdapter(stream)

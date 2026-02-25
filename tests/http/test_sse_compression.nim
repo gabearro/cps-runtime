@@ -7,7 +7,6 @@ import cps/transform
 import cps/eventloop
 import cps/io/streams
 import cps/io/tcp
-import cps/io/buffered
 import cps/http/server/types
 import cps/http/server/http1 as http1_server
 import cps/http/server/sse

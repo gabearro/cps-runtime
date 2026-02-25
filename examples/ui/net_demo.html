@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CPS UI Network Demo</title>
+  <style>
+    :root {
+      font-family: "Inter", "Segoe UI", sans-serif;
+      color: #1f2937;
+      background: #f8fafc;
+    }
+    body {
+      margin: 0;
+      padding: 2rem 1rem;
+      background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+    }
+    .shell {
+      max-width: 48rem;
+      margin: 0 auto;
+      border: 1px solid #cbd5e1;
+      border-radius: 1rem;
+      background: #ffffff;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+      overflow: hidden;
+    }
+    .header {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid #e2e8f0;
+      background: #eff6ff;
+    }
+    .header h1 {
+      margin: 0;
+      font-size: 1.1rem;
+    }
+    .header p {
+      margin: 0.5rem 0 0;
+      color: #475569;
+      font-size: 0.9rem;
+    }
+    .app {
+      padding: 1.25rem;
+    }
+    .legend {
+      margin: 0;
+      padding: 0 1.25rem 1.25rem;
+      font-size: 0.85rem;
+      color: #64748b;
+    }
+    code {
+      font-family: "JetBrains Mono", "SFMono-Regular", monospace;
+      font-size: 0.85em;
+      background: #e2e8f0;
+      border-radius: 0.3rem;
+      padding: 0.1rem 0.25rem;
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="header">
+      <h1>Server ↔ Frontend Network Demo</h1>
+      <p>Frontend automatically calls real server routes for fetch, WebSocket, and SSE.</p>
+    </header>
+    <section class="app">
+      <div id="app"></div>
+    </section>
+    <p class="legend">
+      Routes: <code>/api/net/fetch</code>, <code>/ws/net</code>, <code>/events/net</code>
+    </p>
+  </main>
+
+  <script type="module">
+    import { loadNimUiWasm } from "/src/cps/ui/js/loader.js";
+    await loadNimUiWasm("/ui/net_app.wasm", { selector: "#app" });
+  </script>
+</body>
+</html>

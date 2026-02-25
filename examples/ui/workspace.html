@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>Momentum — Workspace</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Outfit:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/ui/workspace.tailwind.css" />
+</head>
+<body>
+  <main class="workspace-shell">
+    <div class="workspace-frame">
+      <div id="app"></div>
+    </div>
+    <div id="modal-root"></div>
+  </main>
+
+  <script type="module">
+    import { loadNimUiWasm } from "/src/cps/ui/js/loader.js";
+    if (location.pathname.endsWith("/ui/workspace.html")) {
+      history.replaceState({}, "", "/");
+    }
+    await loadNimUiWasm("/ui/workspace_app.wasm", { selector: "#app" });
+  </script>
+</body>
+</html>

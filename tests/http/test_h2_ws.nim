@@ -5,7 +5,7 @@
 ## manually constructs HTTP/2 frames containing WebSocket frames
 ## as DATA payloads.
 
-import std/[strutils, nativesockets, sysrand, base64]
+import std/[nativesockets, sysrand, strutils]
 from std/posix import Sockaddr_in, SockLen
 import cps/runtime
 import cps/transform
@@ -54,11 +54,20 @@ proc recvH2Frame(reader: BufferedReader): CpsFuture[Http2Frame] {.cps.} =
 
 proc sendConnectionPreface(s: AsyncStream): CpsVoidFuture {.cps.} =
   await s.write(ConnectionPreface)
+  let enableConnect = 1'u32
+  let payload = @[
+    byte((SettingsEnableConnectProtocol shr 8) and 0xFF),
+    byte(SettingsEnableConnectProtocol and 0xFF),
+    byte((enableConnect shr 24) and 0xFF),
+    byte((enableConnect shr 16) and 0xFF),
+    byte((enableConnect shr 8) and 0xFF),
+    byte(enableConnect and 0xFF)
+  ]
   let settingsFrame = Http2Frame(
     frameType: FrameSettings,
     flags: 0,
     streamId: 0,
-    payload: @[]
+    payload: payload
   )
   await sendH2Frame(s, settingsFrame)
 
@@ -102,7 +111,7 @@ proc buildWsFrame(opcode: byte, payload: string, masked: bool = false,
 
 proc sendWsFrameOverH2(s: AsyncStream, streamId: uint32,
                         opcode: byte, payload: string,
-                        masked: bool = false): CpsVoidFuture {.cps.} =
+                        masked: bool = true): CpsVoidFuture {.cps.} =
   ## Send a WebSocket frame embedded in an HTTP/2 DATA frame.
   let wsFrame = buildWsFrame(opcode, payload, masked)
   var wsBytes = newSeq[byte](wsFrame.len)
@@ -424,6 +433,85 @@ block testSameHandlerBothProtocols:
   assert result == "universal:test", "Expected 'universal:test', got: '" & result & "'"
   listener.close()
   echo "PASS: Same WS handler works for HTTP/2"
+
+# ============================================================
+# Test 4: HTTP/2 WebSocket handshake rejects missing Sec-WebSocket-Version
+# ============================================================
+block testWsH2RejectsMissingVersionHeader:
+  let listener = tcpListen("127.0.0.1", 0)
+  let port = getListenerPort(listener)
+  let config = HttpServerConfig()
+
+  proc wsHandshakeOnly(req: HttpRequest): CpsFuture[HttpResponseBuilder] {.cps.} =
+    discard await acceptWebSocket(req)
+    return wsResponse()
+
+  proc serverTask(l: TcpListener, cfg: HttpServerConfig,
+                  h: HttpHandler): CpsVoidFuture {.cps.} =
+    let client = await l.accept()
+    await handleHttp2Connection(client.AsyncStream, cfg, h)
+
+  proc clientTask(p: int): CpsFuture[int] {.cps.} =
+    let conn = await tcpConnect("127.0.0.1", p)
+    let s = conn.AsyncStream
+    let reader = newBufferedReader(s)
+
+    await sendConnectionPreface(s)
+    discard await recvH2Frame(reader)
+    await sendH2Frame(s, Http2Frame(frameType: FrameSettings, flags: FlagAck, streamId: 0, payload: @[]))
+    discard await recvH2Frame(reader)
+
+    # Missing sec-websocket-version on purpose.
+    let headers = encodeHeaders(@[
+      (":method", "CONNECT"),
+      (":protocol", "websocket"),
+      (":path", "/ws"),
+      (":scheme", "http"),
+      (":authority", "localhost")
+    ])
+    await sendH2Frame(s, Http2Frame(
+      frameType: FrameHeaders,
+      flags: FlagEndHeaders,
+      streamId: 1,
+      payload: headers
+    ))
+
+    var status = 0
+    var gotStatus = false
+    var attempts = 0
+    var done = false
+    while attempts < 8 and not done:
+      var frame: Http2Frame
+      var gotFrame = false
+      try:
+        frame = await recvH2Frame(reader)
+        gotFrame = true
+      except CatchableError:
+        done = true
+      if gotFrame and frame.frameType == FrameHeaders and frame.streamId == 1:
+        let respHeaders = decodeHeaders(frame.payload)
+        for (k, v) in respHeaders:
+          if k == ":status":
+            status = parseInt(v)
+            gotStatus = true
+            done = true
+      inc attempts
+
+    s.close()
+    return status
+
+  let sf = serverTask(listener, config, wsHandshakeOnly)
+  let cf = clientTask(port)
+  let loop = getEventLoop()
+  while not cf.finished:
+    loop.tick()
+    if not loop.hasWork:
+      break
+
+  let status = cf.read()
+  assert status == 500, "Expected HTTP 500 when Sec-WebSocket-Version is missing, got: " & $status
+  listener.close()
+  echo "PASS: HTTP/2 WebSocket handshake rejects missing Sec-WebSocket-Version"
 
 echo ""
 echo "All HTTP/2 WebSocket tests passed!"

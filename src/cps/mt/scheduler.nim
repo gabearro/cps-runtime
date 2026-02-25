@@ -10,6 +10,7 @@ import std/[locks, cpuinfo, atomics, os]
 import ../runtime
 import ../private/chase_lev
 import ../private/mpmc_ring
+import ../private/mpsc_queue
 
 # Simple xorshift32 PRNG for random peer selection.
 # Avoids importing std/random which causes OpenSSL library conflicts on macOS.
@@ -36,6 +37,7 @@ type
 
   WorkerState = object
     deque: ChaseLevDeque[SchedulerTask]  ## Lock-free work-stealing deque
+    pinnedQueue: MpscQueue               ## Lock-free MPSC queue for worker-pinned tasks
     parked: bool
 
   WorkerArg = object
@@ -75,6 +77,23 @@ proc popGlobal(s: ptr SchedulerObj): SchedulerTask =
   else:
     result = nil
 
+proc popPinned(ws: ptr WorkerState): SchedulerTask {.inline.} =
+  let node = dequeue(ws.pinnedQueue)
+  if node == nil:
+    return nil
+  result = cast[SchedulerTask](node.callback)
+  freeNode(node)
+
+proc pinnedQueueHasPending(ws: ptr WorkerState): bool {.inline.} =
+  ## MPSC enqueue has a brief window where tail is advanced before prev.next
+  ## is linked. In that window isEmpty() can transiently read true even though
+  ## work is in flight, so also check head != tail.
+  if not isEmpty(ws.pinnedQueue):
+    return true
+  let head = ws.pinnedQueue.head
+  let tail = cast[ptr MpscNode](ws.pinnedQueue.tail.load(moAcquire))
+  result = head != tail
+
 proc tryReserveInjectSlot(s: ptr SchedulerObj): bool {.inline.} =
   while true:
     let cur = s.injectLen.load(moAcquire)
@@ -94,6 +113,15 @@ proc wakeOneWorkerIfParked(s: ptr SchedulerObj) {.inline.} =
     return
   acquire(s.globalLock)
   signal(s.globalCond)
+  release(s.globalLock)
+
+proc wakeAllWorkersIfParked(s: ptr SchedulerObj) {.inline.} =
+  ## Wake all parked workers. Used for worker-pinned queues where only one
+  ## specific worker can execute the task and signal() may wake the wrong one.
+  if s.parkedCount.load(moAcquire) <= 0:
+    return
+  acquire(s.globalLock)
+  broadcast(s.globalCond)
   release(s.globalLock)
 
 proc tryEnqueueInjectTask(s: ptr SchedulerObj, task: SchedulerTask): bool {.inline.} =
@@ -134,6 +162,7 @@ proc workerMain(arg: WorkerArg) {.thread.} =
   let myIdx = arg.idx
   workerIdx = myIdx
   isSchedulerWorker = true
+  currentWorkerId = myIdx
   currentSchedulerPtr = cast[pointer](s)
   {.cast(gcsafe).}:
     setCurrentRuntime(arg.runtime)
@@ -144,8 +173,12 @@ proc workerMain(arg: WorkerArg) {.thread.} =
   while true:
     var task: SchedulerTask = nil
 
+    # 0. Try worker-pinned inbox first.
+    task = popPinned(myState)
+
     # 1. Try local deque (LIFO, cache-friendly)
-    task = popLocal(myState)
+    if task == nil:
+      task = popLocal(myState)
 
     # 2. Try global queue (FIFO, fair)
     if task == nil:
@@ -166,28 +199,26 @@ proc workerMain(arg: WorkerArg) {.thread.} =
       continue
 
     # No work found - check shutdown before parking
-    if s.shutdown.load(moRelaxed):
+    if s.shutdown.load(moAcquire):
       break
 
     # Park: wait on global condition
     acquire(s.globalLock)
-    if s.injectLen.load(moAcquire) > 0:
-      release(s.globalLock)
-      continue
-    if s.shutdown.load(moRelaxed):
-      release(s.globalLock)
-      break
     myState.parked = true
     discard s.parkedCount.fetchAdd(1, moAcquireRelease)
-    # Work may have arrived after the pre-park checks and before we actually
-    # blocked on the condvar. Re-check under the park lock to avoid sleeping
-    # on a non-empty inject queue.
+    # Mark parked before checking queues so producers can reliably see
+    # parkedCount > 0 and wake us for newly enqueued work.
     if s.injectLen.load(moAcquire) > 0:
       myState.parked = false
       discard s.parkedCount.fetchSub(1, moAcquireRelease)
       release(s.globalLock)
       continue
-    if s.shutdown.load(moRelaxed):
+    if pinnedQueueHasPending(myState):
+      myState.parked = false
+      discard s.parkedCount.fetchSub(1, moAcquireRelease)
+      release(s.globalLock)
+      continue
+    if s.shutdown.load(moAcquire):
       myState.parked = false
       discard s.parkedCount.fetchSub(1, moAcquireRelease)
       release(s.globalLock)
@@ -196,6 +227,7 @@ proc workerMain(arg: WorkerArg) {.thread.} =
     myState.parked = false
     discard s.parkedCount.fetchSub(1, moAcquireRelease)
     release(s.globalLock)
+  currentWorkerId = -1
 
 proc newScheduler*(runtime: CpsRuntime, numWorkers: int = 0, maxGlobalQueue: int = 65536): Scheduler =
   let n = if numWorkers <= 0: countProcessors() else: numWorkers
@@ -213,6 +245,7 @@ proc newScheduler*(runtime: CpsRuntime, numWorkers: int = 0, maxGlobalQueue: int
   for i in 0 ..< n:
     let ws = cast[ptr WorkerState](allocShared0(sizeof(WorkerState)))
     initChaseLevDeque(ws.deque)
+    initMpscQueue(ws.pinnedQueue)
     ws.parked = false
     obj.workers[i] = ws
   obj.threads = newSeq[Thread[WorkerArg]](n)
@@ -248,9 +281,26 @@ proc schedule*(s: Scheduler, task: SchedulerTask) =
       return
     obj.wakeOneWorkerIfParked()
 
+proc schedulePinned*(s: Scheduler, workerId: int, task: SchedulerTask): bool =
+  ## Schedule a task to run on a specific worker's pinned inbox.
+  let obj = s.obj
+  if obj == nil:
+    return false
+  if obj.shutdown.load(moAcquire):
+    return false
+  if workerId < 0 or workerId >= obj.numWorkers:
+    return false
+  let ws = obj.workers[workerId]
+  if ws == nil:
+    return false
+  let node = allocNode(cast[CrossThreadCallback](task))
+  enqueue(ws.pinnedQueue, node)
+  obj.wakeAllWorkersIfParked()
+  result = true
+
 proc shutdownScheduler*(s: Scheduler) =
   let obj = s.obj
-  obj.shutdown.store(true, moRelaxed)
+  obj.shutdown.store(true, moRelease)
 
   # Wake all parked workers
   acquire(obj.globalLock)
@@ -262,6 +312,11 @@ proc shutdownScheduler*(s: Scheduler) =
 
   for i in 0 ..< obj.numWorkers:
     destroyChaseLevDeque(obj.workers[i].deque)
+    while true:
+      let node = dequeue(obj.workers[i].pinnedQueue)
+      if node == nil:
+        break
+      freeNode(node)
     deallocShared(obj.workers[i])
 
   deinitMpmcRingQueue(obj.injectQueue)

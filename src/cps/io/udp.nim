@@ -123,7 +123,11 @@ proc sendTo*(sock: UdpSocket, data: string, host: string, port: int): CpsVoidFut
         return
       else:
         freeAddrInfo(aiList)
-        fut.fail(newException(streams.AsyncIoError, "sendTo failed: " & osErrorMsg(err)))
+        fut.fail(newException(
+          streams.AsyncIoError,
+          "sendTo failed host=" & host & " port=" & $port &
+            " bytes=" & $data.len & ": " & osErrorMsg(err)
+        ))
         return
     freeAddrInfo(aiList)
     fut.complete()
@@ -223,7 +227,11 @@ proc sendToAddr*(sock: UdpSocket, data: string, ip: string, port: int,
         )
         return
       else:
-        fut.fail(newException(streams.AsyncIoError, "sendToAddr failed: " & osErrorMsg(err)))
+        fut.fail(newException(
+          streams.AsyncIoError,
+          "sendToAddr failed ip=" & ip & " port=" & $port &
+            " bytes=" & $data.len & ": " & osErrorMsg(err)
+        ))
         return
     fut.complete()
 

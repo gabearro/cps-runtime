@@ -153,3 +153,38 @@ proc asyncWriteFile*(path: string, data: string): CpsVoidFuture =
     writeChunk()
   )
   result = fut
+
+proc asyncAppendFile*(path: string, data: string): CpsVoidFuture =
+  ## Append data to a file, yielding to event loop between chunks.
+  let fut = newCpsVoidFuture()
+  fut.pinFutureRuntime()
+
+  var f: File
+  if not open(f, path, fmAppend):
+    fut.fail(newException(streams.AsyncIoError, "Failed to open file: " & path))
+    return fut
+
+  var offset = 0
+  let loop = getEventLoop()
+
+  proc writeChunk() =
+    let remaining = data.len - offset
+    if remaining <= 0:
+      f.close()
+      fut.complete()
+      return
+    let chunkSize = min(remaining, FileChunkSize)
+    let written = writeBuffer(f, unsafeAddr data[offset], chunkSize)
+    if written != chunkSize:
+      f.close()
+      fut.fail(newException(streams.AsyncIoError, "File write incomplete"))
+    else:
+      offset += chunkSize
+      loop.scheduleCallback(proc() =
+        writeChunk()
+      )
+
+  loop.scheduleCallback(proc() =
+    writeChunk()
+  )
+  result = fut

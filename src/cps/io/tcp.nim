@@ -20,12 +20,29 @@ type
 
 proc tcpStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
   let ts = TcpStream(s)
+
+  # Fast path: try non-blocking recv immediately
+  var buf = newString(size)
+  let n = recv(ts.fd, addr buf[0], size.cint, 0'i32)
+  if n > 0:
+    buf.setLen(n)
+    return completedFuture(buf)
+  elif n == 0:
+    return completedFuture("")  # EOF
+
+  # n < 0: check if it's EAGAIN (need to wait) or real error
+  let firstErr = osLastError()
+  if firstErr.int != EAGAIN and firstErr.int != EWOULDBLOCK:
+    let fut = newCpsFuture[string]()
+    fut.fail(newException(streams.AsyncIoError, "Read failed: " & osErrorMsg(firstErr)))
+    return fut
+
+  # Async path: register for readability
   let fut = newCpsFuture[string]()
   fut.pinFutureRuntime()
   let loop = getEventLoop()
 
   proc tryRecv() =
-    var buf = newString(size)
     let n = recv(ts.fd, addr buf[0], size.cint, 0'i32)
     if n < 0:
       let err = osLastError()
@@ -45,16 +62,53 @@ proc tcpStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
       buf.setLen(n)
       fut.complete(buf)
 
-  tryRecv()
+  loop.registerRead(ts.fd, proc() =
+    loop.unregister(ts.fd)
+    tryRecv()
+  )
   result = fut
+
+var gSyncWriteCompleted: CpsVoidFuture
+
+proc getSyncWriteCompleted(): CpsVoidFuture {.inline.} =
+  ## Singleton pre-completed void future for synchronous writes.
+  ## Safe to share: addCallback on a completed future fires inline,
+  ## finished/hasError are read-only checks. No mutation occurs.
+  if gSyncWriteCompleted.isNil:
+    gSyncWriteCompleted = newCpsVoidFuture()
+    gSyncWriteCompleted.complete()
+  gSyncWriteCompleted
 
 proc tcpStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
   let ts = TcpStream(s)
+  let totalLen = data.len
+
+  # Fast path: try synchronous send first (common for small writes)
+  var sent = 0
+  while sent < totalLen:
+    let n = send(ts.fd, unsafeAddr data[sent], (totalLen - sent).cint, 0'i32)
+    if n < 0:
+      let err = osLastError()
+      if err.int == EAGAIN or err.int == EWOULDBLOCK:
+        break  # Need async path
+      else:
+        let fut = newCpsVoidFuture()
+        fut.fail(newException(streams.AsyncIoError, "Write failed: " & osErrorMsg(err)))
+        return fut
+    elif n == 0:
+      let fut = newCpsVoidFuture()
+      fut.fail(newException(streams.ConnectionClosedError, "Connection closed during write"))
+      return fut
+    else:
+      sent += n
+
+  if sent >= totalLen:
+    return getSyncWriteCompleted()  # Zero allocation!
+
+  # Async path: need to wait for writability
   let fut = newCpsVoidFuture()
   fut.pinFutureRuntime()
   let loop = getEventLoop()
-  var sent = 0
-  let totalLen = data.len
 
   proc trySend() =
     while sent < totalLen:
@@ -81,6 +135,29 @@ proc tcpStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
   trySend()
   result = fut
 
+proc tcpStreamReadInto(s: AsyncStream, buf: pointer, size: int): int =
+  ## Zero-copy read: recv directly into caller's buffer.
+  ## Returns >0 = bytes read, 0 = EOF, -1 = EAGAIN, < -1 = error.
+  let ts = TcpStream(s)
+  let n = recv(ts.fd, buf, size.cint, 0'i32)
+  if n > 0: return n
+  if n == 0: return 0
+  let err = osLastError()
+  if err.int == EAGAIN or err.int == EWOULDBLOCK: return -1
+  return -2
+
+proc tcpStreamWaitReadable(s: AsyncStream): CpsVoidFuture =
+  ## Wait until the socket is readable (data available or EOF).
+  let ts = TcpStream(s)
+  let fut = newCpsVoidFuture()
+  fut.pinFutureRuntime()
+  let loop = getEventLoop()
+  loop.registerRead(ts.fd, proc() =
+    loop.unregister(ts.fd)
+    fut.complete()
+  )
+  result = fut
+
 proc tcpStreamClose(s: AsyncStream) =
   let ts = TcpStream(s)
   try:
@@ -100,6 +177,8 @@ proc newTcpStream*(fd: SocketHandle, domain: Domain = AF_INET): TcpStream =
   result.readProc = tcpStreamRead
   result.writeProc = tcpStreamWrite
   result.closeProc = tcpStreamClose
+  result.readIntoProc = tcpStreamReadInto
+  result.waitReadableProc = tcpStreamWaitReadable
 
 # ============================================================
 # tcpConnectIp - async TCP connection to a pre-resolved IP

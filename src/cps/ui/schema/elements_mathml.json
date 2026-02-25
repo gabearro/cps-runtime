@@ -1,0 +1,3 @@
+[
+  "math", "maction", "maligngroup", "malignmark", "menclose", "merror", "mfenced", "mfrac", "mfraction", "mglyph", "mi", "mlabeledtr", "mlongdiv", "mmultiscripts", "mn", "mo", "mover", "mpadded", "mphantom", "mprescripts", "mroot", "mrow", "ms", "mscarries", "mscarry", "msgroup", "msline", "mspace", "msqrt", "mstack", "mstyle", "msub", "msubsup", "msup", "mtable", "mtd", "mtext", "mtr", "munder", "munderover", "none", "semantics", "annotation", "annotation-xml"
+]

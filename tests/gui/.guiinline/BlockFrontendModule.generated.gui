@@ -1,0 +1,17 @@
+component Root {
+  Text("Hello")
+}
+
+app MacroFrontend {
+  state {
+    count: Int = 0
+  }
+
+  action Increment owner swift
+
+  reducer {
+    on Increment {
+      set count = count + 1
+    }
+  }
+}

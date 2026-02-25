@@ -80,10 +80,13 @@ proc parsePath*(pattern: string): seq[PathSegment] =
   let cleaned = pattern.strip(chars = {'/'})
   if cleaned.len == 0:
     return @[]
-  for part in cleaned.split('/'):
+  let parts = cleaned.split('/')
+  for i, part in parts:
     if part.len == 0:
       continue
     if part == "*":
+      if i != parts.high:
+        raise newException(ValueError, "Wildcard '*' is only allowed as the final route segment: " & pattern)
       result.add PathSegment(kind: pskWildcard)
     elif part.len > 2 and part[0] == '{' and part[^1] == '}':
       var inner = part[1..^2]
@@ -91,12 +94,20 @@ proc parsePath*(pattern: string): seq[PathSegment] =
       if inner.endsWith("?"):
         isOptional = true
         inner = inner[0..^2]
+      if isOptional and i != parts.high:
+        raise newException(ValueError, "Optional path params are only allowed as the final segment: " & pattern)
       let colonIdx = inner.find(':')
       if colonIdx >= 0:
         let pName = inner[0 ..< colonIdx]
         let pType = inner[colonIdx + 1 .. ^1].toLowerAscii
+        if pName.len == 0:
+          raise newException(ValueError, "Path param name cannot be empty in route: " & pattern)
+        if pType notin ["", "int", "float", "uuid", "alpha", "alnum", "bool"]:
+          raise newException(ValueError, "Unsupported path param type '" & pType & "' in route: " & pattern)
         result.add PathSegment(kind: pskParam, paramName: pName, paramType: pType, optional: isOptional)
       else:
+        if inner.len == 0:
+          raise newException(ValueError, "Path param name cannot be empty in route: " & pattern)
         result.add PathSegment(kind: pskParam, paramName: inner, paramType: "", optional: isOptional)
     else:
       result.add PathSegment(kind: pskLiteral, value: part)
@@ -148,55 +159,49 @@ proc validateParamType(decodedPart: string, paramType: string): bool =
     for c in decodedPart:
       if c notin Letters + Digits: return false
     return decodedPart.len > 0
+  of "bool":
+    try: discard parseBool(decodedPart); return true
+    except ValueError: return false
   of "":
     return true  # No constraint
   else:
-    return true  # Unknown constraint — accept
+    return false
 
-proc matchRoute*(segments: seq[PathSegment], path: string): (bool, Table[string, string]) =
-  ## Match a request path against route segments. Returns (matched, params).
-  ## Applies URL decoding to path segments and validates typed params.
-  ## Supports optional trailing params ({param?}).
-  var params = initTable[string, string]()
-  let cleaned = path.strip(chars = {'/'})
-  var parts: seq[string]
-  if cleaned.len > 0:
-    parts = cleaned.split('/')
-  else:
-    parts = @[]
-
+proc matchRouteWithParts*(segments: seq[PathSegment], parts: seq[string],
+                          params: var Table[string, string]): bool =
+  ## Match pre-split path parts against route segments. Avoids re-splitting.
   if segments.len == 0 and parts.len == 0:
-    return (true, params)
+    return true
 
   # Wildcard at end matches any remaining segments
   if segments.len > 0 and segments[^1].kind == pskWildcard:
     if parts.len < segments.len - 1:
-      return (false, params)
+      return false
     for i in 0 ..< segments.len - 1:
       let decodedPart = decodeUrl(parts[i])
       case segments[i].kind
       of pskLiteral:
         if i >= parts.len or decodedPart != segments[i].value:
-          return (false, params)
+          return false
       of pskParam:
         if i >= parts.len:
-          return (false, params)
+          return false
         if not validateParamType(decodedPart, segments[i].paramType):
-          return (false, params)
+          return false
         params[segments[i].paramName] = decodedPart
       of pskWildcard:
         discard
-    return (true, params)
+    return true
 
   # Check for optional trailing segment
   let hasOptional = segments.len > 0 and
     segments[^1].kind == pskParam and segments[^1].optional
   if hasOptional:
     if parts.len != segments.len and parts.len != segments.len - 1:
-      return (false, params)
+      return false
   else:
     if parts.len != segments.len:
-      return (false, params)
+      return false
 
   for i in 0 ..< segments.len:
     if i >= parts.len:
@@ -205,20 +210,40 @@ proc matchRoute*(segments: seq[PathSegment], path: string): (bool, Table[string,
         # Don't add param to table — let getOrDefault provide the default
         break
       else:
-        return (false, params)
+        return false
     let decodedPart = decodeUrl(parts[i])
     case segments[i].kind
     of pskLiteral:
       if decodedPart != segments[i].value:
-        return (false, params)
+        return false
     of pskParam:
       if not validateParamType(decodedPart, segments[i].paramType):
-        return (false, params)
+        return false
       params[segments[i].paramName] = decodedPart
     of pskWildcard:
-      return (true, params)
+      return true
 
-  return (true, params)
+  return true
+
+proc matchRoute*(segments: seq[PathSegment], path: string): (bool, Table[string, string]) =
+  ## Match a request path against route segments. Returns (matched, params).
+  var params = initTable[string, string]()
+  let cleaned = path.strip(chars = {'/'})
+  var parts: seq[string]
+  if cleaned.len > 0:
+    parts = cleaned.split('/')
+  else:
+    parts = @[]
+  let matched = matchRouteWithParts(segments, parts, params)
+  return (matched, params)
+
+proc splitPathParts*(path: string): seq[string] =
+  ## Split a cleaned path into parts (pre-compute once per request).
+  let cleaned = path.strip(chars = {'/'})
+  if cleaned.len > 0:
+    result = cleaned.split('/')
+  else:
+    result = @[]
 
 proc pathWithoutQuery*(path: string): string =
   ## Strip query string from path: "/foo?bar=1" -> "/foo"
@@ -374,14 +399,28 @@ proc queryParamBool*(qp: Table[string, string], key: string, defaultVal: string)
 # ============================================================
 
 proc extractClientIp*(req: HttpRequest): string =
-  ## Extract client IP from X-Forwarded-For, X-Real-IP headers, or "unknown".
-  let forwarded = req.getHeader("x-forwarded-for")
-  if forwarded.len > 0:
-    return forwarded.split(',')[0].strip()
-  let realIp = req.getHeader("x-real-ip")
-  if realIp.len > 0:
-    return realIp
-  return "unknown"
+  ## Extract client IP. Forwarded headers are trusted only when request context
+  ## marks the remote peer as a trusted proxy.
+  let remoteIp =
+    if req.remoteAddr.len > 0: req.remoteAddr
+    elif req.context.isNil: ""
+    else: req.context.getOrDefault("remote_addr")
+
+  var trustedProxy = false
+  if not req.context.isNil and req.context.getOrDefault("trusted_proxy") == "1":
+    trustedProxy = true
+
+  if trustedProxy:
+    let forwarded = req.getHeader("x-forwarded-for")
+    if forwarded.len > 0:
+      return forwarded.split(',')[0].strip()
+    let realIp = req.getHeader("x-real-ip")
+    if realIp.len > 0:
+      return realIp
+
+  if remoteIp.len > 0:
+    return remoteIp
+  "unknown"
 
 proc extractBearerToken*(req: HttpRequest): string =
   ## Extract Bearer token from Authorization header. Returns "" if not present.
@@ -598,6 +637,15 @@ proc setCookieHeader*(name: string, value: string,
                        httpOnly: bool = false, secure: bool = false,
                        sameSite: string = ""): (string, string) =
   ## Build a Set-Cookie header tuple.
+  if not isValidHeaderName(name):
+    raise newException(ValueError, "Invalid cookie name")
+  if not isValidHeaderValue(value) or ';' in value:
+    raise newException(ValueError, "Invalid cookie value")
+  if sameSite.len > 0 and sameSite notin ["Lax", "Strict", "None"]:
+    raise newException(ValueError, "Invalid SameSite value")
+  if path.len > 0 and not isValidHeaderValue(path):
+    raise newException(ValueError, "Invalid cookie path")
+
   var cookie = name & "=" & value
   if path.len > 0:
     cookie &= "; Path=" & path
@@ -816,13 +864,91 @@ proc urlFor*(router: Router, name: string,
 # Router dispatch
 # ============================================================
 
+proc isLiteralMatch(segments: seq[PathSegment], path: string, pathEnd: int): bool {.inline.} =
+  ## Zero-allocation match for literal-only routes against raw path string.
+  ## pathEnd is the index where the path ends (before query string).
+  if segments.len == 0:
+    # Root route "/" matches path "/" exactly
+    return pathEnd == 1 and path[0] == '/'
+  # General case: match "/seg1/seg2/..." against the raw path
+  var pos = 0
+  if pos < pathEnd and path[pos] == '/':
+    inc pos  # skip leading /
+  for i in 0 ..< segments.len:
+    if segments[i].kind != pskLiteral:
+      return false
+    let seg = segments[i].value
+    if pos + seg.len > pathEnd:
+      return false
+    for j in 0 ..< seg.len:
+      if path[pos + j] != seg[j]:
+        return false
+    pos += seg.len
+    if i < segments.len - 1:
+      # Expect separator between segments
+      if pos >= pathEnd or path[pos] != '/':
+        return false
+      inc pos
+  # Accept with or without trailing slash
+  pos == pathEnd or (pos == pathEnd - 1 and path[pos] == '/')
+
 proc dispatch*(router: Router, req: HttpRequest): CpsFuture[HttpResponseBuilder] =
   ## Find a matching route and invoke its handler with middleware chain.
   ## Supports error recovery, pass (next-route), HEAD/OPTIONS auto-generation,
   ## and trailing slash normalization.
+
+  # ---- Fast path for literal routes with no middleware ----
+  # Avoids: HttpRequest copy, splitPathParts, Table allocs, matchedRoutes seq,
+  #         invokeRoute closures, chainRoutes futures, invokeWithRecovery wrapper.
+  if not router.methodOverrideEnabled and
+     router.trailingSlash == tsbIgnore and
+     router.errorHandler.isNil and
+     router.beforeMiddlewares.len == 0 and
+     router.afterMiddlewares.len == 0 and
+     router.globalMiddlewares.len == 0:
+    let qIdx = req.path.find('?')
+    let pathEnd = if qIdx >= 0: qIdx else: req.path.len
+    for i in 0 ..< router.routes.len:
+      let route = router.routes[i]
+      if route.meth != req.meth and route.meth != "*": continue
+      if route.middlewares.len > 0: continue
+      if isLiteralMatch(route.segments, req.path, pathEnd):
+        # Direct handler call — zero extra allocations
+        let emptyPP = initTable[string, string]()
+        let qp = if qIdx >= 0: parseQueryString(req.path) else: emptyPP
+        var resultFut: CpsFuture[HttpResponseBuilder]
+        if router.appState.isNil and router.templateRenderer.isNil:
+          # Skip HttpRequest copy when no enrichment needed
+          resultFut = route.handler(req, emptyPP, qp)
+        else:
+          var enrichedReq = req
+          enrichedReq.appState = router.appState
+          enrichedReq.templateRenderer = router.templateRenderer
+          resultFut = route.handler(enrichedReq, emptyPP, qp)
+        if resultFut.finished():
+          if resultFut.hasError():
+            # Inline error recovery (same as invokeWithRecovery)
+            let err = resultFut.getError()
+            let errResp =
+              if err of RequestExtractionError:
+                let rex = cast[ref RequestExtractionError](err)
+                newResponse(rex.statusCode, rex.msg)
+              elif err of JsonParsingError:
+                newResponse(400, "Invalid JSON body")
+              else:
+                newResponse(500, "Internal Server Error")
+            let errFut = newCpsFuture[HttpResponseBuilder]()
+            errFut.complete(errResp)
+            return errFut
+          else:
+            let resp = resultFut.read()
+            if resp.control == rcPassRoute or resp.statusCode == -1:
+              break  # fall through to general path
+        return resultFut
+    # No literal match found — fall through to general dispatch
+    # (handles HEAD/OPTIONS auto-gen, 404, etc.)
+
   var req = req  # mutable copy for method override
-  if req.context.isNil:
-    req.context = newTable[string, string]()
   req.appState = router.appState
   req.templateRenderer = router.templateRenderer
   if router.methodOverrideEnabled:
@@ -836,20 +962,49 @@ proc dispatch*(router: Router, req: HttpRequest): CpsFuture[HttpResponseBuilder]
         let methodVal = form.getOrDefault("_method")
         if methodVal.len > 0:
           req.meth = methodVal.toUpperAscii
-  let cleanPath = pathWithoutQuery(req.path)
-  let qp = parseQueryString(req.path)
+
+  # Pre-compute path info once
+  let qIdx = req.path.find('?')
+  let cleanPath = if qIdx >= 0: req.path[0 ..< qIdx] else: req.path
+  let pathParts = splitPathParts(cleanPath)
+
+  # Lazy query params — only parsed when a route is actually matched
+  var qpParsed = false
+  var qp: Table[string, string]
+  proc getQp(): Table[string, string] =
+    if not qpParsed:
+      qp = parseQueryString(req.path)
+      qpParsed = true
+    qp
 
   let capturedErrorHandler = router.errorHandler
   let capturedBeforeMw = router.beforeMiddlewares
   let capturedGlobalMw = router.globalMiddlewares
   let capturedAfterMw = router.afterMiddlewares
-  let fallbackMw = capturedBeforeMw & capturedGlobalMw & capturedAfterMw
 
   # Helper: run a handler through middleware + centralized error recovery.
   proc invokeWithRecovery(middlewares: seq[Middleware], finalHandler: HttpHandler,
                           r: HttpRequest): CpsFuture[HttpResponseBuilder] =
     let chained = chainMiddleware(middlewares, finalHandler)
     let handlerFut = chained(r)
+    # Fast path: no error handler — skip wrapper future if handler completes sync
+    if capturedErrorHandler.isNil:
+      if handlerFut.finished():
+        if not handlerFut.hasError():
+          return handlerFut
+        # Error but no custom handler — return default error response
+        let err = handlerFut.getError()
+        let errResp =
+          if err of RequestExtractionError:
+            let rex = cast[ref RequestExtractionError](err)
+            newResponse(rex.statusCode, rex.msg)
+          elif err of JsonParsingError:
+            newResponse(400, "Invalid JSON body")
+          else:
+            newResponse(500, "Internal Server Error")
+        let fut = newCpsFuture[HttpResponseBuilder]()
+        fut.complete(errResp)
+        return fut
     let resultFut = newCpsFuture[HttpResponseBuilder]()
     handlerFut.addCallback(proc() =
       if handlerFut.hasError():
@@ -879,24 +1034,24 @@ proc dispatch*(router: Router, req: HttpRequest): CpsFuture[HttpResponseBuilder]
                     pp: Table[string, string],
                     capturedQp: Table[string, string]): CpsFuture[HttpResponseBuilder] =
     let capturedHandler = route.handler
-    let routePattern = segmentsToPattern(route.segments)
     let inner: HttpHandler = proc(r2: HttpRequest): CpsFuture[HttpResponseBuilder] {.closure.} =
       capturedHandler(r2, pp, capturedQp)
     let allMw =
       if route.hasCompiledMiddlewares: route.compiledMiddlewares
+      elif capturedBeforeMw.len == 0 and route.middlewares.len == 0 and capturedAfterMw.len == 0:
+        @[]  # Fast path: no middleware at all
       else: capturedBeforeMw & route.middlewares & capturedAfterMw
-    var routedReq = r
-    routedReq.context["route_pattern"] = routePattern
-    invokeWithRecovery(allMw, inner, routedReq)
+    invokeWithRecovery(allMw, inner, r)
 
   # Helper: invoke fallback handlers (404/OPTIONS/notFound) through global middleware.
   proc invokeFallback(finalHandler: HttpHandler): CpsFuture[HttpResponseBuilder] =
+    let fallbackMw = capturedBeforeMw & capturedGlobalMw & capturedAfterMw
     invokeWithRecovery(fallbackMw, finalHandler, req)
 
-  proc allowMethodsForPath(path: string): seq[string] =
+  proc allowMethodsForPath(parts: seq[string]): seq[string] =
     for route in router.routes:
-      let (matched, _) = matchRoute(route.segments, path)
-      if not matched:
+      var pp = initTable[string, string]()
+      if not matchRouteWithParts(route.segments, parts, pp):
         continue
       if route.meth == "*":
         return @["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
@@ -933,15 +1088,21 @@ proc dispatch*(router: Router, req: HttpRequest): CpsFuture[HttpResponseBuilder]
       for i in 0 ..< router.routes.len:
         let route = router.routes[i]
         if route.meth != "GET": continue
-        let (matched, pp) = matchRoute(route.segments, cleanPath)
+        var pp = initTable[string, string]()
+        let matched = matchRouteWithParts(route.segments, pathParts, pp)
         if matched:
-          let getFut = invokeRoute(route, req, pp, qp)
+          let getFut = invokeRoute(route, req, pp, getQp())
           let resultFut = newCpsFuture[HttpResponseBuilder]()
           getFut.addCallback(proc() =
             if getFut.hasError():
               resultFut.fail(getFut.getError())
             else:
               var resp = getFut.read()
+              var filtered: seq[(string, string)]
+              for (k, v) in resp.headers:
+                if not eqCaseInsensitive(k, "content-length"):
+                  filtered.add (k, v)
+              resp.headers = filtered
               resp.headers.add ("Content-Length", $resp.body.len)
               resp.body = ""
               resultFut.complete(resp)
@@ -952,8 +1113,8 @@ proc dispatch*(router: Router, req: HttpRequest): CpsFuture[HttpResponseBuilder]
     if req.meth == "OPTIONS":
       var methods: seq[string]
       for route in router.routes:
-        let (matched, _) = matchRoute(route.segments, cleanPath)
-        if matched:
+        var pp = initTable[string, string]()
+        if matchRouteWithParts(route.segments, pathParts, pp):
           if route.meth == "*":
             methods = @["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
             break
@@ -982,11 +1143,11 @@ proc dispatch*(router: Router, req: HttpRequest): CpsFuture[HttpResponseBuilder]
         if route.meth != req.meth and route.meth != "*": continue
         let (matched, pp) = matchRoute(route.segments, altPath)
         if matched:
-          return invokeRoute(route, req, pp, qp)
+          return invokeRoute(route, req, pp, getQp())
 
     # Method exists for the path, but not this method: 405 + Allow
     if req.meth != "OPTIONS":
-      let allowMethods = allowMethodsForPath(cleanPath)
+      let allowMethods = allowMethodsForPath(pathParts)
       if allowMethods.len > 0:
         let allowValue = allowMethods.join(", ")
         let auto405Handler: HttpHandler =
@@ -1012,8 +1173,8 @@ proc dispatch*(router: Router, req: HttpRequest): CpsFuture[HttpResponseBuilder]
   var matchedRoutes: seq[(RouteEntry, Table[string, string])]
   for route in router.routes:
     if route.meth != req.meth and route.meth != "*": continue
-    let (matched, pp) = matchRoute(route.segments, cleanPath)
-    if matched:
+    var pp = initTable[string, string]()
+    if matchRouteWithParts(route.segments, pathParts, pp):
       matchedRoutes.add (route, pp)
 
   if matchedRoutes.len == 0:
@@ -1024,7 +1185,7 @@ proc dispatch*(router: Router, req: HttpRequest): CpsFuture[HttpResponseBuilder]
     if idx >= matchedRoutes.len:
       return handleFallbacks()
     let (route, pp) = matchedRoutes[idx]
-    let routeFut = invokeRoute(route, req, pp, qp)
+    let routeFut = invokeRoute(route, req, pp, getQp())
     let resultFut = newCpsFuture[HttpResponseBuilder]()
     let capturedIdx = idx
     routeFut.addCallback(proc() =

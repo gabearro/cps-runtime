@@ -46,6 +46,11 @@ proc initSse*(stream: AsyncStream,
   ## enables streaming gzip compression with Z_SYNC_FLUSH per event.
   let fut = newCpsFuture[SseWriter]()
 
+  for (k, v) in extraHeaders:
+    if not validateHeaderPair(k, v):
+      fut.fail(newException(ValueError, "Invalid SSE response header"))
+      return fut
+
   # Check if client accepts gzip
   let aeHeader = req.getHeader("accept-encoding")
   let useCompression = "gzip" in aeHeader.toLowerAscii

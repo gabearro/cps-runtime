@@ -94,8 +94,13 @@ proc release*(sem: AsyncSemaphore) =
   ## Otherwise, the permit count is incremented.
   if sem.mtEnabled:
     acquire(sem.lock)
-    if sem.waiters.len > 0:
-      let waiter = sem.waiters.popFirst()
+    var waiter: CpsVoidFuture = nil
+    while sem.waiters.len > 0:
+      let candidate = sem.waiters.popFirst()
+      if not candidate.finished:
+        waiter = candidate
+        break
+    if waiter != nil:
       release(sem.lock)
       complete(waiter)
     else:
@@ -104,8 +109,13 @@ proc release*(sem: AsyncSemaphore) =
         "Released more permits than maximum (" & $sem.maxPermits & ")"
       release(sem.lock)
   else:
-    if sem.waiters.len > 0:
-      let waiter = sem.waiters.popFirst()
+    var waiter: CpsVoidFuture = nil
+    while sem.waiters.len > 0:
+      let candidate = sem.waiters.popFirst()
+      if not candidate.finished:
+        waiter = candidate
+        break
+    if waiter != nil:
       complete(waiter)
     else:
       inc sem.permits
@@ -147,12 +157,16 @@ proc close*(sem: AsyncSemaphore) =
     acquire(sem.lock)
     sem.closed = true
     while sem.waiters.len > 0:
-      pendingWaiters.add(sem.waiters.popFirst())
+      let waiter = sem.waiters.popFirst()
+      if not waiter.finished:
+        pendingWaiters.add(waiter)
     release(sem.lock)
   else:
     sem.closed = true
     while sem.waiters.len > 0:
-      pendingWaiters.add(sem.waiters.popFirst())
+      let waiter = sem.waiters.popFirst()
+      if not waiter.finished:
+        pendingWaiters.add(waiter)
   let err = newException(SyncClosed, "Semaphore is closed")
   for f in pendingWaiters:
     fail(f, err)
@@ -225,9 +239,14 @@ proc unlock*(m: AsyncMutex) =
   if m.mtEnabled:
     acquire(m.lock)
     assert m.locked, "Mutex is not locked"
-    if m.waiters.len > 0:
-      # Lock transfers directly to next waiter (stays locked)
-      let waiter = m.waiters.popFirst()
+    var waiter: CpsVoidFuture = nil
+    while m.waiters.len > 0:
+      let candidate = m.waiters.popFirst()
+      if not candidate.finished:
+        waiter = candidate
+        break
+    if waiter != nil:
+      # Lock transfers directly to next live waiter (stays locked)
       release(m.lock)
       complete(waiter)
     else:
@@ -235,8 +254,13 @@ proc unlock*(m: AsyncMutex) =
       release(m.lock)
   else:
     assert m.locked, "Mutex is not locked"
-    if m.waiters.len > 0:
-      let waiter = m.waiters.popFirst()
+    var waiter: CpsVoidFuture = nil
+    while m.waiters.len > 0:
+      let candidate = m.waiters.popFirst()
+      if not candidate.finished:
+        waiter = candidate
+        break
+    if waiter != nil:
       complete(waiter)
     else:
       m.locked = false
@@ -276,12 +300,16 @@ proc close*(m: AsyncMutex) =
     acquire(m.lock)
     m.closed = true
     while m.waiters.len > 0:
-      pendingWaiters.add(m.waiters.popFirst())
+      let waiter = m.waiters.popFirst()
+      if not waiter.finished:
+        pendingWaiters.add(waiter)
     release(m.lock)
   else:
     m.closed = true
     while m.waiters.len > 0:
-      pendingWaiters.add(m.waiters.popFirst())
+      let waiter = m.waiters.popFirst()
+      if not waiter.finished:
+        pendingWaiters.add(waiter)
   let err = newException(SyncClosed, "Mutex is closed")
   for f in pendingWaiters:
     fail(f, err)

@@ -26,7 +26,8 @@ type LoopStats* = object
   lastTickDurationUs*: int64  ## Last tick duration in microseconds
 
 type
-  TimerState = ptr Atomic[bool]
+  TimerState = ref object
+    cancelled: Atomic[bool]
 
   TimerHandle* = object
     ## Handle for a scheduled timer. Call cancel() to suppress callback.
@@ -34,7 +35,7 @@ type
 
   TimerEntry = object
     deadline: MonoTime
-    callbackId: int
+    callback: proc() {.closure.}
     state: TimerState
 
   IoCallback = proc() {.closure.}
@@ -42,7 +43,6 @@ type
   EventLoop* = ref object
     selector: Selector[IoCallback]
     timers: seq[TimerEntry]
-    timerCallbacks: seq[proc() {.closure.}]
     readyQueue: seq[proc() {.closure.}]
     running: bool
     ownerRuntime*: CpsRuntime
@@ -73,23 +73,22 @@ proc ensureLoopInitLockReady() {.inline.} =
       cpuRelax()
 
 proc newTimerState(): TimerState {.inline.} =
-  result = cast[TimerState](allocShared0(sizeof(Atomic[bool])))
-  result[].store(false, moRelaxed)
+  new(result)
+  result.cancelled.store(false, moRelaxed)
 
 proc cancel*(h: TimerHandle) {.inline.} =
   ## Cancel a timer callback if it has not fired yet.
   if h.state != nil:
-    h.state[].store(true, moRelease)
+    h.state.cancelled.store(true, moRelease)
 
 proc isCancelled*(h: TimerHandle): bool {.inline.} =
-  h.state == nil or h.state[].load(moAcquire)
+  h.state == nil or h.state.cancelled.load(moAcquire)
 
 proc newEventLoop*(): EventLoop =
   ## Create a new EventLoop with default (single-threaded) configuration.
   new(result)
   result.selector = newSelector[IoCallback]()
   result.timers = @[]
-  result.timerCallbacks = @[]
   result.readyQueue = @[]
   result.running = false
   result.ownerRuntime = nil
@@ -98,60 +97,69 @@ proc newEventLoop*(): EventLoop =
   result.mtActive = false
 
 proc timerHeapPush(loop: EventLoop, entry: TimerEntry) {.inline.} =
-  let insertAt = loop.timers.len
-  loop.timers.setLen(insertAt + 1)
-  loop.timers[insertAt] = entry
+  loop.timers.add(entry)
+  var i = loop.timers.len - 1
+  while i > 0:
+    let p = (i - 1) shr 1
+    if timerLess(loop.timers[i], loop.timers[p]):
+      swap(loop.timers[i], loop.timers[p])
+      i = p
+    else:
+      break
 
 proc timerHeapPeek(loop: EventLoop): TimerEntry =
   if loop.timers.len == 0:
     return TimerEntry()
-  var minIdx = 0
-  for i in 1 ..< loop.timers.len:
-    if timerLess(loop.timers[i], loop.timers[minIdx]):
-      minIdx = i
-  result = loop.timers[minIdx]
+  loop.timers[0]
+
+proc timerHeapPop(loop: EventLoop): TimerEntry =
+  let last = loop.timers.len - 1
+  result = loop.timers[0]
+  if last == 0:
+    loop.timers.setLen(0)
+    return
+
+  loop.timers[0] = loop.timers[last]
+  loop.timers.setLen(last)
+
+  var i = 0
+  while true:
+    let left = (i shl 1) + 1
+    if left >= loop.timers.len:
+      break
+    let right = left + 1
+    var smallest = left
+    if right < loop.timers.len and timerLess(loop.timers[right], loop.timers[left]):
+      smallest = right
+    if timerLess(loop.timers[smallest], loop.timers[i]):
+      swap(loop.timers[i], loop.timers[smallest])
+      i = smallest
+    else:
+      break
+
+proc pruneCancelledTimerRoots(loop: EventLoop) =
+  while loop.timers.len > 0:
+    let next = loop.timerHeapPeek()
+    if next.state == nil or not next.state.cancelled.load(moAcquire):
+      break
+    discard loop.timerHeapPop()
 
 proc processTimersCount(loop: EventLoop): int =
   ## Process due timers, returning the number of timers that fired.
   when defined(debugTimers):
     echo "[timer] process len=", loop.timers.len
-  if loop.timers.len > loop.timerCallbacks.len:
-    when defined(debugTimers):
-      echo "[timer] invalid metadata, resetting queue"
-    loop.timers.setLen(0)
-    return 0
+  loop.pruneCancelledTimerRoots()
   let now = getMonoTime()
-  if loop.timers.len == 0:
-    return
-  let originalLen = loop.timers.len
-  var write = 0
-  for i in 0 ..< originalLen:
-    let entry = loop.timers[i]
-    if entry.callbackId < 0 or entry.callbackId >= loop.timerCallbacks.len:
-      continue
-    if entry.deadline <= now:
-      if entry.state == nil or not entry.state[].load(moAcquire):
-        var cb: proc() {.closure.} = nil
-        if entry.callbackId >= 0 and entry.callbackId < loop.timerCallbacks.len:
-          cb = loop.timerCallbacks[entry.callbackId]
-          loop.timerCallbacks[entry.callbackId] = nil
-        if cb != nil:
-          when defined(debugTimers):
-            echo "[timer] firing id=", entry.callbackId
-          cb()
-        inc result
-    else:
-      if write != i:
-        loop.timers[write] = entry
-      inc write
-  # Preserve timers appended by callbacks during this processing pass.
-  let appended = loop.timers.len - originalLen
-  if appended > 0:
-    for j in 0 ..< appended:
-      loop.timers[write + j] = loop.timers[originalLen + j]
-    write += appended
-  if write < loop.timers.len:
-    loop.timers.setLen(write)
+  while loop.timers.len > 0:
+    let entry = loop.timerHeapPeek()
+    if entry.deadline > now:
+      break
+    let fired = loop.timerHeapPop()
+    if fired.state == nil or not fired.state.cancelled.load(moAcquire):
+      if fired.callback != nil:
+        fired.callback()
+      inc result
+    loop.pruneCancelledTimerRoots()
 
 proc getEventLoopForRuntime*(rt: CpsRuntime): EventLoop =
   ## Resolve or lazily create the runtime's event loop.
@@ -234,46 +242,48 @@ proc registerTimer*(loop: EventLoop, delayMs: int, cb: proc() {.closure.}): Time
     let deadline = getMonoTime() + initDuration(milliseconds = delayMs)
     loop.postToEventLoop(proc() {.closure, gcsafe.} =
       {.cast(gcsafe).}:
-        let cbId = loop.timerCallbacks.len
-        loop.timerCallbacks.add(timerCb)
-        let entry = TimerEntry(deadline: deadline, callbackId: cbId, state: timerState)
+        let entry = TimerEntry(deadline: deadline, callback: timerCb, state: timerState)
         loop.timerHeapPush(entry)
         when defined(debugTimers):
-          echo "[timer] queued(mt) id=", cbId, " len=", loop.timers.len, " cbs=", loop.timerCallbacks.len
+          echo "[timer] queued(mt) len=", loop.timers.len
     )
   else:
     let deadline = getMonoTime() + initDuration(milliseconds = delayMs)
-    let cbId = loop.timerCallbacks.len
-    loop.timerCallbacks.add(timerCb)
-    let entry = TimerEntry(deadline: deadline, callbackId: cbId, state: timerState)
+    let entry = TimerEntry(deadline: deadline, callback: timerCb, state: timerState)
     loop.timerHeapPush(entry)
     when defined(debugTimers):
-      echo "[timer] queued id=", cbId, " len=", loop.timers.len, " cbs=", loop.timerCallbacks.len
+      echo "[timer] queued len=", loop.timers.len
   result = TimerHandle(state: timerState)
 
-proc registerRead*(loop: EventLoop, fd: int | SocketHandle, cb: proc() {.closure.}) =
+proc registerRead*(loop: EventLoop, fd: SocketHandle, cb: proc() {.closure.}) =
   if loop.mtActive and isSchedulerWorker:
-    let fdVal = fd.SocketHandle
+    let fdVal = fd
     loop.postToEventLoop(proc() {.closure, gcsafe.} =
       {.cast(gcsafe).}:
         loop.selector.registerHandle(fdVal, {Event.Read}, cb)
     )
   else:
-    loop.selector.registerHandle(fd.SocketHandle, {Event.Read}, cb)
+    loop.selector.registerHandle(fd, {Event.Read}, cb)
 
-proc registerWrite*(loop: EventLoop, fd: int | SocketHandle, cb: proc() {.closure.}) =
+proc registerRead*(loop: EventLoop, fd: int, cb: proc() {.closure.}) =
+  registerRead(loop, SocketHandle(fd), cb)
+
+proc registerWrite*(loop: EventLoop, fd: SocketHandle, cb: proc() {.closure.}) =
   if loop.mtActive and isSchedulerWorker:
-    let fdVal = fd.SocketHandle
+    let fdVal = fd
     loop.postToEventLoop(proc() {.closure, gcsafe.} =
       {.cast(gcsafe).}:
         loop.selector.registerHandle(fdVal, {Event.Write}, cb)
     )
   else:
-    loop.selector.registerHandle(fd.SocketHandle, {Event.Write}, cb)
+    loop.selector.registerHandle(fd, {Event.Write}, cb)
 
-proc unregister*(loop: EventLoop, fd: int | SocketHandle) =
+proc registerWrite*(loop: EventLoop, fd: int, cb: proc() {.closure.}) =
+  registerWrite(loop, SocketHandle(fd), cb)
+
+proc unregister*(loop: EventLoop, fd: SocketHandle) =
   if loop.mtActive and isSchedulerWorker:
-    let fdVal = fd.SocketHandle
+    let fdVal = fd
     loop.postToEventLoop(proc() {.closure, gcsafe.} =
       {.cast(gcsafe).}:
         try:
@@ -283,12 +293,22 @@ proc unregister*(loop: EventLoop, fd: int | SocketHandle) =
     )
   else:
     try:
-      loop.selector.unregister(fd.SocketHandle)
+      loop.selector.unregister(fd)
     except Exception:
       discard
 
+proc unregister*(loop: EventLoop, fd: int) =
+  unregister(loop, SocketHandle(fd))
+
 proc scheduleCallback*(loop: EventLoop, cb: proc() {.closure.}) =
-  discard loop.registerTimer(0, cb)
+  if loop.mtActive and isSchedulerWorker:
+    let cbCopy = cb
+    loop.postToEventLoop(proc() {.closure, gcsafe.} =
+      {.cast(gcsafe).}:
+        loop.readyQueue.add(cbCopy)
+    )
+  else:
+    loop.readyQueue.add(cb)
 
 proc scheduleCallback*(cb: proc() {.closure.}) =
   getEventLoop().scheduleCallback(cb)
@@ -305,8 +325,10 @@ proc drainCrossThreadQueue*(loop: EventLoop) =
     freeNode(node)
     cb()
 
-proc processIo(loop: EventLoop, timeoutMs: int): int =
+proc processIo(loop: EventLoop, timeoutMs: int): int {.warning[ProveInit]: off.} =
   ## Process I/O events, returning the number of events processed.
+  ## Suppress a known ioselectors_kqueue `ProveInit` false-positive from
+  ## `getData` template instantiation (tracked upstream in Nim stdlib).
   if loop.selector.isEmpty:
     return 0
   let events = loop.selector.select(timeoutMs)
@@ -317,8 +339,15 @@ proc processIo(loop: EventLoop, timeoutMs: int): int =
       inc result
 
 proc processReady(loop: EventLoop): int =
-  ## Ready queue is currently implemented via zero-delay timers.
-  0
+  ## Run callbacks queued for immediate execution.
+  if loop.readyQueue.len == 0:
+    return 0
+  let ready = loop.readyQueue
+  loop.readyQueue = @[]
+  for cb in ready:
+    if cb != nil:
+      cb()
+      inc result
 
 proc tick*(loop: EventLoop) =
   ## Run one iteration of the event loop.
@@ -362,11 +391,14 @@ proc tick*(loop: EventLoop) =
   var timeoutMs = -1  # Block indefinitely if nothing else to do
   if loop.readyQueue.len > 0:
     timeoutMs = 0
-  elif loop.timers.len > 0:
-    let now = getMonoTime()
-    let nextTimer = loop.timerHeapPeek()
-    let delta = nextTimer.deadline - now
-    timeoutMs = max(0, int(delta.inMilliseconds))
+    loop.pruneCancelledTimerRoots()
+  else:
+    loop.pruneCancelledTimerRoots()
+    if loop.timers.len > 0:
+      let now = getMonoTime()
+      let nextTimer = loop.timerHeapPeek()
+      let delta = nextTimer.deadline - now
+      timeoutMs = max(0, int(delta.inMilliseconds))
 
   if not loop.selector.isEmpty:
     try:
@@ -396,6 +428,7 @@ proc tick*(loop: EventLoop) =
       loop.stats.maxTickDurationUs = durationUs
 
 proc hasWork*(loop: EventLoop): bool =
+  loop.pruneCancelledTimerRoots()
   loop.readyQueue.len > 0 or
   loop.timers.len > 0 or
   not loop.selector.isEmpty or
@@ -492,6 +525,9 @@ proc blockOn*[T](handle: RuntimeHandle, fut: CpsFuture[T]): T =
     raise newException(RuntimeAffinityError,
       "future cannot be executed on runtime " & $rtHandle.runtimeId() &
       ": it is pinned to runtime " & $fut.futureRuntime().runtimeId())
+  if targetRt != nil and targetRt.flavor == rfMultiThread and
+     isSchedulerWorker and fut.isLocalFast():
+    fut.ensureShared()
 
   let loop = getEventLoop(rtHandle)
   var guard = enter(rtHandle)
@@ -525,6 +561,9 @@ proc blockOn*(handle: RuntimeHandle, fut: CpsVoidFuture) =
     raise newException(RuntimeAffinityError,
       "future cannot be executed on runtime " & $rtHandle.runtimeId() &
       ": it is pinned to runtime " & $fut.futureRuntime().runtimeId())
+  if targetRt != nil and targetRt.flavor == rfMultiThread and
+     isSchedulerWorker and fut.isLocalFast():
+    fut.ensureShared()
 
   let loop = getEventLoop(rtHandle)
   var guard = enter(rtHandle)

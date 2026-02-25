@@ -1,0 +1,19 @@
+component Root {
+  Text("Window Macro")
+}
+
+app WindowMacro {
+  window {
+    title: "Window Macro App"
+    width: 980
+    height: 720
+    minWidth: 820
+    minHeight: 560
+    showTitleBar: false
+    closeAppOnLastWindowClose: true
+  }
+
+  state {
+    ready: Bool = true
+  }
+}

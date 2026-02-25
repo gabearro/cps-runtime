@@ -1,0 +1,2 @@
+Target dependency graph (1 target)
+Target 'NimTodoGui' in project 'NimTodoGui' (no dependencies)

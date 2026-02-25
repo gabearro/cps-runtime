@@ -1,0 +1,6 @@
+component ActivityFeed {
+  VStack(spacing: token.spacing.sm) {
+    Text("Activity")
+    Text(lastEvent)
+  }
+}

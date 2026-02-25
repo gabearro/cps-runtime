@@ -1,0 +1,49 @@
+{
+  "" : {
+    "diagnostics" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/NimTodoGui-primary.dia",
+    "emit-module-dependencies" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/NimTodoGui-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/NimTodoGui-primary-emit-module.dia",
+    "pch" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/NimTodoGui-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/NimTodoGui-primary.swiftdeps"
+  },
+  "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/App/Generated/GUI.generated.swift" : {
+    "const-values" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUI.generated.swiftconstvalues",
+    "dependencies" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUI.generated.d",
+    "diagnostics" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUI.generated.dia",
+    "index-unit-output-path" : "/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUI.generated.o",
+    "llvm-bc" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUI.generated.bc",
+    "object" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUI.generated.o",
+    "swift-dependencies" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUI.generated.swiftdeps",
+    "swiftmodule" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUI.generated~partial.swiftmodule"
+  },
+  "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/App/Generated/GUIBridgeSwift.generated.swift" : {
+    "const-values" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIBridgeSwift.generated.swiftconstvalues",
+    "dependencies" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIBridgeSwift.generated.d",
+    "diagnostics" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIBridgeSwift.generated.dia",
+    "index-unit-output-path" : "/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIBridgeSwift.generated.o",
+    "llvm-bc" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIBridgeSwift.generated.bc",
+    "object" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIBridgeSwift.generated.o",
+    "swift-dependencies" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIBridgeSwift.generated.swiftdeps",
+    "swiftmodule" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIBridgeSwift.generated~partial.swiftmodule"
+  },
+  "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/App/Generated/GUICustomSources.generated.swift" : {
+    "const-values" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUICustomSources.generated.swiftconstvalues",
+    "dependencies" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUICustomSources.generated.d",
+    "diagnostics" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUICustomSources.generated.dia",
+    "index-unit-output-path" : "/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUICustomSources.generated.o",
+    "llvm-bc" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUICustomSources.generated.bc",
+    "object" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUICustomSources.generated.o",
+    "swift-dependencies" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUICustomSources.generated.swiftdeps",
+    "swiftmodule" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUICustomSources.generated~partial.swiftmodule"
+  },
+  "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/App/Generated/GUIRuntime.generated.swift" : {
+    "const-values" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIRuntime.generated.swiftconstvalues",
+    "dependencies" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIRuntime.generated.d",
+    "diagnostics" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIRuntime.generated.dia",
+    "index-unit-output-path" : "/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIRuntime.generated.o",
+    "llvm-bc" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIRuntime.generated.bc",
+    "object" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIRuntime.generated.o",
+    "swift-dependencies" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIRuntime.generated.swiftdeps",
+    "swiftmodule" : "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/.derivedData/Build/Intermediates.noindex/NimTodoGui.build/Debug/NimTodoGui.build/Objects-normal/x86_64/GUIRuntime.generated~partial.swiftmodule"
+  }
+}

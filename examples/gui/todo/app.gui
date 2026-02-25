@@ -1,0 +1,612 @@
+component TodoRow(task: TodoTask, isDark: Bool) {
+  let textPrimaryColor = isDark ? Color(red: 0.89, green: 0.92, blue: 0.98) : token.color.textPrimary
+  let textMutedColor = isDark ? Color(red: 0.67, green: 0.72, blue: 0.80) : token.color.textMuted
+  let textSubtleColor = isDark ? Color(red: 0.52, green: 0.58, blue: 0.67) : token.color.textSubtle
+  let rowSelectedColor = isDark ? Color(red: 0.15, green: 0.24, blue: 0.37) : token.color.rowSelected
+
+  HStack(spacing: 10) {
+    Image(
+      systemName: task.done
+        ? "checkmark.circle.fill"
+        : task.blocked
+          ? "exclamationmark.triangle.fill"
+          : task.overdue
+            ? "clock.badge.exclamationmark"
+            : "circle"
+    )
+      .font(.title3)
+      .foregroundColor(
+        task.done
+          ? token.color.success
+          : task.blocked
+            ? token.color.warning
+            : task.overdue ? token.color.danger : textMutedColor
+      )
+      .frame(width: 24)
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 4) {
+      Text(task.title)
+        .font(.body)
+        .foregroundColor(task.done ? textSubtleColor : textPrimaryColor)
+        .lineLimit(1)
+
+      HStack(spacing: 6) {
+        Text(task.priorityText)
+          .font(.caption2)
+          .foregroundColor(
+            task.priorityUrgent
+              ? token.color.priorityUrgent
+              : task.priorityHigh ? token.color.priorityHigh : textSubtleColor
+          )
+
+        Text("·")
+          .font(.caption)
+          .foregroundColor(textSubtleColor)
+
+        Text(task.dueDateText)
+          .font(.caption2)
+          .foregroundColor(task.overdue ? token.color.danger : textSubtleColor)
+      }
+    }
+
+    Spacer()
+  }
+  .padding(vertical: 10, horizontal: 14)
+  .contentShape(Rectangle())
+  .background(task.active ? rowSelectedColor : Color.clear)
+  .cornerRadius(8)
+  .opacity(task.done ? 0.55 : 1.0)
+  .accessibilityElement(children: AccessibilityChildBehavior.combine)
+  .accessibilityLabel(task.title)
+  .accessibilityHint(task.statusText)
+}
+
+component FilterRow(label: String, icon: String, count: Int, isActive: Bool, isDark: Bool) {
+  let textPrimaryColor = isDark ? Color(red: 0.89, green: 0.92, blue: 0.98) : token.color.textPrimary
+  let textMutedColor = isDark ? Color(red: 0.67, green: 0.72, blue: 0.80) : token.color.textMuted
+  let textSubtleColor = isDark ? Color(red: 0.52, green: 0.58, blue: 0.67) : token.color.textSubtle
+  let rowSelectedColor = isDark ? Color(red: 0.15, green: 0.24, blue: 0.37) : token.color.rowSelected
+
+  HStack(spacing: 8) {
+    Image(systemName: icon)
+      .font(.body)
+      .foregroundColor(isActive ? token.color.accent : textMutedColor)
+      .frame(width: 20)
+
+    Text(label)
+      .font(.body)
+      .foregroundColor(isActive ? textPrimaryColor : textMutedColor)
+
+    Spacer()
+
+    Text("\(count)")
+      .font(.caption)
+      .foregroundColor(textSubtleColor)
+      .monospacedDigit()
+  }
+  .padding(vertical: 8, horizontal: 12)
+  .contentShape(Rectangle())
+  .background(isActive ? rowSelectedColor : Color.clear)
+  .cornerRadius(8)
+}
+
+component TodoApp {
+  @Environment(.colorScheme) colorScheme: ColorScheme
+  let isDark = colorScheme == ColorScheme.dark
+
+  NavigationSplitView {
+    TodoSidebar(isDark: isDark)
+      .frame(minWidth: 220, idealWidth: 240, maxWidth: 300)
+    TodoDetail(isDark: isDark)
+  }
+  .navigationSplitViewStyle(BalancedNavigationSplitViewStyle())
+}
+
+component TodoSidebar(isDark: Bool) {
+  @Environment(.controlActiveState) controlActiveState: ControlActiveState
+
+  let isWindowInactive = controlActiveState == ControlActiveState.inactive
+  let textMutedColor = isDark ? Color(red: 0.67, green: 0.72, blue: 0.80) : token.color.textMuted
+  let textSubtleColor = isDark ? Color(red: 0.52, green: 0.58, blue: 0.67) : token.color.textSubtle
+  let badgeBgColor = isDark
+    ? (isWindowInactive
+      ? Color(red: 0.15, green: 0.17, blue: 0.22)
+      : Color(red: 0.10, green: 0.12, blue: 0.18))
+    : token.color.badgeBg
+
+  VStack(spacing: 0) {
+    VStack(spacing: 4) {
+      HStack(spacing: 8) {
+        TextField("New task...", text: newTaskTitle)
+          .textFieldStyle(RoundedBorderTextFieldStyle())
+          .onSubmit(perform: CreateTask)
+
+        Button(action: CreateTask) {
+          Image(systemName: "plus.circle.fill")
+        }
+        .buttonStyle(BorderlessButtonStyle())
+        .font(.title3)
+        .foregroundColor(token.color.accent)
+      }
+    }
+    .padding(vertical: 12, horizontal: 14)
+
+    Divider()
+      .padding(horizontal: 14)
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 2) {
+      Text("FILTERS")
+        .font(.caption2)
+        .foregroundColor(textSubtleColor)
+        .padding(vertical: 8, horizontal: 14)
+
+      FilterRow(
+        label: "All Tasks",
+        icon: "tray.full",
+        count: todoCount,
+        isActive: filterMode == 0,
+        isDark: isDark,
+        onTap: SetFilterAll
+      )
+      .padding(horizontal: 6)
+
+      FilterRow(
+        label: "Active",
+        icon: "circle",
+        count: openCount,
+        isActive: filterMode == 1,
+        isDark: isDark,
+        onTap: SetFilterActive
+      )
+      .padding(horizontal: 6)
+
+      FilterRow(
+        label: "Completed",
+        icon: "checkmark.circle",
+        count: doneCount,
+        isActive: filterMode == 2,
+        isDark: isDark,
+        onTap: SetFilterDone
+      )
+      .padding(horizontal: 6)
+
+      FilterRow(
+        label: "Blocked",
+        icon: "exclamationmark.triangle",
+        count: blockedCount,
+        isActive: filterMode == 3,
+        isDark: isDark,
+        onTap: SetFilterBlocked
+      )
+      .padding(horizontal: 6)
+    }
+    .padding(vertical: 4)
+
+    Divider()
+      .padding(horizontal: 14)
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 2) {
+      Text("SORT BY")
+        .font(.caption2)
+        .foregroundColor(textSubtleColor)
+        .padding(vertical: 8, horizontal: 14)
+
+      Picker("Sort", selection: sortMode) {
+        Text("Newest")
+          .tag(0)
+        Text("Due Date")
+          .tag(1)
+        Text("Priority")
+          .tag(2)
+      }
+      .pickerStyle(SegmentedPickerStyle())
+      .labelsHidden()
+      .padding(horizontal: 14)
+      .onChange(of: sortMode, perform: FilterChanged)
+    }
+    .padding(bottom: 8)
+
+    Divider()
+      .padding(horizontal: 14)
+
+    HStack(spacing: 12) {
+      Button("Load Demo", action: LoadDemoData)
+        .buttonStyle(BorderlessButtonStyle())
+        .foregroundColor(token.color.accent)
+        .font(.caption)
+
+      Button("Clear Done", action: ClearCompleted)
+        .buttonStyle(BorderlessButtonStyle())
+        .foregroundColor(textMutedColor)
+        .font(.caption)
+
+      Spacer()
+
+      Button("Reset", action: ResetTodos)
+        .buttonStyle(BorderlessButtonStyle())
+        .foregroundColor(token.color.danger)
+        .font(.caption)
+    }
+    .padding(vertical: 8, horizontal: 14)
+
+    Spacer()
+
+    HStack {
+      Text(status)
+        .font(.caption)
+        .foregroundColor(textSubtleColor)
+        .lineLimit(1)
+
+      Spacer()
+    }
+    .padding(vertical: 8, horizontal: 14)
+    .frame(maxWidth: Double.infinity, alignment: Alignment.leading)
+    .background(badgeBgColor)
+  }
+}
+
+component TaskEditor(isDark: Bool) {
+  let textPrimaryColor = isDark ? Color(red: 0.89, green: 0.92, blue: 0.98) : token.color.textPrimary
+  let textMutedColor = isDark ? Color(red: 0.67, green: 0.72, blue: 0.80) : token.color.textMuted
+  let textSubtleColor = isDark ? Color(red: 0.52, green: 0.58, blue: 0.67) : token.color.textSubtle
+  let surfaceColor = isDark ? Color(red: 0.11, green: 0.14, blue: 0.20) : token.color.surface
+  let borderColor = isDark ? Color(red: 0.23, green: 0.29, blue: 0.38) : token.color.border
+  let rowSelectedColor = isDark ? Color(red: 0.15, green: 0.24, blue: 0.37) : token.color.rowSelected
+  let shadowColor = isDark
+    ? Color(red: 0.0, green: 0.0, blue: 0.0, opacity: 0.30)
+    : Color(red: 0.0, green: 0.0, blue: 0.0, opacity: 0.04)
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 12) {
+    HStack(alignment: VerticalAlignment.top) {
+      Text(selectedTaskTitle)
+        .font(.headline)
+        .foregroundColor(textPrimaryColor)
+        .lineLimit(2)
+
+      Spacer()
+
+      Text(selectedTaskStatusText)
+        .font(.caption)
+        .foregroundColor(token.color.accent)
+        .bold()
+        .padding(vertical: 4, horizontal: 10)
+        .background(rowSelectedColor)
+        .cornerRadius(6)
+    }
+
+    Divider()
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 6) {
+      Text("Title")
+        .font(.caption)
+        .foregroundColor(textSubtleColor)
+
+      HStack(spacing: 6) {
+        TextField("Rename task", text: editTaskTitle)
+          .textFieldStyle(RoundedBorderTextFieldStyle())
+          .controlSize(.small)
+          .onSubmit(perform: RenameActiveTask)
+
+        Button("Save", action: RenameActiveTask)
+          .buttonStyle(BorderedButtonStyle())
+          .controlSize(.small)
+      }
+    }
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 6) {
+      Text("Due Date")
+        .font(.caption)
+        .foregroundColor(textSubtleColor)
+
+      HStack(spacing: 6) {
+        TextField("YYYY-MM-DD", text: editTaskDueDate)
+          .textFieldStyle(RoundedBorderTextFieldStyle())
+          .controlSize(.small)
+          .onSubmit(perform: SetActiveDueDate)
+
+        Button("Set", action: SetActiveDueDate)
+          .buttonStyle(BorderedButtonStyle())
+          .controlSize(.small)
+
+        Button("Clear", action: ClearActiveDueDate)
+          .buttonStyle(BorderlessButtonStyle())
+          .controlSize(.small)
+          .foregroundColor(textMutedColor)
+      }
+    }
+
+    Divider()
+
+    HStack(alignment: VerticalAlignment.top, spacing: 16) {
+      VStack(alignment: HorizontalAlignment.leading, spacing: 6) {
+        Text("Status")
+          .font(.caption)
+          .foregroundColor(textSubtleColor)
+
+        HStack(spacing: 4) {
+          Button("Backlog", action: SetActiveStatusBacklog)
+            .buttonStyle(BorderedButtonStyle())
+            .controlSize(.small)
+
+          Button("In Progress", action: SetActiveStatusInProgress)
+            .buttonStyle(BorderedButtonStyle())
+            .controlSize(.small)
+
+          Button("Blocked", action: SetActiveStatusBlocked)
+            .buttonStyle(BorderedButtonStyle())
+            .controlSize(.small)
+
+          Button("Done", action: SetActiveStatusDone)
+            .buttonStyle(BorderedButtonStyle())
+            .controlSize(.small)
+        }
+      }
+
+      VStack(alignment: HorizontalAlignment.leading, spacing: 6) {
+        Text("Priority")
+          .font(.caption)
+          .foregroundColor(textSubtleColor)
+
+        HStack(spacing: 4) {
+          Button("Low", action: SetActivePriorityLow)
+            .buttonStyle(BorderedButtonStyle())
+            .controlSize(.small)
+
+          Button("Med", action: SetActivePriorityMedium)
+            .buttonStyle(BorderedButtonStyle())
+            .controlSize(.small)
+
+          Button("High", action: SetActivePriorityHigh)
+            .buttonStyle(BorderedButtonStyle())
+            .controlSize(.small)
+            .tint(token.color.priorityHigh)
+
+          Button("Urgent", action: SetActivePriorityUrgent)
+            .buttonStyle(BorderedButtonStyle())
+            .controlSize(.small)
+            .tint(token.color.priorityUrgent)
+        }
+      }
+    }
+
+    HStack {
+      Spacer()
+
+      Button("Delete Task", action: RemoveActiveTask)
+        .buttonStyle(BorderlessButtonStyle())
+        .controlSize(.small)
+        .foregroundColor(token.color.danger)
+    }
+  }
+  .padding(16)
+  .background(surfaceColor)
+  .cornerRadius(12)
+  .overlay(
+    RoundedRectangle(cornerRadius: 12)
+      .stroke(borderColor, lineWidth: 0.5)
+  )
+  .shadow(color: shadowColor, radius: 8, x: 0, y: 2)
+}
+
+component TodoDetail(isDark: Bool) {
+  let textMutedColor = isDark ? Color(red: 0.67, green: 0.72, blue: 0.80) : token.color.textMuted
+  let textSubtleColor = isDark ? Color(red: 0.52, green: 0.58, blue: 0.67) : token.color.textSubtle
+  let surfaceColor = isDark ? Color(red: 0.11, green: 0.14, blue: 0.20) : token.color.surface
+  let borderColor = isDark ? Color(red: 0.23, green: 0.29, blue: 0.38) : token.color.border
+  let pageBackgroundColor = isDark
+    ? Color(red: 0.06, green: 0.08, blue: 0.12)
+    : Color(red: 0.98, green: 0.98, blue: 0.99)
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 16) {
+    HStack(spacing: 8) {
+      Image(systemName: "magnifyingglass")
+        .foregroundColor(textSubtleColor)
+        .font(.body)
+
+      TextField("Search tasks...", text: searchQuery)
+        .textFieldStyle(PlainTextFieldStyle())
+        .font(.body)
+        .onChange(of: searchQuery, perform: FilterChanged)
+
+      if searchQuery != "" {
+        Button(action: ClearSearch) {
+          Image(systemName: "xmark.circle.fill")
+        }
+        .buttonStyle(BorderlessButtonStyle())
+        .foregroundColor(textMutedColor)
+        .font(.caption)
+      }
+    }
+    .padding(vertical: 10, horizontal: 12)
+    .background(surfaceColor)
+    .cornerRadius(8)
+    .overlay(
+      RoundedRectangle(cornerRadius: 8)
+        .stroke(borderColor, lineWidth: 0.5)
+    )
+
+    if selectedTaskId >= 0 {
+      TaskEditor(isDark: isDark)
+    }
+
+    if todoCount == 0 {
+      ContentUnavailableView("No tasks yet", systemImage: "checklist", description: "Type a task name in the sidebar and press Enter")
+        .frame(maxWidth: Double.infinity, maxHeight: Double.infinity)
+    } else {
+      List {
+        ForEach(items: tasks, item: task, index: rowIndex) {
+          TodoRow(task: task, isDark: isDark, onTap: SelectTask(taskId: task.id))
+            .listRowSeparator(Visibility.hidden)
+            .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
+            .listRowBackground(Color.clear)
+            .swipeActions(edge: HorizontalEdge.trailing) {
+              Button("Delete", role: ButtonRole.destructive, action: RemoveActiveTask)
+            }
+            .swipeActions(edge: HorizontalEdge.leading) {
+              Button(action: CompleteActiveTask) {
+                Label("Done", systemImage: "checkmark.circle")
+              }
+              .tint(token.color.success)
+            }
+        }
+      }
+      .listStyle(PlainListStyle())
+      .scrollContentBackground(Visibility.hidden)
+      .animation(Animation.default, value: filterMode)
+    }
+  }
+  .frame(maxWidth: Double.infinity, maxHeight: Double.infinity, alignment: Alignment.topLeading)
+  .padding(24)
+  .background(pageBackgroundColor)
+  .toolbar {
+    ToolbarItem(placement: ToolbarItemPlacement.primaryAction) {
+      Button(action: CreateTask) {
+        Label("New Task", systemImage: "plus")
+      }
+      .keyboardShortcut("n", modifiers: EventModifiers.command)
+    }
+  }
+}
+
+app NimTodo {
+  window {
+    title: "Nim Tasks"
+    width: 1100
+    height: 700
+    minWidth: 860
+    minHeight: 540
+    maxWidth: 1600
+    maxHeight: 1100
+    showTitleBar: true
+    closeAppOnLastWindowClose: true
+  }
+
+  tokens {
+    color.accent = "#3b82f6"
+    color.info = "#0d9488"
+    color.success = "#22c55e"
+    color.warning = "#f59e0b"
+    color.danger = "#ef4444"
+
+    color.textPrimary = "#1e293b"
+    color.textMuted = "#64748b"
+    color.textSubtle = "#94a3b8"
+
+    color.surface = "#ffffff"
+    color.border = "#e2e8f0"
+    color.badgeBg = "#f8fafc"
+    color.rowSelected = "#eff6ff"
+
+    color.priorityUrgent = "#dc2626"
+    color.priorityUrgentBg = "#fef2f2"
+    color.priorityHigh = "#ea580c"
+    color.priorityHighBg = "#fff7ed"
+
+    spacing.xs = 4
+    spacing.sm = 8
+    spacing.md = 12
+    spacing.lg = 20
+  }
+
+  model TodoTask {
+    id: Int
+    title: String
+    statusText: String
+    priorityText: String
+    dueDateText: String
+    done: Bool
+    blocked: Bool
+    active: Bool
+    overdue: Bool
+    priorityUrgent: Bool
+    priorityHigh: Bool
+  }
+
+  state {
+    todoCount: Int = 0
+    openCount: Int = 0
+    doneCount: Int = 0
+    blockedCount: Int = 0
+
+    newTaskTitle: String = ""
+    draftDueDate: String = ""
+
+    draftStatus: Int = 0
+    draftPriority: Int = 1
+
+    filterMode: Int = 0
+    sortMode: Int = 0
+
+    searchQuery: String = ""
+
+    tasks: TodoTask[] = []
+    selectedTaskId: Int = -1
+    selectedTaskTitle: String = "No task selected"
+    selectedTaskStatusText: String = ""
+    editTaskTitle: String = ""
+    editTaskDueDate: String = ""
+
+    status: String = "Ready"
+  }
+
+  action CreateTask owner nim
+  action ClearDraftTitle owner nim
+
+  action ClearSearch owner nim
+
+  action SelectTask(taskId: Int) owner both
+
+  action RenameActiveTask owner nim
+  action SetActiveDueDate owner nim
+  action ClearActiveDueDate owner nim
+
+  action SetActiveStatusBacklog owner nim
+  action SetActiveStatusInProgress owner nim
+  action SetActiveStatusBlocked owner nim
+  action SetActiveStatusDone owner nim
+
+  action CompleteActiveTask owner nim
+  action ReopenActiveTask owner nim
+  action RemoveActiveTask owner nim
+
+  action ClearCompleted owner nim
+  action LoadDemoData owner nim
+  action ResetTodos owner nim
+
+  action MoveActiveTaskUp owner nim
+  action MoveActiveTaskDown owner nim
+
+  action SetActivePriorityLow owner nim
+  action SetActivePriorityMedium owner nim
+  action SetActivePriorityHigh owner nim
+  action SetActivePriorityUrgent owner nim
+
+  action FilterChanged owner nim
+
+  action SetFilterAll owner both
+  action SetFilterActive owner both
+  action SetFilterDone owner both
+  action SetFilterBlocked owner both
+
+  reducer {
+    on SelectTask(taskId) {
+      set selectedTaskId = taskId withAnimation Animation.easeInOut(duration: 0.2)
+    }
+    on SetFilterAll {
+      set filterMode = 0
+    }
+    on SetFilterActive {
+      set filterMode = 1
+    }
+    on SetFilterDone {
+      set filterMode = 2
+    }
+    on SetFilterBlocked {
+      set filterMode = 3
+    }
+  }
+
+  bridge {
+    nimEntry: "bridge.nim"
+  }
+}

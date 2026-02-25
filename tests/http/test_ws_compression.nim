@@ -7,7 +7,6 @@ import cps/transform
 import cps/eventloop
 import cps/io/streams
 import cps/io/tcp
-import cps/io/buffered
 import cps/http/server/types
 import cps/http/server/http1 as http1_server
 import cps/http/server/ws
@@ -36,6 +35,14 @@ proc echoWsHandler(req: HttpRequest): CpsFuture[HttpResponseBuilder] {.cps.} =
     elif msg.kind == opBinary:
       await wsConn.sendBinary(msg.data)
   return wsResponse()
+
+proc pseudoRandomBytes(n: int): string =
+  ## Deterministic pseudo-random byte sequence for stable tests.
+  var state = 0x1234ABCD'u32
+  result = newString(n)
+  for i in 0 ..< n:
+    state = state * 1664525'u32 + 1013904223'u32
+    result[i] = char((state shr 24).int and 0xFF)
 
 # ============================================================
 # Test 1: permessage-deflate negotiation
@@ -310,5 +317,82 @@ block testLargePayloadCompression:
   assert cf.read() == "OK"
   listener.close()
   echo "PASS: large payload compression"
+
+# ============================================================
+# Test 7: Large incompressible payload roundtrip
+# ============================================================
+
+block testLargeIncompressiblePayloadCompression:
+  let listener = tcpListen("127.0.0.1", 0)
+  let port = getListenerPort(listener)
+  let config = HttpServerConfig(
+    maxWsFrameBytes: 4 * 1024 * 1024,
+    maxWsMessageBytes: 8 * 1024 * 1024
+  )
+
+  proc serverTask(l: TcpListener, cfg: HttpServerConfig): CpsVoidFuture {.cps.} =
+    let client = await l.accept()
+    await handleHttp1Connection(client.AsyncStream, cfg, echoWsHandler)
+
+  proc clientTask(p: int): CpsFuture[string] {.cps.} =
+    let wsConn = await wsConnect("127.0.0.1", p, "/ws", enableCompression = true)
+    let payload = pseudoRandomBytes(2 * 1024 * 1024) # 2 MiB incompressible-ish payload
+
+    await wsConn.sendBinary(payload)
+    let msg = await wsConn.recvMessage()
+    assert msg.kind == opBinary
+    assert msg.data == payload, "Incompressible binary payload mismatch"
+
+    await wsConn.sendClose()
+    discard await wsConn.recvMessage()
+    return "OK"
+
+  let sf = serverTask(listener, config)
+  let cf = clientTask(port)
+  let loop = getEventLoop()
+  while not cf.finished:
+    loop.tick()
+    if not loop.hasWork:
+      break
+
+  assert cf.read() == "OK"
+  listener.close()
+  echo "PASS: large incompressible payload compression"
+
+# ============================================================
+# Test 8: Decompressed size limit enforced (compression bomb guard)
+# ============================================================
+
+block testCompressedPayloadRespectsMessageLimit:
+  let listener = tcpListen("127.0.0.1", 0)
+  let port = getListenerPort(listener)
+  let config = HttpServerConfig(maxWsFrameBytes: 1024 * 1024, maxWsMessageBytes: 1024)
+
+  proc serverTask(l: TcpListener, cfg: HttpServerConfig): CpsVoidFuture {.cps.} =
+    let client = await l.accept()
+    await handleHttp1Connection(client.AsyncStream, cfg, echoWsHandler)
+
+  proc clientTask(p: int): CpsFuture[uint16] {.cps.} =
+    let wsConn = await wsConnect("127.0.0.1", p, "/ws", enableCompression = true)
+
+    # Highly compressible payload: compressed frame is small, decompressed message is large.
+    await wsConn.sendText("A".repeat(16 * 1024))
+    let msg = await wsConn.recvMessage()
+    if msg.kind == opClose:
+      return msg.closeCode
+    return 0'u16
+
+  let sf = serverTask(listener, config)
+  let cf = clientTask(port)
+  let loop = getEventLoop()
+  while not cf.finished:
+    loop.tick()
+    if not loop.hasWork:
+      break
+
+  let closeCode = cf.read()
+  assert closeCode == 1009'u16, "Expected close code 1009 for oversized decompressed message, got: " & $closeCode
+  listener.close()
+  echo "PASS: decompressed payload size limit enforced"
 
 echo "ALL WEBSOCKET COMPRESSION TESTS PASSED"

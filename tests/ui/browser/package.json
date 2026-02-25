@@ -1,0 +1,15 @@
+{
+  "name": "cps-ui-browser-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node run_browser_suite.mjs",
+    "test:served-spa": "node run_served_spa_suite.mjs",
+    "test:served-workspace": "node run_served_workspace_suite.mjs",
+    "test:served-net": "node run_served_net_suite.mjs",
+    "test:served-workspace-h2": "node run_served_workspace_h2_suite.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}

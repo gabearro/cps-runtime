@@ -3,7 +3,7 @@
 ## Accepts WebSocket upgrade requests for both HTTP/1.1 (101 Switching Protocols)
 ## and HTTP/2 (Extended CONNECT, RFC 8441).
 
-import std/strutils
+import std/[strutils, tables, base64]
 import ../../runtime
 import ../../io/streams
 import ../../io/buffered
@@ -12,6 +12,46 @@ import ./types
 import ../shared/http2_stream_adapter
 
 export ws
+
+proc parseWsLimit(req: HttpRequest, key: string, fallback: int): int =
+  if req.context.isNil:
+    return fallback
+  let raw = req.context.getOrDefault(key)
+  if raw.len == 0:
+    return fallback
+  try:
+    let parsed = raw.parseInt()
+    if parsed > 0: parsed else: fallback
+  except ValueError:
+    fallback
+
+proc headerHasToken(value, token: string): bool =
+  let expected = token.toLowerAscii
+  for part in value.split(','):
+    if part.strip().toLowerAscii == expected:
+      return true
+  false
+
+proc getHeaderValues(req: HttpRequest, name: string): seq[string] =
+  let lower = name.toLowerAscii
+  for (k, v) in req.headers:
+    if k.toLowerAscii == lower:
+      result.add(v)
+
+proc headersHaveToken(values: openArray[string], token: string): bool =
+  for v in values:
+    if headerHasToken(v, token):
+      return true
+  false
+
+proc isValidSecWebSocketKey(key: string): bool =
+  if key.len == 0:
+    return false
+  try:
+    let decoded = base64.decode(key)
+    return decoded.len == 16
+  except CatchableError:
+    return false
 
 proc wsResponse*(): HttpResponseBuilder =
   ## Sentinel control response. Tells handleHttp1Connection that
@@ -24,6 +64,13 @@ proc acceptWebSocket*(stream: AsyncStream, reader: BufferedReader,
   ## Validate the WebSocket upgrade request and send the appropriate response.
   ## Supports both HTTP/1.1 (101 Switching Protocols) and HTTP/2 (Extended CONNECT, RFC 8441).
   let fut = newCpsFuture[WebSocket]()
+  let maxFrameBytes = parseWsLimit(req, "ws_max_frame_bytes", 1024 * 1024)
+  let maxMessageBytes = parseWsLimit(req, "ws_max_message_bytes", 16 * 1024 * 1024)
+
+  for (k, v) in extraHeaders:
+    if not validateHeaderPair(k, v):
+      fut.fail(newException(WsError, "Invalid WebSocket response header"))
+      return fut
 
   if stream of Http2StreamAdapter:
     # HTTP/2 Extended CONNECT (RFC 8441)
@@ -35,6 +82,10 @@ proc acceptWebSocket*(stream: AsyncStream, reader: BufferedReader,
     let protocolHeader = req.getHeader(":protocol")
     if protocolHeader.toLowerAscii != "websocket":
       fut.fail(newException(WsError, "Expected :protocol=websocket, got: " & protocolHeader))
+      return fut
+    let wsVersionHeader = req.getHeader("sec-websocket-version")
+    if wsVersionHeader != WsVersion:
+      fut.fail(newException(WsError, "Unsupported WebSocket version: " & wsVersionHeader))
       return fut
     # Parse permessage-deflate extension
     let wsExtHeader = req.getHeader("sec-websocket-extensions")
@@ -60,6 +111,9 @@ proc acceptWebSocket*(stream: AsyncStream, reader: BufferedReader,
           stream: capturedStream,
           reader: capturedReader,
           isMasked: false,
+          requireMaskedIncoming: true,
+          maxFrameBytes: maxFrameBytes,
+          maxMessageBytes: maxMessageBytes,
           compressEnabled: capturedExtParsed.enabled,
           serverNoContextTakeover: capturedExtParsed.serverNoCtx,
           clientNoContextTakeover: capturedExtParsed.clientNoCtx
@@ -70,32 +124,47 @@ proc acceptWebSocket*(stream: AsyncStream, reader: BufferedReader,
   else:
     # HTTP/1.1 Upgrade
     # Validate required headers
-    let upgradeHeader = req.getHeader("Upgrade")
-    let connectionHeader = req.getHeader("Connection")
-    let wsVersionHeader = req.getHeader("Sec-WebSocket-Version")
-    let wsKeyHeader = req.getHeader("Sec-WebSocket-Key")
-
-    if upgradeHeader.toLowerAscii != "websocket":
-      fut.fail(newException(WsError, "Missing or invalid Upgrade header: " & upgradeHeader))
+    if req.httpVersion != "HTTP/1.1":
+      fut.fail(newException(WsError, "Expected HTTP/1.1 for WebSocket upgrade, got: " & req.httpVersion))
+      return fut
+    if req.meth.toUpperAscii != "GET":
+      fut.fail(newException(WsError, "Expected GET method for WebSocket upgrade, got: " & req.meth))
       return fut
 
-    if "upgrade" notin connectionHeader.toLowerAscii:
-      fut.fail(newException(WsError, "Missing 'upgrade' in Connection header: " & connectionHeader))
+    let upgradeHeaders = getHeaderValues(req, "Upgrade")
+    let connectionHeaders = getHeaderValues(req, "Connection")
+    let wsVersionHeaders = getHeaderValues(req, "Sec-WebSocket-Version")
+    let wsKeyHeaders = getHeaderValues(req, "Sec-WebSocket-Key")
+
+    if not headersHaveToken(upgradeHeaders, "websocket"):
+      fut.fail(newException(WsError, "Missing or invalid Upgrade header"))
       return fut
 
+    if not headersHaveToken(connectionHeaders, "upgrade"):
+      fut.fail(newException(WsError, "Missing 'upgrade' in Connection header"))
+      return fut
+
+    if wsVersionHeaders.len != 1:
+      fut.fail(newException(WsError, "Missing or duplicate Sec-WebSocket-Version header"))
+      return fut
+    let wsVersionHeader = wsVersionHeaders[0]
     if wsVersionHeader != WsVersion:
       fut.fail(newException(WsError, "Unsupported WebSocket version: " & wsVersionHeader))
       return fut
 
-    if wsKeyHeader == "":
-      fut.fail(newException(WsError, "Missing Sec-WebSocket-Key header"))
+    if wsKeyHeaders.len != 1:
+      fut.fail(newException(WsError, "Missing or duplicate Sec-WebSocket-Key header"))
+      return fut
+    let wsKeyHeader = wsKeyHeaders[0]
+    if not isValidSecWebSocketKey(wsKeyHeader):
+      fut.fail(newException(WsError, "Missing or invalid Sec-WebSocket-Key header"))
       return fut
 
     # Compute accept key
     let acceptKey = computeAcceptKey(wsKeyHeader)
 
     # Parse permessage-deflate extension
-    let wsExtHeader = req.getHeader("Sec-WebSocket-Extensions")
+    let wsExtHeader = getHeaderValues(req, "Sec-WebSocket-Extensions").join(",")
     let extParsed = parseWsExtensions(wsExtHeader)
 
     # Build 101 response
@@ -115,14 +184,20 @@ proc acceptWebSocket*(stream: AsyncStream, reader: BufferedReader,
     let capturedStream = stream
     let capturedReader = reader
     let capturedExtParsed = extParsed
+    let capturedReqContext = req.context
     writeFut.addCallback(proc() =
       if writeFut.hasError():
         fut.fail(writeFut.getError())
       else:
+        if not capturedReqContext.isNil:
+          capturedReqContext["ws_upgraded"] = "1"
         let ws = WebSocket(
           stream: capturedStream,
           reader: capturedReader,
           isMasked: false,
+          requireMaskedIncoming: true,
+          maxFrameBytes: maxFrameBytes,
+          maxMessageBytes: maxMessageBytes,
           compressEnabled: capturedExtParsed.enabled,
           serverNoContextTakeover: capturedExtParsed.serverNoCtx,
           clientNoContextTakeover: capturedExtParsed.clientNoCtx

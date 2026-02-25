@@ -1144,17 +1144,16 @@ block testClientIp:
       respond 200, clientIp()
   let client = newTestClient(handler)
 
-  # With X-Forwarded-For header
+  # Without trusted_proxy context, forwarded headers are not trusted.
+  # Test client has no remoteAddr, so all cases return "unknown".
   var resp = client.runRequest("GET", "/ip", "", @[("X-Forwarded-For", "1.2.3.4, 5.6.7.8")])
   assert resp.statusCode == 200
-  assert resp.body == "1.2.3.4", "Got: " & resp.body
+  assert resp.body == "unknown", "Got: " & resp.body
 
-  # With X-Real-IP
   resp = client.runRequest("GET", "/ip", "", @[("X-Real-IP", "10.0.0.1")])
   assert resp.statusCode == 200
-  assert resp.body == "10.0.0.1"
+  assert resp.body == "unknown"
 
-  # No headers -> "unknown"
   resp = client.runRequest("GET", "/ip")
   assert resp.statusCode == 200
   assert resp.body == "unknown"
@@ -2716,7 +2715,49 @@ block testRouterObj:
   echo "PASS: routerObj returns Router"
 
 # ============================================================
-# Test 103: router DSL rejects unsupported lifecycle hooks
+# Test 103: const/static route paths are accepted
+# ============================================================
+block testConstRoutePaths:
+  const userPath = "/const/users/{id:int}"
+
+  let handler = router:
+    get userPath:
+      respond 200, "id=" & pathParams["id"]
+
+  let client = newTestClient(handler)
+  let resp = client.runRequest("GET", "/const/users/42")
+  assert resp.statusCode == 200
+  assert resp.body == "id=42"
+  echo "PASS: const route path support"
+
+# ============================================================
+# Test 104: trusted proxy forwarding is opt-in
+# ============================================================
+block testTrustedProxyForwarding:
+  var req = HttpRequest(
+    headers: @[
+      ("x-forwarded-for", "203.0.113.7, 10.1.2.3"),
+      ("x-real-ip", "198.51.100.9")
+    ],
+    remoteAddr: "10.1.2.3",
+    context: newTable[string, string]()
+  )
+  req.context["remote_addr"] = "10.1.2.3"
+
+  # Untrusted by default: use socket peer address.
+  assert extractClientIp(req) == "10.1.2.3"
+
+  # Trusted proxy context allows forwarded source extraction.
+  req.context["trusted_proxy"] = "1"
+  assert extractClientIp(req) == "203.0.113.7"
+
+  # CIDR trust helper enforces allowed proxy network.
+  assert isTrustedProxyAddress("10.1.2.3", @["10.0.0.0/8"])
+  assert not isTrustedProxyAddress("198.51.100.9", @["10.0.0.0/8"])
+  echo "PASS: trusted proxy forwarding is opt-in"
+
+# ============================================================
+# Test 105: router DSL rejects unsupported lifecycle hooks
 # ============================================================
 static:
   doAssert not compiles(
@@ -2849,6 +2890,45 @@ static:
           respond 200, "ok"
   )
 echo "PASS: router lifecycle hook rejection"
+
+# ============================================================
+# Test 106: compile-time route pattern validation
+# ============================================================
+static:
+  doAssert compiles(
+    block:
+      const constPath = "/compile/users/{id:int}"
+      let hLocal = router:
+        get constPath:
+          respond 200, "ok"
+  )
+  doAssert compiles(
+    block:
+      template mkPath(path: static[string]): string =
+        path
+      let hLocal = router:
+        get mkPath("/compile/static"):
+          respond 200, "ok"
+  )
+  doAssert not compiles(
+    block:
+      let hLocal = router:
+        get "/bad/{id:date}":
+          respond 200, "nope"
+  )
+  doAssert not compiles(
+    block:
+      let hLocal = router:
+        get "/bad/{id?}/tail":
+          respond 200, "nope"
+  )
+  doAssert not compiles(
+    block:
+      let hLocal = router:
+        get "/bad/*/tail":
+          respond 200, "nope"
+  )
+echo "PASS: compile-time route pattern validation"
 
 echo ""
 echo "All HTTP DSL tests passed!"

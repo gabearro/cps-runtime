@@ -109,6 +109,44 @@ proc parseWsFrame(data: string): (byte, string) =
 
   return (opcode, payload)
 
+proc readSingleWsFrame(reader: BufferedReader): CpsFuture[(byte, string)] {.cps.} =
+  ## Read and decode a single WebSocket frame from a buffered reader.
+  let hdr = await reader.readExact(2)
+  let b0 = hdr[0].byte
+  let b1 = hdr[1].byte
+  let opcode = b0 and 0x0F
+  let masked = (b1 and 0x80'u8) != 0
+  var payloadLen = (b1 and 0x7F'u8).int
+  if payloadLen == 126:
+    let extLen = await reader.readExact(2)
+    payloadLen = (extLen[0].byte.int shl 8) or extLen[1].byte.int
+  elif payloadLen == 127:
+    let extLen = await reader.readExact(8)
+    payloadLen = 0
+    for i in 0 ..< 8:
+      payloadLen = (payloadLen shl 8) or extLen[i].byte.int
+
+  var maskKey: array[4, byte]
+  if masked:
+    let maskData = await reader.readExact(4)
+    for i in 0 ..< 4:
+      maskKey[i] = maskData[i].byte
+
+  var payload = ""
+  if payloadLen > 0:
+    payload = await reader.readExact(payloadLen)
+    if masked:
+      var unmasked = newString(payloadLen)
+      for i in 0 ..< payloadLen:
+        unmasked[i] = char(payload[i].byte xor maskKey[i mod 4])
+      payload = unmasked
+  return (opcode, payload)
+
+proc closeCode(payload: string): uint16 =
+  if payload.len >= 2:
+    return (payload[0].byte.uint16 shl 8) or payload[1].byte.uint16
+  0'u16
+
 proc echoWsHandler(req: HttpRequest): CpsFuture[HttpResponseBuilder] {.cps.} =
   ## WebSocket echo handler: echoes back text messages.
   let wsConn = await acceptWebSocket(req)
@@ -759,6 +797,237 @@ asyncio.run(main())
   pyProcess.kill()
   pyProcess.close()
   echo "PASS: Nim client → Python server"
+
+# ============================================================
+# Test 15: Reject unmasked client data frames
+# ============================================================
+block testRejectUnmaskedClientFrame:
+  let listener = tcpListen("127.0.0.1", 0)
+  let port = getListenerPort(listener)
+  let config = HttpServerConfig()
+
+  proc serverTask(l: TcpListener, cfg: HttpServerConfig): CpsVoidFuture {.cps.} =
+    let client = await l.accept()
+    await handleHttp1Connection(client.AsyncStream, cfg, echoWsHandler)
+
+  proc clientTask(p: int): CpsFuture[uint16] {.cps.} =
+    let conn = await tcpConnect("127.0.0.1", p)
+    let s = conn.AsyncStream
+    await s.write(wsUpgradeRequest("/ws"))
+    let reader = newBufferedReader(s)
+    while true:
+      let line = await reader.readLine()
+      if line == "":
+        break
+    await s.write(buildWsFrame(0x1, "bad", masked = false))
+    var frame: (byte, string)
+    try:
+      frame = await readSingleWsFrame(reader)
+    except CatchableError:
+      s.close()
+      return 0'u16
+    s.close()
+    if frame[0] != 0x8'u8:
+      return 0'u16
+    return closeCode(frame[1])
+
+  let sf = serverTask(listener, config)
+  let cf = clientTask(port)
+  let loop = getEventLoop()
+  while not cf.finished:
+    loop.tick()
+    if not loop.hasWork:
+      break
+
+  let close = cf.read()
+  assert close == 1002'u16 or close == 0'u16
+  listener.close()
+  echo "PASS: Reject unmasked client frame"
+
+# ============================================================
+# Test 16: Reject invalid opcode
+# ============================================================
+block testRejectInvalidOpcode:
+  let listener = tcpListen("127.0.0.1", 0)
+  let port = getListenerPort(listener)
+  let config = HttpServerConfig()
+
+  proc serverTask(l: TcpListener, cfg: HttpServerConfig): CpsVoidFuture {.cps.} =
+    let client = await l.accept()
+    await handleHttp1Connection(client.AsyncStream, cfg, echoWsHandler)
+
+  proc clientTask(p: int): CpsFuture[uint16] {.cps.} =
+    let conn = await tcpConnect("127.0.0.1", p)
+    let s = conn.AsyncStream
+    await s.write(wsUpgradeRequest("/ws"))
+    let reader = newBufferedReader(s)
+    while true:
+      let line = await reader.readLine()
+      if line == "":
+        break
+    await s.write(buildWsFrame(0x3, "bad-opcode", masked = true))
+    var frame: (byte, string)
+    try:
+      frame = await readSingleWsFrame(reader)
+    except CatchableError:
+      s.close()
+      return 0'u16
+    s.close()
+    if frame[0] != 0x8'u8:
+      return 0'u16
+    return closeCode(frame[1])
+
+  let sf = serverTask(listener, config)
+  let cf = clientTask(port)
+  let loop = getEventLoop()
+  while not cf.finished:
+    loop.tick()
+    if not loop.hasWork:
+      break
+
+  let close = cf.read()
+  assert close == 1002'u16 or close == 0'u16
+  listener.close()
+  echo "PASS: Reject invalid opcode"
+
+# ============================================================
+# Test 17: Reject oversized control frame payload
+# ============================================================
+block testRejectOversizedControlFrame:
+  let listener = tcpListen("127.0.0.1", 0)
+  let port = getListenerPort(listener)
+  let config = HttpServerConfig()
+
+  proc serverTask(l: TcpListener, cfg: HttpServerConfig): CpsVoidFuture {.cps.} =
+    let client = await l.accept()
+    await handleHttp1Connection(client.AsyncStream, cfg, echoWsHandler)
+
+  proc clientTask(p: int): CpsFuture[uint16] {.cps.} =
+    let conn = await tcpConnect("127.0.0.1", p)
+    let s = conn.AsyncStream
+    await s.write(wsUpgradeRequest("/ws"))
+    let reader = newBufferedReader(s)
+    while true:
+      let line = await reader.readLine()
+      if line == "":
+        break
+    await s.write(buildWsFrame(0x9, repeat('x', 126), masked = true))
+    var frame: (byte, string)
+    try:
+      frame = await readSingleWsFrame(reader)
+    except CatchableError:
+      s.close()
+      return 0'u16
+    s.close()
+    if frame[0] != 0x8'u8:
+      return 0'u16
+    return closeCode(frame[1])
+
+  let sf = serverTask(listener, config)
+  let cf = clientTask(port)
+  let loop = getEventLoop()
+  while not cf.finished:
+    loop.tick()
+    if not loop.hasWork:
+      break
+
+  let close = cf.read()
+  assert close == 1002'u16 or close == 0'u16
+  listener.close()
+  echo "PASS: Reject oversized control frame payload"
+
+# ============================================================
+# Test 18: Reject fragmented control frames
+# ============================================================
+block testRejectFragmentedControlFrame:
+  let listener = tcpListen("127.0.0.1", 0)
+  let port = getListenerPort(listener)
+  let config = HttpServerConfig()
+
+  proc serverTask(l: TcpListener, cfg: HttpServerConfig): CpsVoidFuture {.cps.} =
+    let client = await l.accept()
+    await handleHttp1Connection(client.AsyncStream, cfg, echoWsHandler)
+
+  proc clientTask(p: int): CpsFuture[uint16] {.cps.} =
+    let conn = await tcpConnect("127.0.0.1", p)
+    let s = conn.AsyncStream
+    await s.write(wsUpgradeRequest("/ws"))
+    let reader = newBufferedReader(s)
+    while true:
+      let line = await reader.readLine()
+      if line == "":
+        break
+    await s.write(buildWsFrame(0x9, "x", masked = true, fin = false))
+    var frame: (byte, string)
+    try:
+      frame = await readSingleWsFrame(reader)
+    except CatchableError:
+      s.close()
+      return 0'u16
+    s.close()
+    if frame[0] != 0x8'u8:
+      return 0'u16
+    return closeCode(frame[1])
+
+  let sf = serverTask(listener, config)
+  let cf = clientTask(port)
+  let loop = getEventLoop()
+  while not cf.finished:
+    loop.tick()
+    if not loop.hasWork:
+      break
+
+  let close = cf.read()
+  assert close == 1002'u16 or close == 0'u16
+  listener.close()
+  echo "PASS: Reject fragmented control frames"
+
+# ============================================================
+# Test 19: Enforce max message size
+# ============================================================
+block testEnforceMaxMessageSize:
+  let listener = tcpListen("127.0.0.1", 0)
+  let port = getListenerPort(listener)
+  let config = HttpServerConfig(maxWsFrameBytes: 1024, maxWsMessageBytes: 10)
+
+  proc serverTask(l: TcpListener, cfg: HttpServerConfig): CpsVoidFuture {.cps.} =
+    let client = await l.accept()
+    await handleHttp1Connection(client.AsyncStream, cfg, echoWsHandler)
+
+  proc clientTask(p: int): CpsFuture[uint16] {.cps.} =
+    let conn = await tcpConnect("127.0.0.1", p)
+    let s = conn.AsyncStream
+    await s.write(wsUpgradeRequest("/ws"))
+    let reader = newBufferedReader(s)
+    while true:
+      let line = await reader.readLine()
+      if line == "":
+        break
+    await s.write(buildWsFrame(0x1, "123456", masked = true, fin = false))
+    await s.write(buildWsFrame(0x0, "abcdef", masked = true, fin = true))
+    var frame: (byte, string)
+    try:
+      frame = await readSingleWsFrame(reader)
+    except CatchableError:
+      s.close()
+      return 0'u16
+    s.close()
+    if frame[0] != 0x8'u8:
+      return 0'u16
+    return closeCode(frame[1])
+
+  let sf = serverTask(listener, config)
+  let cf = clientTask(port)
+  let loop = getEventLoop()
+  while not cf.finished:
+    loop.tick()
+    if not loop.hasWork:
+      break
+
+  let close = cf.read()
+  assert close == 1009'u16 or close == 0'u16
+  listener.close()
+  echo "PASS: Enforce max WebSocket message size"
 
 echo ""
 echo "All WebSocket tests passed!"

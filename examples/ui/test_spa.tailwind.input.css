@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply min-h-screen bg-slate-950 text-slate-100 antialiased;
+    background-image:
+      radial-gradient(circle at 12% 10%, rgba(56, 189, 248, 0.22), transparent 30%),
+      radial-gradient(circle at 88% 18%, rgba(45, 212, 191, 0.16), transparent 34%),
+      linear-gradient(160deg, #020617 0%, #0b1120 38%, #111827 100%);
+  }
+}
+
+@layer components {
+  .app-shell {
+    @apply mx-auto max-w-7xl px-4 py-8 sm:px-8;
+  }
+
+  .surface-panel {
+    @apply rounded-3xl border border-slate-200/80 bg-white/85 shadow-xl shadow-slate-900/5 backdrop-blur;
+  }
+
+  .ambient-glow {
+    @apply animate-float-soft;
+    box-shadow:
+      0 0 0 1px rgba(148, 163, 184, 0.3),
+      0 20px 60px rgba(15, 23, 42, 0.25),
+      inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  }
+}

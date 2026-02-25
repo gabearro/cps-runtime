@@ -30,17 +30,52 @@ nim c -r -d:useBoringSSL tests/http/test_fingerprint.nim
 nim c -r -d:cpsTrace tests/core/test_trace.nim
 ```
 
+**Build UI wasm example (standalone wasm32):**
+```bash
+bash scripts/check_wasm_toolchain.sh
+bash scripts/build_ui_wasm.sh examples/ui/counter_app.nim examples/ui/counter_app.wasm
+bash scripts/build_ui_wasm.sh examples/ui/todo_keyed_app.nim examples/ui/todo_keyed_app.wasm
+bash scripts/build_ui_wasm.sh examples/ui/router_app.nim examples/ui/router_app.wasm
+bash scripts/build_ui_wasm.sh examples/ui/controlled_input_app.nim examples/ui/controlled_input_app.wasm
+bash scripts/build_ui_wasm.sh examples/ui/fail_soft_app.nim examples/ui/fail_soft_app.wasm
+```
+UI wasm builds now use pure `clang` + `wasm-ld`; set `WASI_SYSROOT` if auto-detection does not find your `wasi-libc` sysroot.
+
+**Run UI tests:**
+```bash
+bash scripts/check_ui_schema_generated.sh
+for f in tests/ui/test_*.nim; do nim c -r "$f"; done
+bash tests/ui/test_wasm_integration.sh
+bash tests/ui/test_wasm_fail_soft.sh
+```
+
+**Regenerate UI schema-derived sources:**
+```bash
+python3 scripts/generate_ui_schema.py
+bash scripts/check_ui_schema_generated.sh
+```
+
+**Run UI browser matrix locally (Playwright):**
+```bash
+bash tests/ui/test_wasm_integration.sh
+bash tests/ui/test_wasm_fail_soft.sh
+cd tests/ui/browser
+npm install
+npx playwright install --with-deps chromium firefox webkit
+npm test
+```
+
 There is no linter or formatter configured. Tests use `assert` + `echo "PASS: ..."` (no test framework). Each test file is self-contained and runs as a standalone binary.
 
-**Note:** `nimble test` only runs 8 core tests (core/macro/eventloop/https/4 compression). MT tests (`tests/mt/test_mt_*.nim`) must be run individually with `--mm:atomicArc`. Python interop tests (`tests/http/test_python_*.nim`, `tests/http/test_tls_interop.nim`) require Python 3 with `h2`/`hpack` packages. Network tests (`tests/http/test_fingerprint_cloudflare.nim`) require internet access.
+**Note:** `nimble test` runs the primary core/hardening suites plus HTTP smoke tests. MT tests (`tests/mt/test_mt_*.nim`) should still be run explicitly for full validation. Python interop tests (`tests/http/test_python_*.nim`, `tests/http/test_tls_interop.nim`) require Python 3 with `h2`/`hpack` packages. Network tests (`tests/http/test_fingerprint_cloudflare.nim`) require internet access.
 
-**Test directory layout:** `tests/core/` (CPS runtime/macro), `tests/concurrency/` (channels, sync, taskgroup), `tests/io/` (tcp, udp, files, buffered), `tests/mt/` (multi-threaded), `tests/http/` (HTTP client/server, TLS, WebSocket, SSE, compression).
+**Test directory layout:** `tests/core/` (CPS runtime/macro), `tests/concurrency/` (channels, sync, taskgroup), `tests/io/` (tcp, udp, files, buffered, proxy), `tests/mt/` (multi-threaded), `tests/http/` (HTTP client/server, TLS, WebSocket, SSE, compression), `tests/ui/` (frontend DSL/runtime + wasm integration).
 
 ## Compiler Configuration
 
 Requires **Nim >= 2.0.0**. Dependencies: `zippy >= 0.10.0` (HTTP compression).
 
-**`nim.cfg`** sets: `--path:"src"`, `--threads:on`, `--mm:orc`, `--deepcopy:on`. These apply to all compilations. MT code must override with `--mm:atomicArc` because ORC's cycle collector is not thread-safe.
+**`nim.cfg`** sets: `--path:"src"`, `--threads:on`, `--mm:atomicArc`, `--deepcopy:on`. Atomic ARC is the production default for all runtime paths.
 
 **`config.nims`** handles SSL/TLS linking:
 - Default: Homebrew OpenSSL 3.x (`/opt/homebrew/opt/openssl@3/`) linked at compile-time via `--dynlibOverride` (not runtime `dlopen`)
@@ -60,7 +95,7 @@ This is a CPS (Continuation-Passing Style) async runtime for Nim. A macro transf
 
 3. **`eventloop.nim`** — Selector-based I/O (kqueue/epoll), timer heap, ready-callback deque. Drives the single-threaded event loop via `tick()` and `runCps()`. Extended with a wake pipe and cross-thread callback queue for MT mode. Supports `shutdownGracefully()`.
 
-4. **`io/`** — Async I/O built on the event loop. `streams.nim` defines `AsyncStream` (proc-field vtable). Implementations: `tcp.nim`, `udp.nim`, `unix.nim` (Unix domain sockets), `files.nim`, `process.nim` (async subprocess with piped I/O), `dns.nim` (thread-pooled async DNS with TTL cache). `buffered.nim` wraps any stream with buffered reads/writes. `timeouts.nim` provides `withTimeout`. Barrel: `io.nim`.
+4. **`io/`** — Async I/O built on the event loop. `streams.nim` defines `AsyncStream` (proc-field vtable). Implementations: `tcp.nim`, `udp.nim`, `unix.nim` (Unix domain sockets), `files.nim`, `process.nim` (async subprocess with piped I/O), `dns.nim` (thread-pooled async DNS with TTL cache). `buffered.nim` wraps any stream with buffered reads/writes. `timeouts.nim` provides `withTimeout`. `proxy.nim` provides SOCKS4/4a, SOCKS5, and HTTP CONNECT proxy tunneling as `ProxyStream` (AsyncStream subtype), with unbounded proxy chaining via `proxyChainConnect`. Barrel: `io.nim`.
 
 5. **`http/`** — Full HTTP stack (see detailed section below).
 
@@ -87,7 +122,7 @@ This is a CPS (Continuation-Passing Style) async runtime for Nim. A macro transf
 
 **Client** (`http/client/`):
 - `http1.nim` — HTTP/1.1 protocol implementation
-- `client.nim` — High-level API: ALPN version negotiation, connection pooling, redirect following
+- `client.nim` — High-level API: ALPN version negotiation, connection pooling, redirect following, proxy support (SOCKS4/4a/5, HTTP CONNECT, chaining)
 - `sse.nim` — SSE consumer
 - `ws.nim` — WebSocket client (`wsConnect`/`wssConnect`, plain and TLS with fingerprint support)
 
@@ -120,7 +155,7 @@ This is a CPS (Continuation-Passing Style) async runtime for Nim. A macro transf
 | Import | Provides |
 |--------|----------|
 | `import cps` | runtime, transform, eventloop, concurrency (channels, broadcast, signals, sync, asynciter, taskgroup) |
-| `import cps/io` | streams, tcp, udp, unix, buffered, files, timeouts, dns, process |
+| `import cps/io` | streams, tcp, udp, unix, buffered, files, timeouts, dns, process, proxy |
 | `import cps/mt` | threadpool, scheduler, mtruntime |
 | `import cps/httpclient` | streams, tcp, buffered, tls/client, shared/hpack, shared/http2, client/http1, client/client, tls/fingerprint |
 | `import cps/httpserver` | server/types, server/server, server/http1, server/http2, server/router, server/sse, server/ws, server/chunked, shared/compression, shared/multipart |
@@ -149,8 +184,8 @@ This is a CPS (Continuation-Passing Style) async runtime for Nim. A macro transf
 - **ALPN precedence in `tls.nim`**: Explicit `alpnProtocols` parameter takes precedence over fingerprint's list. WebSocket connections must pass `@["http/1.1"]` explicitly to prevent h2 negotiation.
 
 ### Multi-Threading
-- **MT requires `--mm:atomicArc`**: Enforced at compile time — `mtruntime.nim` emits a `{.error.}` if neither `gcAtomicArc` nor `useMalloc` is defined. ORC's non-atomic refcounting causes double-free when continuations/futures cross thread boundaries.
-- **ORC is not thread-safe**: ORC's cycle collector crashes (`SIGSEGV` in `rememberCycle`) when ref objects cross threads. MT code must use `--mm:atomicArc`, not ORC.
+- **MT requires `--mm:atomicArc`**: Enforced at compile time — `mtruntime.nim` emits a `{.error.}` if neither `gcAtomicArc` nor `useMalloc` is defined.
+- **ORC is unsupported for production/release gating**: ORC has produced runtime instability in this project. Use Atomic ARC for validation and CI.
 
 ## Lock-Free Guarantees
 

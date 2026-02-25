@@ -5,14 +5,18 @@
 ## transparently over HTTP/2 — the same handler code works for both
 ## HTTP/1.1 and HTTP/2.
 ##
-## Write: data → serialized DATA frame → conn.stream.write()
+## Write: data → connection-scoped HTTP/2 writer callback
 ## Read: internal buffer fed by processServerFrame via feedData()
 
-import std/strutils
 import ../../runtime
+import ../../transform
 import ../../io/streams
-import ./hpack
-import ./http2
+
+type
+  AdapterSendHeadersProc* = proc(streamId: uint32, statusCode: int,
+                                 headers: seq[(string, string)]): CpsVoidFuture {.closure.}
+  AdapterSendDataProc* = proc(streamId: uint32, data: string): CpsVoidFuture {.closure.}
+  AdapterCloseWriteProc* = proc(streamId: uint32): CpsVoidFuture {.closure.}
 
 type
   AdapterWaiter = object
@@ -20,9 +24,12 @@ type
     future: CpsFuture[string]
 
   Http2StreamAdapter* = ref object of AsyncStream
-    connStream*: AsyncStream       ## The underlying TCP/TLS stream
-    encoder*: ptr HpackEncoder     ## Pointer to connection's HPACK encoder
     streamId*: uint32
+    sendHeadersProc*: AdapterSendHeadersProc
+    sendDataProc*: AdapterSendDataProc
+    closeWriteProc*: AdapterCloseWriteProc
+    responseHeadersSent*: bool
+    responseHeadersFuture: CpsVoidFuture
     readBuffer: string
     readWaiters: seq[AdapterWaiter]
     eofSignaled: bool
@@ -68,35 +75,45 @@ proc adapterRead(s: AsyncStream, size: int): CpsFuture[string] =
     a.readWaiters.add(AdapterWaiter(size: size, future: fut))
   result = fut
 
-proc adapterWrite(s: AsyncStream, data: string): CpsVoidFuture =
-  ## Wrap data in an HTTP/2 DATA frame and write to the connection stream.
+proc ensureAutoResponseHeaders(a: Http2StreamAdapter): CpsVoidFuture {.cps.} =
+  if a.responseHeadersSent:
+    return
+  if a.sendHeadersProc == nil:
+    raise newException(system.IOError, "HTTP/2 adapter has no sendHeaders callback")
+
+  if a.responseHeadersFuture.isNil:
+    a.responseHeadersFuture = a.sendHeadersProc(a.streamId, 200, @[])
+
+  await a.responseHeadersFuture
+  a.responseHeadersSent = true
+
+proc adapterWrite(s: AsyncStream, data: string): CpsVoidFuture {.cps.} =
+  ## Write stream data through the connection writer callback.
   let a = Http2StreamAdapter(s)
-  var payload = newSeq[byte](data.len)
-  for i in 0 ..< data.len:
-    payload[i] = byte(data[i])
-  let frame = Http2Frame(
-    frameType: FrameData,
-    flags: 0,
-    streamId: a.streamId,
-    payload: payload
-  )
-  let serialized = serializeFrame(frame)
-  var str = newString(serialized.len)
-  for i, b in serialized:
-    str[i] = char(b)
-  a.connStream.write(str)
+  if a.sendDataProc == nil:
+    raise newException(system.IOError, "HTTP/2 adapter has no sendData callback")
+  if not a.responseHeadersSent:
+    await a.ensureAutoResponseHeaders()
+  await a.sendDataProc(a.streamId, data)
 
 proc adapterClose(s: AsyncStream) =
   let a = Http2StreamAdapter(s)
   a.eofSignaled = true
+  if a.closeWriteProc != nil:
+    discard a.closeWriteProc(a.streamId)
   a.tryWakeWaiters()
 
-proc newHttp2StreamAdapter*(connStream: AsyncStream, encoder: ptr HpackEncoder,
-                             streamId: uint32): Http2StreamAdapter =
+proc newHttp2StreamAdapter*(streamId: uint32,
+                            sendHeadersProc: AdapterSendHeadersProc,
+                            sendDataProc: AdapterSendDataProc,
+                            closeWriteProc: AdapterCloseWriteProc = nil): Http2StreamAdapter =
   result = Http2StreamAdapter(
-    connStream: connStream,
-    encoder: encoder,
     streamId: streamId,
+    sendHeadersProc: sendHeadersProc,
+    sendDataProc: sendDataProc,
+    closeWriteProc: closeWriteProc,
+    responseHeadersSent: false,
+    responseHeadersFuture: nil,
     readBuffer: "",
     readWaiters: @[],
     eofSignaled: false
@@ -106,23 +123,21 @@ proc newHttp2StreamAdapter*(connStream: AsyncStream, encoder: ptr HpackEncoder,
   result.closeProc = adapterClose
 
 proc sendResponseHeaders*(a: Http2StreamAdapter, statusCode: int,
-                           headers: seq[(string, string)] = @[]): CpsVoidFuture =
-  ## Send HTTP/2 HEADERS frame with the given status and headers.
-  ## Does NOT set END_STREAM — the stream stays open for data.
-  var allHeaders: seq[(string, string)] = @[
-    (":status", $statusCode)
-  ]
-  for i in 0 ..< headers.len:
-    allHeaders.add (headers[i][0].toLowerAscii, headers[i][1])
-  let encoded = a.encoder[].encode(allHeaders)
-  let frame = Http2Frame(
-    frameType: FrameHeaders,
-    flags: FlagEndHeaders,
-    streamId: a.streamId,
-    payload: encoded
-  )
-  let serialized = serializeFrame(frame)
-  var str = newString(serialized.len)
-  for i, b in serialized:
-    str[i] = char(b)
-  a.connStream.write(str)
+                           headers: seq[(string, string)] = @[]): CpsVoidFuture {.cps.} =
+  ## Send response HEADERS through the connection writer callback.
+  if a.sendHeadersProc == nil:
+    raise newException(system.IOError, "HTTP/2 adapter has no sendHeaders callback")
+  if a.responseHeadersSent:
+    raise newException(system.IOError, "HTTP/2 response headers already sent")
+  if not a.responseHeadersFuture.isNil:
+    await a.responseHeadersFuture
+    a.responseHeadersSent = true
+    raise newException(system.IOError, "HTTP/2 response headers already sent")
+  a.responseHeadersFuture = a.sendHeadersProc(a.streamId, statusCode, headers)
+  await a.responseHeadersFuture
+  a.responseHeadersSent = true
+
+proc hasSentResponseHeaders*(a: Http2StreamAdapter): bool {.inline.} =
+  if a.isNil:
+    return false
+  a.responseHeadersSent

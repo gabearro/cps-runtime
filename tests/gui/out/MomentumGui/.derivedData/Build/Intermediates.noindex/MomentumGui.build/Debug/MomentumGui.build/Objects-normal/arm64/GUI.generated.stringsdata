@@ -1,0 +1,104 @@
+{
+  "source": "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out/MomentumGui/App/Generated/GUI.generated.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Momentum GUI",
+        "location": {
+          "startingColumn": 12,
+          "startingLine": 186
+        }
+      },
+      {
+        "comment": "",
+        "key": "Open detail",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 197
+        }
+      },
+      {
+        "comment": "",
+        "key": "Increment",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 193
+        }
+      },
+      {
+        "comment": "",
+        "key": "Mark OK",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 194
+        }
+      },
+      {
+        "comment": "",
+        "key": "Mark Error",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 195
+        }
+      },
+      {
+        "comment": "",
+        "key": "Detail Screen",
+        "location": {
+          "startingColumn": 12,
+          "startingLine": 209
+        }
+      },
+      {
+        "comment": "",
+        "key": "Tick now",
+        "location": {
+          "startingColumn": 14,
+          "startingLine": 211
+        }
+      },
+      {
+        "comment": "",
+        "key": "Settings",
+        "location": {
+          "startingColumn": 12,
+          "startingLine": 222
+        }
+      },
+      {
+        "comment": "",
+        "key": "Persist",
+        "location": {
+          "startingColumn": 14,
+          "startingLine": 224
+        }
+      },
+      {
+        "comment": "",
+        "key": "Activity",
+        "location": {
+          "startingColumn": 12,
+          "startingLine": 235
+        }
+      },
+      {
+        "comment": "",
+        "key": "dashboard",
+        "location": {
+          "startingColumn": 14,
+          "startingLine": 260
+        }
+      },
+      {
+        "comment": "",
+        "key": "settings",
+        "location": {
+          "startingColumn": 14,
+          "startingLine": 274
+        }
+      }
+    ]
+  },
+  "version": 1
+}

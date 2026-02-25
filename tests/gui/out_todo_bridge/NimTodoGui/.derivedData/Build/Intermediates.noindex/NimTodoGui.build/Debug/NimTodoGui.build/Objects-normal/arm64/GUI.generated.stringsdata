@@ -1,0 +1,424 @@
+{
+  "source": "/Users/gabriel/Documents/nimlang/cps-impl/tests/gui/out_todo_bridge/NimTodoGui/App/Generated/GUI.generated.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "SELECTED",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 353
+        }
+      },
+      {
+        "comment": "",
+        "key": "DONE",
+        "location": {
+          "startingColumn": 61,
+          "startingLine": 353
+        }
+      },
+      {
+        "comment": "",
+        "key": "OPEN",
+        "location": {
+          "startingColumn": 72,
+          "startingLine": 353
+        }
+      },
+      {
+        "comment": "",
+        "key": "Nim Tasks",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 487
+        }
+      },
+      {
+        "comment": "",
+        "key": "Overview",
+        "location": {
+          "startingColumn": 15,
+          "startingLine": 384
+        }
+      },
+      {
+        "comment": "",
+        "key": "Create Task",
+        "location": {
+          "startingColumn": 15,
+          "startingLine": 394
+        }
+      },
+      {
+        "comment": "",
+        "key": "Filter",
+        "location": {
+          "startingColumn": 15,
+          "startingLine": 437
+        }
+      },
+      {
+        "comment": "",
+        "key": "Sort",
+        "location": {
+          "startingColumn": 15,
+          "startingLine": 453
+        }
+      },
+      {
+        "comment": "",
+        "key": "Workspace",
+        "location": {
+          "startingColumn": 15,
+          "startingLine": 466
+        }
+      },
+      {
+        "comment": "",
+        "key": "Status",
+        "location": {
+          "startingColumn": 14,
+          "startingLine": 399
+        }
+      },
+      {
+        "comment": "",
+        "key": "Priority",
+        "location": {
+          "startingColumn": 14,
+          "startingLine": 413
+        }
+      },
+      {
+        "comment": "",
+        "key": "What needs to be done?",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 395
+        }
+      },
+      {
+        "comment": "",
+        "key": "Due date (YYYY-MM-DD, optional)",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 397
+        }
+      },
+      {
+        "comment": "",
+        "key": "Backlog",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 403
+        }
+      },
+      {
+        "comment": "",
+        "key": "In Progress",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 406
+        }
+      },
+      {
+        "comment": "",
+        "key": "Blocked",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 409
+        }
+      },
+      {
+        "comment": "",
+        "key": "Low",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 417
+        }
+      },
+      {
+        "comment": "",
+        "key": "Medium",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 420
+        }
+      },
+      {
+        "comment": "",
+        "key": "High",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 423
+        }
+      },
+      {
+        "comment": "",
+        "key": "Urgent",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 426
+        }
+      },
+      {
+        "comment": "",
+        "key": "Create",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 431
+        }
+      },
+      {
+        "comment": "",
+        "key": "Clear",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 433
+        }
+      },
+      {
+        "comment": "",
+        "key": "All",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 439
+        }
+      },
+      {
+        "comment": "",
+        "key": "Open",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 442
+        }
+      },
+      {
+        "comment": "",
+        "key": "Done",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 445
+        }
+      },
+      {
+        "comment": "",
+        "key": "Blocked",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 448
+        }
+      },
+      {
+        "comment": "",
+        "key": "Newest",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 455
+        }
+      },
+      {
+        "comment": "",
+        "key": "Due Soonest",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 458
+        }
+      },
+      {
+        "comment": "",
+        "key": "Priority",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 461
+        }
+      },
+      {
+        "comment": "",
+        "key": "Load Demo Data",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 468
+        }
+      },
+      {
+        "comment": "",
+        "key": "Clear Completed",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 470
+        }
+      },
+      {
+        "comment": "",
+        "key": "Reset Board",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 474
+        }
+      },
+      {
+        "comment": "",
+        "key": "Compact rows",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 476
+        }
+      },
+      {
+        "comment": "",
+        "key": "Tasks",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 558
+        }
+      },
+      {
+        "comment": "",
+        "key": "Selected task",
+        "location": {
+          "startingColumn": 14,
+          "startingLine": 497
+        }
+      },
+      {
+        "comment": "",
+        "key": "Rename selected task",
+        "location": {
+          "startingColumn": 21,
+          "startingLine": 504
+        }
+      },
+      {
+        "comment": "",
+        "key": "Rename",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 506
+        }
+      },
+      {
+        "comment": "",
+        "key": "Selected due date (YYYY-MM-DD)",
+        "location": {
+          "startingColumn": 21,
+          "startingLine": 510
+        }
+      },
+      {
+        "comment": "",
+        "key": "Set Due",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 512
+        }
+      },
+      {
+        "comment": "",
+        "key": "Clear Due",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 514
+        }
+      },
+      {
+        "comment": "",
+        "key": "Backlog",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 518
+        }
+      },
+      {
+        "comment": "",
+        "key": "In Progress",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 520
+        }
+      },
+      {
+        "comment": "",
+        "key": "Blocked",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 522
+        }
+      },
+      {
+        "comment": "",
+        "key": "Done",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 524
+        }
+      },
+      {
+        "comment": "",
+        "key": "Complete",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 528
+        }
+      },
+      {
+        "comment": "",
+        "key": "Reopen",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 530
+        }
+      },
+      {
+        "comment": "",
+        "key": "Remove",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 532
+        }
+      },
+      {
+        "comment": "",
+        "key": "Move Up",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 534
+        }
+      },
+      {
+        "comment": "",
+        "key": "Move Down",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 536
+        }
+      },
+      {
+        "comment": "",
+        "key": "Apply Search",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 561
+        }
+      },
+      {
+        "comment": "",
+        "key": "Clear Search",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 563
+        }
+      },
+      {
+        "comment": "",
+        "key": "Nim Tasks",
+        "location": {
+          "startingColumn": 17,
+          "startingLine": 601
+        }
+      }
+    ]
+  },
+  "version": 1
+}
