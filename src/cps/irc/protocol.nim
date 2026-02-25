@@ -487,8 +487,30 @@ proc classifyMessage*(msg: IrcMessage): IrcEvent =
       let source = msg.prefix.nick
       if isCtcp(text):
         let (ctcpCmd, ctcpArgs) = parseCtcp(text)
-        result = IrcEvent(kind: iekCtcp, ctcpSource: source, ctcpTarget: target,
-                         ctcpCommand: ctcpCmd, ctcpArgs: ctcpArgs, ctcpPrefix: msg.prefix)
+        # Parse DCC subcommands from NOTICE too — bots (especially XDCC)
+        # often send DCC SEND offers via NOTICE rather than PRIVMSG.
+        if ctcpCmd == "DCC":
+          let dccOpt = parseDcc(ctcpArgs)
+          if dccOpt.isSome:
+            let dcc = dccOpt.get()
+            case dcc.kind
+            of "SEND":
+              result = IrcEvent(kind: iekDccSend, dccSource: source, dccInfo: dcc)
+            of "CHAT":
+              result = IrcEvent(kind: iekDccChat, dccSource: source, dccInfo: dcc)
+            of "ACCEPT":
+              result = IrcEvent(kind: iekDccAccept, dccSource: source, dccInfo: dcc)
+            of "RESUME":
+              result = IrcEvent(kind: iekDccResume, dccSource: source, dccInfo: dcc)
+            else:
+              result = IrcEvent(kind: iekCtcp, ctcpSource: source, ctcpTarget: target,
+                               ctcpCommand: ctcpCmd, ctcpArgs: ctcpArgs, ctcpPrefix: msg.prefix)
+          else:
+            result = IrcEvent(kind: iekCtcp, ctcpSource: source, ctcpTarget: target,
+                             ctcpCommand: ctcpCmd, ctcpArgs: ctcpArgs, ctcpPrefix: msg.prefix)
+        else:
+          result = IrcEvent(kind: iekCtcp, ctcpSource: source, ctcpTarget: target,
+                           ctcpCommand: ctcpCmd, ctcpArgs: ctcpArgs, ctcpPrefix: msg.prefix)
       else:
         result = IrcEvent(kind: iekNotice, pmSource: source, pmTarget: target,
                          pmText: text, pmPrefix: msg.prefix)

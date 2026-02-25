@@ -1096,13 +1096,14 @@ proc updateComplete(ms: MasterState) =
   let query = inputText[atPos + 1 ..< cursorPos]
   let ch = cs.channels[cs.activeChannel]
 
-  # Score and filter all users via fuzzy matching
+  # Score and filter all users via fuzzy matching (strip mode prefixes)
   var scored: seq[tuple[score: int, nick: string]] = @[]
   for user in ch.users:
-    if user == cs.myNick: continue  # Don't suggest yourself
-    let s = fuzzyScore(query, user)
+    let nick = bareNick(user)
+    if nick == cs.myNick: continue  # Don't suggest yourself
+    let s = fuzzyScore(query, nick)
     if s < 9999:
-      scored.add((s, user))
+      scored.add((s, nick))
   # Sort by score (best first), then alphabetically for ties
   scored.sort(proc(a, b: tuple[score: int, nick: string]): int =
     result = cmp(a.score, b.score)
@@ -1509,8 +1510,12 @@ proc processIrcEventsForChat(ms: MasterState, cs: IrcChatState): bool =
             let names = evt.numParams[3].split(' ')
             let idx = cs.findChannel(ch)
             if idx >= 0:
-              for name in names:
-                if name.len == 0: continue
+              for rawName in names:
+                if rawName.len == 0: continue
+                # Strip userhost-in-names hostmask: @nick!user@host → @nick
+                let name = block:
+                  let bangIdx = rawName.find('!')
+                  if bangIdx >= 0: rawName[0 ..< bangIdx] else: rawName
                 let bn = bareNick(name)
                 # Remove old entry for this nick (if any) and add with prefix
                 var found = false
@@ -1778,6 +1783,15 @@ proc processIrcEvents(ms: MasterState): bool =
 # ============================================================
 
 proc connectToServer(ms: MasterState, server: ServerEntry) =
+  # Check if already connected to this server — switch to it instead
+  for i, cs in ms.chats:
+    if cs.client.config.host == server.host and
+       cs.client.config.port == server.port:
+      ms.activeChat = i
+      ms.screen = asChat
+      ms.tuiApp.fullRedraw = true
+      return
+
   let nick = ms.config.profile.nick
   var config = newIrcClientConfig(server.host, server.port, nick)
   config.username = ms.config.profile.username
@@ -2248,6 +2262,27 @@ proc renderLoading(ms: MasterState, width, height: int): Widget =
   )
 
 # ============================================================
+# Closure factories for for-loop click handlers
+# (Nim captures loop variables by reference — all closures in a loop
+#  see the last value. These factories force per-iteration capture.)
+# ============================================================
+
+proc makeSetupFieldClickHandler(ms: MasterState, idx: int): proc(mx, my: int) =
+  result = proc(mx, my: int) =
+    ms.setupFocusIdx = idx
+
+proc makeAddFieldClickHandler(ms: MasterState, idx: int): proc(mx, my: int) =
+  result = proc(mx, my: int) =
+    ms.addFocusIdx = idx
+
+proc makeServerClickHandler(ms: MasterState, idx: int): proc(mx, my: int) =
+  result = proc(mx, my: int) =
+    if ms.serverListIdx == idx:
+      ms.connectToServer(ms.config.servers[idx])
+    else:
+      ms.serverListIdx = idx
+
+# ============================================================
 # Rendering: Setup screen
 # ============================================================
 
@@ -2262,21 +2297,17 @@ proc renderSetup(ms: MasterState, width, height: int): Widget =
   # Profile section
   rows.add(text("  Profile", style(clBrightWhite).bold().underline()))
   rows.add(spacer(1))
-  let msRefSetup = ms
   for i in sfNick .. sfRealname:
     let labelSt = if i == ms.setupFocusIdx: style(clBrightWhite).bold()
                   else: style(clWhite)
     let indicator = if i == ms.setupFocusIdx: "> " else: "  "
     ms.setupFields[i].focused = (i == ms.setupFocusIdx)
-    let fieldIdx = i
     rows.add(
       hbox(
         text(indicator & SetupLabels[i], labelSt).withWidth(fixed(14)),
         ms.setupFields[i].toWidget(),
       ).withHeight(fixed(1))
-       .withOnClick(proc(mx, my: int) =
-         msRefSetup.setupFocusIdx = fieldIdx
-       )
+       .withOnClick(ms.makeSetupFieldClickHandler(i))
     )
 
   rows.add(spacer(1))
@@ -2289,15 +2320,12 @@ proc renderSetup(ms: MasterState, width, height: int): Widget =
                   else: style(clWhite)
     let indicator = if i == ms.setupFocusIdx: "> " else: "  "
     ms.setupFields[i].focused = (i == ms.setupFocusIdx)
-    let fieldIdx = i
     rows.add(
       hbox(
         text(indicator & SetupLabels[i], labelSt).withWidth(fixed(14)),
         ms.setupFields[i].toWidget(),
       ).withHeight(fixed(1))
-       .withOnClick(proc(mx, my: int) =
-         msRefSetup.setupFocusIdx = fieldIdx
-       )
+       .withOnClick(ms.makeSetupFieldClickHandler(i))
     )
 
   rows.add(spacer(1))
@@ -2347,21 +2375,17 @@ proc renderServerList(ms: MasterState, width, height: int): Widget =
     let formTitle = if ms.editServerMode: "  Edit Server" else: "  Add New Server"
     rows.add(text(formTitle, style(clBrightWhite).bold().underline()))
     rows.add(spacer(1))
-    let msRefForm = ms
     for i in 0 ..< AddFieldCount:
       let labelSt = if i == ms.addFocusIdx: style(clBrightWhite).bold()
                     else: style(clWhite)
       let indicator = if i == ms.addFocusIdx: "> " else: "  "
       ms.addFields[i].focused = (i == ms.addFocusIdx)
-      let fieldIdx = i
       rows.add(
         hbox(
           text(indicator & AddLabels[i], labelSt).withWidth(fixed(14)),
           ms.addFields[i].toWidget(),
         ).withHeight(fixed(1))
-         .withOnClick(proc(mx, my: int) =
-           msRefForm.addFocusIdx = fieldIdx
-         )
+         .withOnClick(ms.makeAddFieldClickHandler(i))
       )
     rows.add(spacer(1))
     let enterLabel = if ms.editServerMode: "Save" else: "Save & Connect"
@@ -2378,7 +2402,6 @@ proc renderServerList(ms: MasterState, width, height: int): Widget =
       rows.add(text("  (no saved servers)", style(clBrightBlack).italic()))
       rows.add(spacer(1))
     else:
-      let msRefSl = ms
       for i, s in ms.config.servers:
         let selected = (i == ms.serverListIdx)
         let indicator = if selected: " > " else: "   "
@@ -2389,20 +2412,13 @@ proc renderServerList(ms: MasterState, width, height: int): Widget =
         let chanStr = if s.channels.len > 0: "  " & s.channels.join(", ") else: ""
         let tlsStr = if s.useTls: " [TLS]" else: ""
         let saslStr = if s.saslUsername.len > 0: " [SASL]" else: ""
-        let serverIdx = i
         rows.add(
           vbox(
             text(indicator & s.name, nameSt),
             text("   " & s.host & ":" & $s.port & tlsStr & saslStr & chanStr, detailSt),
             spacer(1),
           ).withHeight(fixed(3))
-           .withOnClick(proc(mx, my: int) =
-             if msRefSl.serverListIdx == serverIdx:
-               # Already selected — connect on second click
-               msRefSl.connectToServer(msRefSl.config.servers[serverIdx])
-             else:
-               msRefSl.serverListIdx = serverIdx
-           )
+           .withOnClick(ms.makeServerClickHandler(i))
         )
 
     helpBar = keyHelpBar([

@@ -457,10 +457,18 @@ proc collectWidgetEvents*(w: Widget, rect: Rect,
   if w.trapFocus and depth > fm.focusTrapDepth:
     fm.focusTrapWidget = w
     fm.focusTrapDepth = depth
+    fm.focusTrapIdx = myIdx
 
   if w.focusable:
     fm.addFocusable(w, rect)
-    w.focused = (w == fm.focusedWidget)
+    if w.focused and fm.focusedWidget != w:
+      # Only adopt focus if inside the focus trap's subtree (or no trap exists)
+      if hitMap.isInsideFocusTrap(fm, myIdx, parentIdx):
+        fm.focusedWidget = w
+      else:
+        w.focused = false
+    else:
+      w.focused = (w == fm.focusedWidget)
 
   let effectiveParent = if myIdx >= 0: myIdx else: parentIdx
 
@@ -540,14 +548,23 @@ proc renderWidgetWithEvents*(buf: var CellBuffer, w: Widget, rect: Rect,
   if w.trapFocus and depth > fm.focusTrapDepth:
     fm.focusTrapWidget = w
     fm.focusTrapDepth = depth
+    fm.focusTrapIdx = myIdx
 
   # Collect focusable widgets
   if w.focusable:
     fm.addFocusable(w, rect)
-
-  # Set the focused field on the widget based on FocusManager state
-  if w.focusable:
-    w.focused = (w == fm.focusedWidget)
+    # Adopt widgets marked with withFocus(true) as the focused widget.
+    # This lets the widget tree declare who should be focused each frame
+    # (e.g., modal dialogs, autocomplete popups).
+    # When a focus trap is active, only widgets inside the trap's subtree
+    # can claim focus — prevents siblings from stealing focus.
+    if w.focused and fm.focusedWidget != w:
+      if hitMap.isInsideFocusTrap(fm, myIdx, parentIdx):
+        fm.focusedWidget = w
+      else:
+        w.focused = false
+    else:
+      w.focused = (w == fm.focusedWidget)
 
   # Fill background
   if w.style.bg.kind != ckNone:

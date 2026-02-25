@@ -25,6 +25,7 @@ type
     focusRects*: seq[Rect]    ## Rects for focusable widgets (parallel to focusOrder)
     focusTrapWidget*: Widget  ## Deepest focus-trapping ancestor (nil = none)
     focusTrapDepth*: int      ## Depth of the focus trap widget
+    focusTrapIdx*: int        ## HitMap index of the focus trap widget (-1 = none)
 
 # ============================================================
 # HitMap
@@ -71,17 +72,35 @@ proc ancestorChain*(hm: HitMap, idx: int): seq[int] =
 # ============================================================
 
 proc newFocusManager*(): FocusManager =
-  FocusManager(focusTrapDepth: -1)
+  FocusManager(focusTrapDepth: -1, focusTrapIdx: -1)
 
 proc clear*(fm: FocusManager) =
   fm.focusOrder.setLen(0)
   fm.focusRects.setLen(0)
   fm.focusTrapWidget = nil
   fm.focusTrapDepth = -1
+  fm.focusTrapIdx = -1
 
 proc addFocusable*(fm: FocusManager, w: Widget, rect: Rect) =
   fm.focusOrder.add(w)
   fm.focusRects.add(rect)
+
+proc isInsideFocusTrap*(hm: HitMap, fm: FocusManager,
+                        widgetIdx: int, parentIdx: int): bool =
+  ## Check if a widget (by its hitmap index or parent chain) is inside the
+  ## current focus trap's subtree. Returns true if no focus trap is active.
+  if fm.focusTrapIdx < 0:
+    return true  # No trap — always allowed
+  # The focus trap widget itself is inside
+  if widgetIdx == fm.focusTrapIdx:
+    return true
+  # Walk the parent chain from the widget's parent
+  var cur = parentIdx
+  while cur >= 0:
+    if cur == fm.focusTrapIdx:
+      return true
+    cur = hm.regions[cur].parentIdx
+  return false
 
 proc focusedIndex*(fm: FocusManager): int =
   ## Return the index of the currently focused widget in focusOrder, or -1.
