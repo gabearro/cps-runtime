@@ -8,10 +8,11 @@
 when not defined(gcAtomicArc) and not defined(useMalloc):
   {.error: "MT CPS runtime requires --mm:atomicArc (recommended) or -d:useMalloc for thread-safe ref counting. ORC's non-atomic refcounting causes double-free/SIGSEGV when continuations cross thread boundaries.".}
 
-import std/[posix, locks, atomics, sysatomics]
+import std/[locks, atomics, sysatomics, nativesockets]
 import ../runtime
 import ../eventloop
 import ../private/mpsc_queue
+import ../private/platform
 import ./threadpool
 import ./scheduler
 
@@ -82,25 +83,16 @@ proc makeYieldDispatcher(rt: CpsRuntime): proc(cb: proc() {.closure, gcsafe.}) {
 
 proc setupMtReactor(loop: EventLoop) =
   ## Configure wake pipe + cross-thread queue for MT reactor operation.
-  var pipeFds: array[2, cint]
-  if posix.pipe(pipeFds) != 0:
-    raise newException(OSError, "Failed to create wake pipe")
-  loop.wakePipeRead = pipeFds[0]
-  loop.wakePipeWrite = pipeFds[1]
-
-  let readFlags = posix.fcntl(loop.wakePipeRead, F_GETFL, 0)
-  discard posix.fcntl(loop.wakePipeRead, F_SETFL, readFlags or O_NONBLOCK)
-  let writeFlags = posix.fcntl(loop.wakePipeWrite, F_GETFL, 0)
-  discard posix.fcntl(loop.wakePipeWrite, F_SETFL, writeFlags or O_NONBLOCK)
+  let (readEnd, writeEnd) = platform.createWakePipe()
+  loop.wakePipeRead = readEnd
+  loop.wakePipeWrite = writeEnd
 
   let wakeCb: proc() {.closure.} = proc() =
-    var buf: array[64, byte]
-    while posix.read(loop.wakePipeRead.cint, addr buf[0], 64) > 0:
-      discard
+    platform.wakePipeDrain(loop.wakePipeRead)
     loop.recordWakeSignal()
     loop.markWakeDrained()
     loop.drainCrossThreadQueue()
-  loop.registerRead(loop.wakePipeRead.int, wakeCb)
+  loop.registerRead(loop.wakePipeRead, wakeCb)
 
   initMpscQueue(loop.crossThreadQueue)
 
@@ -241,15 +233,15 @@ proc shutdownMtRuntime*(rt: CpsRuntime) =
       rt.blockingPoolPtr = nil
 
     let loop = cast[EventLoop](cast[pointer](rt.eventLoopPtr))
-    if loop != nil and loop.wakePipeRead >= 0:
+    if loop != nil and loop.wakePipeRead != SocketHandle(-1):
       try:
-        loop.unregister(loop.wakePipeRead.int)
+        loop.unregister(loop.wakePipeRead)
       except Exception:
         discard
-      discard posix.close(loop.wakePipeRead)
-      discard posix.close(loop.wakePipeWrite)
-      loop.wakePipeRead = -1
-      loop.wakePipeWrite = -1
+      platform.closePipeFd(loop.wakePipeRead)
+      platform.closePipeFd(loop.wakePipeWrite)
+      loop.wakePipeRead = SocketHandle(-1)
+      loop.wakePipeWrite = SocketHandle(-1)
 
       while true:
         let node = dequeue(loop.crossThreadQueue)

@@ -3,6 +3,9 @@
 ## Provides Unix domain socket client (UnixStream) and server (UnixListener)
 ## for local IPC, integrated with the CPS event loop.
 
+when not defined(posix):
+  {.error: "Unix domain sockets are only available on POSIX systems".}
+
 import std/[nativesockets, os, posix]
 import ../runtime
 import ../eventloop

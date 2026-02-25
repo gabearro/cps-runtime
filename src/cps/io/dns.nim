@@ -12,9 +12,10 @@
 ##   - CNAME following: follows CNAME chains up to 8 levels deep
 ##   - Concurrent queries: multiple in-flight queries via transaction ID table
 
-import std/[nativesockets, net, os, posix, tables, times, strutils, atomics]
+import std/[nativesockets, net, os, tables, times, strutils, atomics]
 import ../runtime
 import ../eventloop
+import ../private/platform
 import ./streams
 import ./udp
 
@@ -77,7 +78,7 @@ proc next(rng: var XorShift32): uint32 =
 var gRng: XorShift32
 
 proc initRng() =
-  let seed = int(epochTime() * 1e9) xor getpid()
+  let seed = int(epochTime() * 1e9) xor platform.getProcessId()
   gRng = initXorShift32(seed)
 
 proc nextTxId(): uint16 =
@@ -250,9 +251,9 @@ proc parseResponse(data: string): DnsResponse =
 # ============================================================
 
 proc checkHostsFile(host: string, family: Domain): seq[string] =
-  ## Check /etc/hosts for the given hostname.
+  ## Check the system hosts file for the given hostname.
   result = @[]
-  let path = "/etc/hosts"
+  let path = platform.hostsFilePath()
   if not fileExists(path):
     return
   try:
@@ -286,9 +287,11 @@ var gNameservers: seq[Nameserver]
 var gNameserversInitialized = false
 
 proc parseResolvConf(): seq[Nameserver] =
-  ## Parse /etc/resolv.conf for nameserver entries.
+  ## Parse the system resolver config for nameserver entries.
   result = @[]
-  let path = "/etc/resolv.conf"
+  let path = platform.resolvConfPath()
+  if path.len == 0:
+    return  # No resolv.conf on this platform (e.g., Windows)
   if not fileExists(path):
     return
   try:
