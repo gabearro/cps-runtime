@@ -69,7 +69,21 @@ There is no linter or formatter configured. Tests use `assert` + `echo "PASS: ..
 
 **Note:** `nimble test` runs the primary core/hardening suites plus HTTP smoke tests. MT tests (`tests/mt/test_mt_*.nim`) should still be run explicitly for full validation. Python interop tests (`tests/http/test_python_*.nim`, `tests/http/test_tls_interop.nim`) require Python 3 with `h2`/`hpack` packages. Network tests (`tests/http/test_fingerprint_cloudflare.nim`) require internet access.
 
-**Test directory layout:** `tests/core/` (CPS runtime/macro), `tests/concurrency/` (channels, sync, taskgroup), `tests/io/` (tcp, udp, files, buffered, proxy), `tests/mt/` (multi-threaded), `tests/http/` (HTTP client/server, TLS, WebSocket, SSE, compression), `tests/ui/` (frontend DSL/runtime + wasm integration).
+**Run TUI tests:**
+```bash
+nim c -r tests/tui/test_tui_core.nim         # Style, cell, layout, widgets, rendering, DSL
+nim c -r tests/tui/test_tui_components.nim   # SplitView, scrollable text, dialog, tree view
+nim c -r tests/tui/test_tui_events.nim       # Hit map, event routing, focus management
+```
+
+**Run the IRC TUI example:**
+```bash
+nim c -r examples/tui/irc_tui.nim
+nim c -r examples/tui/irc_tui.nim irc.libera.chat 6667 mynick "#nim"
+nim c -r examples/tui/irc_tui.nim --reset    # Reset config
+```
+
+**Test directory layout:** `tests/core/` (CPS runtime/macro), `tests/concurrency/` (channels, sync, taskgroup), `tests/io/` (tcp, udp, files, buffered, proxy), `tests/mt/` (multi-threaded), `tests/http/` (HTTP client/server, TLS, WebSocket, SSE, compression), `tests/tui/` (TUI widget/event/component tests), `tests/ui/` (frontend DSL/runtime + wasm integration).
 
 ## Compiler Configuration
 
@@ -102,6 +116,51 @@ This is a CPS (Continuation-Passing Style) async runtime for Nim. A macro transf
 6. **`concurrency/`** — Async concurrency primitives. `channels.nim` (bounded ring buffer + unbounded), `broadcast.nim` (`BroadcastChannel[T]`, `WatchChannel[T]`), `sync.nim` (`AsyncSemaphore`, `AsyncMutex`, `AsyncEvent`), `signals.nim` (async signal handling via self-pipe), `taskgroup.nim` (structured concurrency), `asynciter.nim` (`AsyncIterator[T]` with combinators). Barrel: `concurrency.nim`.
 
 7. **`mt/`** — Multi-threaded runtime. `scheduler.nim` (work-stealing: per-worker Chase-Lev deques + global inject queue + peer stealing), `threadpool.nim` (blocking pool for `spawnBlocking`), `mtruntime.nim` (init/shutdown, reactor/worker coordination). Barrel: `mt.nim`.
+
+### TUI Framework (`src/cps/tui/`)
+
+Terminal UI framework built on the CPS event loop. Declarative widget trees rebuilt each frame, diffed via CellBuffer for minimal ANSI output.
+
+**Render pipeline:** Widget tree → flexbox layout computation → CellBuffer drawing → diff against previous frame → ANSI output (wrapped in synchronized update for tear-free rendering).
+
+**Core modules:**
+- `style.nim` — Colors (4-bit, 8-bit, 24-bit), text attributes, ANSI escape sequences, border styles
+- `cell.nim` — CellBuffer (2D grid of styled cells), double buffering, diff rendering
+- `input.nim` — Terminal input parsing (keys, mouse, resize, paste), async reader via event loop
+- `layout.nim` — Flexbox-inspired layout engine (direction, flex/fixed/percent/auto sizing, padding, gap, alignment, min/max constraints)
+- `widget.nim` — Widget tree nodes (Container, Text, Border, Input, List, Table, Spacer, ScrollView, ProgressBar, Tabs, Custom). Event handler fields (onClick, onKey, onScroll, onMouse, onFocus, onBlur). Builder pattern (`.withWidth()`, `.withOnClick()`, etc.)
+- `renderer.nim` — Tree traversal → layout → draw. `renderWidget` (draw only) and `renderWidgetWithEvents` (draw + build HitMap + focus order). `collectWidgetEvents` (event-only traversal for custom widget children, no drawing)
+- `events.nim` — HitMap (widget rects collected during render), FocusManager (focus order, focus trap), event routing (deepest-first for mouse, focused-widget-first for keys with bubble-up)
+- `components.nim` — SplitView (draggable divider), ScrollableTextView (chat log), StatusBar, Dialog, NotificationArea, TreeView, CommandPalette. Each has `.toWidgetWithEvents()` for declarative event handling
+- `textinput.nim` — Text editing state (cursor, selection, kill ring, history, clipboard, masking)
+- `reactive.nim` — Signal[T] (mutable state + dirty tracking), Computed[T] (lazy cached), ReactiveContext
+- `component.nim` — ComponentState (persistent across frames), useSignal/useEffect hooks, ComponentRegistry
+- `dsl.nim` — Macro DSL for declarative widget construction
+- `app.nim` — TuiApp: main loop integrating widgets with CPS event loop (raw mode, alt screen, mouse, rendering, input routing, FPS limiting)
+
+**Key design:** Widgets are declarative descriptions (like VDOM nodes), not stateful objects. State lives in the application layer and flows down. Custom widgets (`wkCustom`) use `customChildren`/`customChildRects` to expose internal children for event routing without re-drawing them. Focus trapping (`withFocusTrap`) confines Tab cycling and key events to a widget subtree (used for modals/dialogs).
+
+### IRC Client (`src/cps/irc/`)
+
+- `protocol.nim` — RFC 2812 message parsing/formatting, IrcEvent enum (26 event types), DccInfo struct
+- `client.nim` — Event-driven IRC client with auto-reconnect, IRCv3 CAP negotiation, SASL PLAIN auth, lag tracking. State machine: Disconnected → Connecting → Registering → Connected. Events delivered via `AsyncChannel[IrcEvent]`
+- `dcc.nim` — DCC file transfer (SEND, CHAT, ACCEPT, RESUME)
+- `xdcc.nim` — XDCC pack-based file server protocol
+- `ebook_indexer.nim` — Ebook listing parser for IRC book channels
+
+### UI/WASM Frontend (`src/cps/ui/`)
+
+React-like frontend framework compiling to WebAssembly (standalone wasm32 via clang + wasm-ld, no emscripten).
+
+- `vdom.nim` / `types.nim` — VDOM node types, attribute/event binding
+- `dsl.nim` — Karax-style block macro DSL for declarative VDOM
+- `hooks.nim` — React-compatible hooks: useState, useEffect, useMemo, useCallback, useContext, useReducer, useRef, useTransition, useDeferredValue, useId
+- `runtime.nim` — Component mount/update lifecycle, effect scheduling, error boundaries, suspense, hydration
+- `reconciler.nim` — VDOM diffing with keyed list support, produces DOM patches
+- `dombridge.nim` — Browser DOM FFI (JS interop)
+- `scheduler.nim` — Update lane system (Sync, Default, Transition) for batched prioritization
+- `router.nim` — Client-side URL routing with loaders/actions, history API
+- `ssr.nim` — Server-side rendering to HTML string
 
 ### TLS (`src/cps/tls/`)
 
@@ -160,6 +219,9 @@ This is a CPS (Continuation-Passing Style) async runtime for Nim. A macro transf
 | `import cps/httpclient` | streams, tcp, buffered, tls/client, shared/hpack, shared/http2, client/http1, client/client, tls/fingerprint |
 | `import cps/httpserver` | server/types, server/server, server/http1, server/http2, server/router, server/sse, server/ws, server/chunked, shared/compression, shared/multipart |
 | `import cps/http/server/dsl` | Also exports: types, router, runtime, transform, eventloop, tables, sse, ws, compression, multipart, chunked |
+| `import cps/tui` | style, cell, input, layout, widget, renderer, textinput, reactive, dsl, components, events, component, app |
+| `import cps/ircclient` | irc/protocol, irc/client, irc/dcc, irc/xdcc, irc/ebook_indexer |
+| `import cps/ui` | types, vdom, dombridge, scheduler, reconciler, hooks, runtime, dsl, errors, router, net, ssr |
 
 ## Critical Gotchas
 
@@ -186,6 +248,12 @@ This is a CPS (Continuation-Passing Style) async runtime for Nim. A macro transf
 ### Multi-Threading
 - **MT requires `--mm:atomicArc`**: Enforced at compile time — `mtruntime.nim` emits a `{.error.}` if neither `gcAtomicArc` nor `useMalloc` is defined.
 - **ORC is unsupported for production/release gating**: ORC has produced runtime instability in this project. Use Atomic ARC for validation and CI.
+
+### TUI Framework
+- **Custom widget event routing**: Custom widgets (`wkCustom`) render children via `customRender` proc which calls `renderWidget` (not event-aware). To route events to children, set `customChildren` and `customChildRects` — the renderer calls `collectWidgetEvents` on them after `customRender` finishes.
+- **Focus trap for modals**: Set `withFocusTrap(true)` on modal/dialog widgets. Tab/Shift+Tab only cycles within the subtree, and key events route to focused widget first (before framework Tab handling).
+- **POSIX only**: TUI uses `termios`, `SIGWINCH`, raw mode. Not available on Windows.
+- **STDOUT non-blocking on macOS**: STDIN is set non-blocking for async input; on Unix terminals STDIN/STDOUT share the same file description, making STDOUT non-blocking too. `writeOutput` handles `EAGAIN` with `poll()` retry to prevent truncated frames.
 
 ## Lock-Free Guarantees
 
