@@ -413,4 +413,662 @@ block testIrcFormattingStripping:
 
   echo "PASS: IRC formatting stripping"
 
+# ============================================================
+# Test: Tag value escaping/unescaping
+# ============================================================
+
+block testTagEscaping:
+  # Basic escapes
+  assert unescapeTagValue("hello\\sworld") == "hello world"
+  assert unescapeTagValue("semi\\:colon") == "semi;colon"
+  assert unescapeTagValue("back\\\\slash") == "back\\slash"
+  assert unescapeTagValue("cr\\r") == "cr\r"
+  assert unescapeTagValue("lf\\n") == "lf\n"
+
+  # Multiple escapes
+  assert unescapeTagValue("a\\sb\\:c\\\\d") == "a b;c\\d"
+
+  # Unknown escape — drop backslash
+  assert unescapeTagValue("\\x") == "x"
+
+  # Trailing backslash — dropped
+  assert unescapeTagValue("trail\\") == "trail"
+
+  # No escapes
+  assert unescapeTagValue("plain") == "plain"
+  assert unescapeTagValue("") == ""
+
+  # Round-trip
+  assert unescapeTagValue(escapeTagValue("hello world; test\\")) == "hello world; test\\"
+  assert unescapeTagValue(escapeTagValue("line\nbreak\rreturn")) == "line\nbreak\rreturn"
+  assert unescapeTagValue(escapeTagValue("")) == ""
+  assert unescapeTagValue(escapeTagValue("no escapes needed")) == "no escapes needed"
+
+  echo "PASS: Tag value escaping/unescaping"
+
+# ============================================================
+# Test: Tag escaping in parseIrcMessage
+# ============================================================
+
+block testTagEscapingInParse:
+  let m = parseIrcMessage("@key=value\\swith\\:special :nick!user@host PRIVMSG #ch :hi")
+  assert m.tags["key"] == "value with;special", "Got: " & m.tags["key"]
+  echo "PASS: Tag escaping in parseIrcMessage"
+
+# ============================================================
+# Test: Tagged message formatting
+# ============================================================
+
+block testTaggedMessageFormat:
+  var tags = initTable[string, string]()
+  tags["+draft/reply"] = "abc123"
+  tags["label"] = "1"
+
+  let msg = formatTaggedMessage(tags, "PRIVMSG", "#channel", "Hello!")
+  assert msg.startsWith("@"), "Should start with @"
+  assert msg.contains("PRIVMSG #channel :Hello!\r\n"), "Should contain command"
+  assert msg.contains("+draft/reply=abc123"), "Should contain reply tag"
+  assert msg.contains("label=1"), "Should contain label tag"
+
+  # TAGMSG formatting
+  var tagmsgTags = initTable[string, string]()
+  tagmsgTags["+typing"] = "active"
+  let tagmsg = formatTagMsg("#channel", tagmsgTags)
+  assert tagmsg.contains("TAGMSG"), "Should contain TAGMSG"
+  assert tagmsg.contains("+typing=active"), "Should contain typing tag"
+
+  echo "PASS: Tagged message formatting"
+
+# ============================================================
+# Test: Tag prefix with escaping
+# ============================================================
+
+block testTagPrefixEscaping:
+  var tags = initTable[string, string]()
+  tags["key"] = "value with spaces"
+  let prefix = formatTagPrefix(tags)
+  assert prefix.contains("key=value\\swith\\sspaces"), "Got: " & prefix
+
+  echo "PASS: Tag prefix escaping"
+
+# ============================================================
+# Test: ISUPPORT parsing
+# ============================================================
+
+block testIsupportParsing:
+  # Typical 005 line params: [nick, token1, token2, ..., "are supported by this server"]
+  let params = @["testbot", "MONITOR=100", "WHOX", "NETWORK=Libera.Chat",
+                  "PREFIX=(ov)@+", "UTF8ONLY", "NICKLEN=16", "TOPICLEN=390",
+                  "are supported by this server"]
+
+  let parsed = parseIsupport(params)
+  assert parsed.len == 7, "Expected 7 tokens, got: " & $parsed.len
+
+  let isup = newISupport()
+  updateIsupport(isup, params)
+  assert isup.monitor == 100, "MONITOR: " & $isup.monitor
+  assert isup.whox == true, "WHOX should be true"
+  assert isup.network == "Libera.Chat", "NETWORK: " & isup.network
+  assert isup.prefix == "(ov)@+", "PREFIX: " & isup.prefix
+  assert isup.utf8Only == true
+  assert isup.nickLen == 16
+  assert isup.topicLen == 390
+  assert isup.raw["MONITOR"] == "100"
+  assert isup.raw["WHOX"] == ""
+
+  echo "PASS: ISUPPORT parsing"
+
+# ============================================================
+# Test: Standard replies (FAIL/WARN/NOTE)
+# ============================================================
+
+block testStandardReplies:
+  # FAIL with context
+  let m1 = parseIrcMessage(":server FAIL CHATHISTORY NEED_MORE_PARAMS LATEST :Missing parameters")
+  let e1 = classifyMessage(m1)
+  assert e1.kind == iekStandardReply, "Expected iekStandardReply, got: " & $e1.kind
+  assert e1.srLevel == "FAIL"
+  assert e1.srCommand == "CHATHISTORY"
+  assert e1.srCode == "NEED_MORE_PARAMS"
+  assert e1.srContext == @["LATEST"], "Context: " & $e1.srContext
+  assert e1.srDescription == "Missing parameters"
+
+  # WARN without context
+  let m2 = parseIrcMessage(":server WARN CONNECT INVALID_CERT :Certificate is self-signed")
+  let e2 = classifyMessage(m2)
+  assert e2.kind == iekStandardReply
+  assert e2.srLevel == "WARN"
+  assert e2.srCommand == "CONNECT"
+  assert e2.srCode == "INVALID_CERT"
+  assert e2.srContext.len == 0
+  assert e2.srDescription == "Certificate is self-signed"
+
+  # NOTE
+  let m3 = parseIrcMessage(":server NOTE * COMPAT :Using compatibility mode")
+  let e3 = classifyMessage(m3)
+  assert e3.kind == iekStandardReply
+  assert e3.srLevel == "NOTE"
+  assert e3.srCommand == "*"
+  assert e3.srCode == "COMPAT"
+
+  echo "PASS: Standard replies (FAIL/WARN/NOTE)"
+
+# ============================================================
+# Test: Tag helper procs
+# ============================================================
+
+block testTagHelpers:
+  let m = parseIrcMessage("@msgid=abc;time=2024-01-01T00:00:00Z;account=user1;bot :nick!user@host PRIVMSG #ch :hi")
+  assert getMsgId(m) == "abc"
+  assert getTime(m) == "2024-01-01T00:00:00Z"
+  assert getAccount(m) == "user1"
+  assert isBot(m) == true
+  assert getBatchRef(m) == ""
+
+  let m2 = parseIrcMessage(":nick!user@host PRIVMSG #ch :hi")
+  assert getMsgId(m2) == ""
+  assert isBot(m2) == false
+
+  echo "PASS: Tag helper procs"
+
+# ============================================================
+# Test: MONITOR numeric classification
+# ============================================================
+
+block testMonitorNumerics:
+  # RPL_MONONLINE (730)
+  let m1 = parseIrcMessage(":server 730 mynick :user1!ident@host,user2!ident@host2")
+  let e1 = classifyMessage(m1)
+  assert e1.kind == iekMonOnline
+  assert e1.monOnlineTargets == @["user1", "user2"], "Got: " & $e1.monOnlineTargets
+
+  # RPL_MONOFFLINE (731)
+  let m2 = parseIrcMessage(":server 731 mynick :user3,user4")
+  let e2 = classifyMessage(m2)
+  assert e2.kind == iekMonOffline
+  assert e2.monOfflineTargets == @["user3", "user4"]
+
+  echo "PASS: MONITOR numeric classification"
+
+# ============================================================
+# Test: TAGMSG classification
+# ============================================================
+
+block testTagmsgClassification:
+  # \: in IRC tag values means semicolon (;), so the react value will be ";)"
+  let m = parseIrcMessage("@+draft/react=\\:) :nick!user@host TAGMSG #channel")
+  let e = classifyMessage(m)
+  assert e.kind == iekTagMsg
+  assert e.tagmsgSource == "nick"
+  assert e.tagmsgTarget == "#channel"
+  assert e.tagmsgTags["+draft/react"] == ";)", "React value: " & e.tagmsgTags.getOrDefault("+draft/react", "<missing>")
+
+  echo "PASS: TAGMSG classification"
+
+# ============================================================
+# Test: Typing indicator via TAGMSG
+# ============================================================
+
+block testTypingIndicator:
+  let m = parseIrcMessage("@+typing=active :nick!user@host TAGMSG #channel")
+  let e = classifyMessage(m)
+  assert e.kind == iekTyping
+  assert e.typingNick == "nick"
+  assert e.typingTarget == "#channel"
+  assert e.typingActive == true
+
+  let m2 = parseIrcMessage("@+typing=done :nick!user@host TAGMSG #channel")
+  let e2 = classifyMessage(m2)
+  assert e2.kind == iekTyping
+  assert e2.typingActive == false
+
+  echo "PASS: Typing indicator"
+
+# ============================================================
+# Test: REDACT classification
+# ============================================================
+
+block testRedactClassification:
+  let m = parseIrcMessage(":nick!user@host REDACT #channel msg123 :Inappropriate content")
+  let e = classifyMessage(m)
+  assert e.kind == iekRedact
+  assert e.redactTarget == "#channel"
+  assert e.redactMsgId == "msg123"
+  assert e.redactReason == "Inappropriate content"
+  assert e.redactBy == "nick"
+
+  # Without reason
+  let m2 = parseIrcMessage(":nick!user@host REDACT #channel msg456")
+  let e2 = classifyMessage(m2)
+  assert e2.kind == iekRedact
+  assert e2.redactMsgId == "msg456"
+  assert e2.redactReason == ""
+
+  echo "PASS: REDACT classification"
+
+# ============================================================
+# Test: RENAME classification
+# ============================================================
+
+block testRenameClassification:
+  let m = parseIrcMessage(":server RENAME #old #new :Channel has been renamed")
+  let e = classifyMessage(m)
+  assert e.kind == iekChannelRename
+  assert e.renameOld == "#old"
+  assert e.renameNew == "#new"
+  assert e.renameReason == "Channel has been renamed"
+
+  echo "PASS: RENAME classification"
+
+# ============================================================
+# Test: MARKREAD classification
+# ============================================================
+
+block testMarkreadClassification:
+  let m = parseIrcMessage(":server MARKREAD #channel timestamp=2024-01-01T00:00:00Z")
+  let e = classifyMessage(m)
+  assert e.kind == iekMarkread
+  assert e.markreadTarget == "#channel"
+  assert e.markreadTimestamp == "2024-01-01T00:00:00Z"
+
+  echo "PASS: MARKREAD classification"
+
+# ============================================================
+# Test: MONITOR formatting
+# ============================================================
+
+block testMonitorFormatting:
+  assert formatMonitorAdd("nick1", "nick2").contains("MONITOR + :nick1,nick2")
+  assert formatMonitorRemove("nick1").contains("MONITOR - :nick1")
+  assert formatMonitorClear().contains("MONITOR :C")
+  assert formatMonitorList().contains("MONITOR :L")
+  assert formatMonitorStatus().contains("MONITOR :S")
+
+  echo "PASS: MONITOR formatting"
+
+# ============================================================
+# Test: WHO/WHOX formatting
+# ============================================================
+
+block testWhoFormatting:
+  assert formatWho("#channel").contains("WHO :#channel")
+  let whox = formatWhox("#channel", "%tcnuhraf", "123")
+  assert whox.contains("WHO #channel :%tcnuhraf,123"), "Got: " & whox
+
+  echo "PASS: WHO/WHOX formatting"
+
+# ============================================================
+# Test: CHATHISTORY formatting
+# ============================================================
+
+block testChathistoryFormatting:
+  let latest = formatChathistoryLatest("#channel", "*", 50)
+  assert latest.contains("CHATHISTORY"), "Got: " & latest
+  assert latest.contains("LATEST"), latest
+  assert latest.contains("#channel"), latest
+  assert latest.contains("50"), latest
+
+  let before = formatChathistoryBefore("#channel", "msgid=abc", 25)
+  assert before.contains("BEFORE"), before
+
+  echo "PASS: CHATHISTORY formatting"
+
+# ============================================================
+# Test: REDACT formatting
+# ============================================================
+
+block testRedactFormatting:
+  let r1 = formatRedact("#channel", "msg123", "spam")
+  assert r1.contains("REDACT #channel msg123 :spam"), "Got: " & r1
+
+  let r2 = formatRedact("#channel", "msg456")
+  assert r2.contains("REDACT #channel :msg456"), "Got: " & r2
+
+  echo "PASS: REDACT formatting"
+
+# ============================================================
+# Test: Batch aggregation
+# ============================================================
+
+block testBatchAggregation:
+  let agg = newBatchAggregator()
+
+  # Open batch
+  let batchStartMsg = parseIrcMessage(":server BATCH +abc chathistory #channel")
+  let batchStartEvt = classifyMessage(batchStartMsg)
+  let r1 = agg.processBatch(batchStartEvt, batchStartMsg)
+  assert r1.isNone, "Should not complete on start"
+
+  # Add messages to batch
+  let pm1 = parseIrcMessage("@batch=abc :nick!user@host PRIVMSG #channel :hello")
+  let pm1evt = classifyMessage(pm1)
+  assert agg.isInBatch(pm1), "Message should be in batch"
+  let r2 = agg.processBatch(pm1evt, pm1)
+  assert r2.isNone, "Should not complete on message"
+
+  let pm2 = parseIrcMessage("@batch=abc :nick2!user@host PRIVMSG #channel :world")
+  let pm2evt = classifyMessage(pm2)
+  let r3 = agg.processBatch(pm2evt, pm2)
+  assert r3.isNone
+
+  # Close batch
+  let batchEndMsg = parseIrcMessage(":server BATCH -abc")
+  let batchEndEvt = classifyMessage(batchEndMsg)
+  let r4 = agg.processBatch(batchEndEvt, batchEndMsg)
+  assert r4.isSome, "Should complete on end"
+  let batch = r4.get()
+  assert batch.batchRef == "abc"
+  assert batch.batchType == "chathistory"
+  assert batch.batchParams == @["#channel"]
+  assert batch.messages.len == 2, "Expected 2 messages, got: " & $batch.messages.len
+
+  echo "PASS: Batch aggregation"
+
+# ============================================================
+# Test: Nested batch aggregation
+# ============================================================
+
+block testNestedBatches:
+  let agg = newBatchAggregator()
+
+  # Open outer batch
+  let outer = parseIrcMessage(":server BATCH +outer netsplit")
+  let outerEvt = classifyMessage(outer)
+  discard agg.processBatch(outerEvt, outer)
+
+  # Open inner batch (has batch=outer tag)
+  let inner = parseIrcMessage("@batch=outer :server BATCH +inner netjoin")
+  let innerEvt = classifyMessage(inner)
+  discard agg.processBatch(innerEvt, inner)
+
+  # Add message to inner batch
+  let m = parseIrcMessage("@batch=inner :nick!user@host JOIN #channel")
+  let mEvt = classifyMessage(m)
+  discard agg.processBatch(mEvt, m)
+
+  # Close inner batch
+  let innerEnd = parseIrcMessage(":server BATCH -inner")
+  let innerEndEvt = classifyMessage(innerEnd)
+  let r1 = agg.processBatch(innerEndEvt, innerEnd)
+  assert r1.isNone, "Nested batch should go to parent, not returned directly"
+
+  # Close outer batch
+  let outerEnd = parseIrcMessage(":server BATCH -outer")
+  let outerEndEvt = classifyMessage(outerEnd)
+  let r2 = agg.processBatch(outerEndEvt, outerEnd)
+  assert r2.isSome
+  let batch = r2.get()
+  assert batch.batchRef == "outer"
+  assert batch.nestedBatches.len == 1, "Expected 1 nested batch"
+  assert batch.nestedBatches[0].batchRef == "inner"
+  assert batch.nestedBatches[0].messages.len == 1
+
+  echo "PASS: Nested batch aggregation"
+
+# ============================================================
+# Test: Multiline assembly
+# ============================================================
+
+block testMultilineAssembly:
+  let batch = CompletedBatch(
+    batchRef: "ml1",
+    batchType: "draft/multiline",
+    batchParams: @["#channel"],
+    messages: @[
+      BatchedMessage(
+        event: IrcEvent(kind: iekPrivMsg, pmSource: "nick", pmTarget: "#channel", pmText: "Hello"),
+        msg: IrcMessage(command: "PRIVMSG", params: @["#channel", "Hello"]),
+      ),
+      BatchedMessage(
+        event: IrcEvent(kind: iekPrivMsg, pmSource: "nick", pmTarget: "#channel", pmText: "World"),
+        msg: IrcMessage(command: "PRIVMSG", params: @["#channel", "World"]),
+      ),
+    ],
+  )
+  let text = assembleMultiline(batch)
+  assert text == "Hello\nWorld", "Got: " & text
+
+  # With concat tag (no newline between)
+  var concatTags = initTable[string, string]()
+  concatTags[tagMultilineConcat] = ""
+  let batchConcat = CompletedBatch(
+    batchRef: "ml2",
+    batchType: "draft/multiline",
+    messages: @[
+      BatchedMessage(
+        event: IrcEvent(kind: iekPrivMsg, pmSource: "nick", pmTarget: "#ch", pmText: "Hel"),
+        msg: IrcMessage(command: "PRIVMSG", params: @["#ch", "Hel"]),
+      ),
+      BatchedMessage(
+        event: IrcEvent(kind: iekPrivMsg, pmSource: "nick", pmTarget: "#ch", pmText: "lo"),
+        msg: IrcMessage(command: "PRIVMSG", params: @["#ch", "lo"], tags: concatTags),
+      ),
+      BatchedMessage(
+        event: IrcEvent(kind: iekPrivMsg, pmSource: "nick", pmTarget: "#ch", pmText: "World"),
+        msg: IrcMessage(command: "PRIVMSG", params: @["#ch", "World"]),
+      ),
+    ],
+  )
+  let text2 = assembleMultiline(batchConcat)
+  assert text2 == "Hello\nWorld", "Got: " & text2
+
+  echo "PASS: Multiline assembly"
+
+# ============================================================
+# Test: Account registration formatting
+# ============================================================
+
+block testAccountRegistration:
+  let r = formatRegister("myaccount", "email@example.com", "secretpass")
+  assert r.contains("REGISTER myaccount email@example.com :secretpass"), "Got: " & r
+
+  let v = formatVerify("myaccount", "123456")
+  assert v.contains("VERIFY myaccount :123456"), "Got: " & v
+
+  echo "PASS: Account registration formatting"
+
+# ============================================================
+# Test: MARKREAD formatting
+# ============================================================
+
+block testMarkreadFormatting:
+  let m = formatMarkread("#channel", "2024-01-01T00:00:00Z")
+  assert m.contains("MARKREAD #channel :timestamp=2024-01-01T00:00:00Z"), "Got: " & m
+
+  echo "PASS: MARKREAD formatting"
+
+# ============================================================
+# Test: STARTTLS formatting
+# ============================================================
+
+block testStarttlsFormatting:
+  let s = formatStarttls()
+  assert s == "STARTTLS\r\n", "Got: " & s
+
+  echo "PASS: STARTTLS formatting"
+
+# ============================================================
+# Test: AUTHENTICATE formatting
+# ============================================================
+
+block testAuthenticateFormatting:
+  let a1 = formatAuthenticate("PLAIN")
+  assert a1 == "AUTHENTICATE :PLAIN\r\n", "Got: " & a1
+
+  let a2 = formatAuthenticate("dGVzdA==")
+  assert a2 == "AUTHENTICATE :dGVzdA==\r\n", "Got: " & a2
+
+  let a3 = formatAuthenticate("*")
+  assert a3 == "AUTHENTICATE :*\r\n", "Got: " & a3
+
+  echo "PASS: AUTHENTICATE formatting"
+
+# ============================================================
+# Test: FAIL/WARN code constants exist
+# ============================================================
+
+block testFailWarnCodeConstants:
+  # Verify key constants are defined and have expected values
+  assert failAccountRequired == "ACCOUNT_REQUIRED"
+  assert failInvalidUtf8 == "INVALID_UTF8"
+  assert warnInvalidUtf8 == "INVALID_UTF8"
+
+  # BATCH FAIL codes
+  assert failBatchMultilineMaxBytes == "MULTILINE_MAX_BYTES"
+  assert failBatchMultilineMaxLines == "MULTILINE_MAX_LINES"
+  assert failBatchMultilineInvalidTarget == "MULTILINE_INVALID_TARGET"
+  assert failBatchInvalidReftag == "INVALID_REFTAG"
+
+  # CHATHISTORY FAIL codes
+  assert failChathistoryInvalidParams == "INVALID_PARAMS"
+  assert failChathistoryMessageError == "MESSAGE_ERROR"
+
+  # REDACT FAIL codes
+  assert failRedactForbidden == "REDACT_FORBIDDEN"
+  assert failRedactWindowExpired == "REDACT_WINDOW_EXPIRED"
+
+  # REGISTER FAIL codes
+  assert failRegisterAccountExists == "ACCOUNT_EXISTS"
+  assert failRegisterWeakPassword == "WEAK_PASSWORD"
+  assert failRegisterBadAccountName == "BAD_ACCOUNT_NAME"
+
+  # RENAME FAIL codes
+  assert failRenameChannelNameInUse == "CHANNEL_NAME_IN_USE"
+
+  # SETNAME FAIL codes
+  assert failSetnameCannotChangeRealname == "CANNOT_CHANGE_REALNAME"
+
+  # VERIFY FAIL codes
+  assert failVerifyInvalidCode == "INVALID_CODE"
+
+  echo "PASS: FAIL/WARN code constants"
+
+# ============================================================
+# Test: Metadata key constants
+# ============================================================
+
+block testMetadataKeyConstants:
+  assert metaAvatar == "avatar"
+  assert metaBot == "bot"
+  assert metaColor == "color"
+  assert metaDisplayName == "display-name"
+  assert metaHomepage == "homepage"
+  assert metaStatus == "status"
+  assert metaChanAvatar == "avatar"
+  assert metaChanDisplayName == "display-name"
+
+  echo "PASS: Metadata key constants"
+
+# ============================================================
+# Test: Batch type constants
+# ============================================================
+
+block testBatchTypeConstants:
+  assert batchNetjoin == "netjoin"
+  assert batchNetsplit == "netsplit"
+  assert batchChathistory == "chathistory"
+  assert batchMultiline == "draft/multiline"
+  assert batchLabeledResponse == "labeled-response"
+
+  echo "PASS: Batch type constants"
+
+# ============================================================
+# Test: Capability name constants
+# ============================================================
+
+block testCapabilityConstants:
+  assert capServerTime == "server-time"
+  assert capSasl == "sasl"
+  assert capStandardReplies == "standard-replies"
+  assert capMonitor == "monitor"
+  assert capTls == "tls"
+  assert capDraftChathistory == "draft/chathistory"
+  assert capDraftMultiline == "draft/multiline"
+  assert capDraftAccountRegistration == "draft/account-registration"
+
+  echo "PASS: Capability name constants"
+
+# ============================================================
+# Test: Numeric constants (new/fixed)
+# ============================================================
+
+block testNumericConstants:
+  # STARTTLS
+  assert RPL_STARTTLS == 670
+  assert ERR_STARTTLS == 691
+
+  # SASL
+  assert ERR_NICKLOCKED == 902
+  assert RPL_SASLSUCCESS == 903
+
+  # Metadata (corrected per IRCv3 registry)
+  assert RPL_WHOISKEYVALUE == 760
+  assert RPL_KEYVALUE == 761
+  assert RPL_METADATAEND == 762
+  assert RPL_KEYNOTSET == 766
+  assert RPL_METADATASUBOK == 770
+  assert RPL_METADATAUNSUBOK == 771
+  assert RPL_METADATASUBS == 772
+  assert RPL_METADATASYNCLATER == 774
+
+  echo "PASS: Numeric constants"
+
+# ============================================================
+# Test: CLIENTTAGDENY enforcement
+# ============================================================
+
+block testClientTagDeny:
+  var isup = newISupport()
+
+  # No restrictions — all tags allowed
+  assert isup.isTagAllowed("+typing")
+  assert isup.isTagAllowed("+draft/reply")
+  assert isup.isTagAllowed("msgid")  # Server tags always allowed
+
+  # Deny specific tag
+  isup.clientTagDeny = @["+typing"]
+  assert not isup.isTagAllowed("+typing"), "Should deny +typing"
+  assert isup.isTagAllowed("+draft/reply"), "Should allow +draft/reply"
+  assert isup.isTagAllowed("msgid"), "Server tags always allowed"
+
+  # Deny all client tags with wildcard
+  isup.clientTagDeny = @["*"]
+  assert not isup.isTagAllowed("+typing"), "Wildcard should deny all client tags"
+  assert not isup.isTagAllowed("+draft/reply"), "Wildcard should deny all client tags"
+  assert isup.isTagAllowed("msgid"), "Server tags always allowed even with wildcard"
+
+  # Filter tags
+  isup.clientTagDeny = @["+typing"]
+  var tags = initTable[string, string]()
+  tags["+typing"] = "active"
+  tags["+draft/reply"] = "abc123"
+  tags["msgid"] = "def456"
+  let filtered = isup.filterAllowedTags(tags)
+  assert "+typing" notin filtered, "Should filter out denied tag"
+  assert "+draft/reply" in filtered, "Should keep allowed client tag"
+  assert "msgid" in filtered, "Should keep server tag"
+
+  echo "PASS: CLIENTTAGDENY enforcement"
+
+# ============================================================
+# Test: ISUPPORT new params (ACCOUNTEXTBAN, MSGREFTYPES, ICON)
+# ============================================================
+
+block testIsupportNewParams:
+  var isup = newISupport()
+
+  # ACCOUNTEXTBAN
+  isup.updateIsupport(@["nick", "ACCOUNTEXTBAN=a,R", "are supported"])
+  assert isup.accountExtban == @["a", "R"], "Got: " & $isup.accountExtban
+
+  # MSGREFTYPES
+  isup.updateIsupport(@["nick", "MSGREFTYPES=msgid,timestamp", "are supported"])
+  assert isup.msgRefTypes == @["msgid", "timestamp"], "Got: " & $isup.msgRefTypes
+
+  # draft/ICON
+  isup.updateIsupport(@["nick", "DRAFT/ICON=https://example.com/icon.png", "are supported"])
+  assert isup.icon == "https://example.com/icon.png", "Got: " & isup.icon
+
+  echo "PASS: ISUPPORT new params"
+
 echo "All IRC protocol tests passed!"

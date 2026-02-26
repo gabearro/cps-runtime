@@ -167,10 +167,10 @@ proc parseConfig(data: string): AppConfig =
       # Save previous server entry
       if inServer and currentServer.host.len > 0:
         result.servers.add(currentServer)
+        inServer = false
       let section = line[1..^2]
       if section == "profile":
         currentSection = "profile"
-        inServer = false
       elif section.startsWith("server:"):
         currentSection = "server"
         inServer = true
@@ -180,9 +180,6 @@ proc parseConfig(data: string): AppConfig =
           autoconnect: false,
         )
       elif section in ["ignore", "highlights", "logging", "theme"]:
-        if inServer and currentServer.host.len > 0:
-          result.servers.add(currentServer)
-          inServer = false
         currentSection = section
       continue
     let eqIdx = line.find('=')
@@ -389,7 +386,7 @@ proc getTheme*(name: string): Theme =
 # mIRC Color Parsing
 # ============================================================
 
-const mircColors*: array[16, Color] = [
+const mircColorsRaw*: array[16, Color] = [
   clWhite,       #  0 white
   clBlack,       #  1 black
   clBlue,        #  2 blue (navy)
@@ -407,6 +404,20 @@ const mircColors*: array[16, Color] = [
   clBrightBlack, # 14 grey
   clWhite,       # 15 light grey
 ]
+
+# Theme-aware mIRC color lookup: remaps colors that would be invisible
+# on the current terminal background.
+var mircColors*: array[16, Color] = mircColorsRaw
+
+proc updateMircColorsForTheme*(isDark: bool) =
+  mircColors = mircColorsRaw
+  if isDark:
+    # Black text invisible on dark bg → remap to bright white
+    mircColors[1] = clBrightWhite
+  else:
+    # White text invisible on light bg → remap to black
+    mircColors[0] = clBlack
+    mircColors[15] = clBlack
 
 proc parseIrcFormatting*(text: string): seq[StyledSpan] =
   ## Parse mIRC color and formatting codes into styled spans.
@@ -490,16 +501,29 @@ proc parseIrcFormatting*(text: string): seq[StyledSpan] =
         # Bare \x03 with no digits = reset colors
         curStyle.fg = clDefault
         curStyle.bg = clDefault
-    of '\x04':  # Hex color (skip)
-      inc i
-      var digits = 0
-      while i < text.len and text[i] in {'0'..'9', 'a'..'f', 'A'..'F'} and digits < 6:
-        inc i; inc digits
-      if i < text.len and text[i] == ',' and digits > 0:
-        if i + 1 < text.len and text[i + 1] in {'0'..'9', 'a'..'f', 'A'..'F'}:
-          inc i; digits = 0
-          while i < text.len and text[i] in {'0'..'9', 'a'..'f', 'A'..'F'} and digits < 6:
-            inc i; inc digits
+    of '\x04':  # Hex color: \x04RRGGBB[,RRGGBB] — exactly 6 hex digits required
+      flush()
+      let hexStart = i + 1
+      var j = hexStart
+      var fgDigits = 0
+      while j < text.len and text[j] in {'0'..'9', 'a'..'f', 'A'..'F'} and fgDigits < 6:
+        inc j; inc fgDigits
+      if fgDigits == 6:
+        # Valid hex fg color — consume it
+        i = j
+        # Check for bg: ,RRGGBB
+        if i < text.len and text[i] == ',':
+          let commaPos = i
+          var k = i + 1
+          var bgDigits = 0
+          while k < text.len and text[k] in {'0'..'9', 'a'..'f', 'A'..'F'} and bgDigits < 6:
+            inc k; inc bgDigits
+          if bgDigits == 6:
+            i = k  # consume bg too
+          # else: comma is part of text, don't consume
+      else:
+        # Not a valid hex color — just skip the \x04 control char
+        inc i
     else:
       buf.add(ch)
       inc i
@@ -595,6 +619,10 @@ const
   ]
 
 type
+  TypingEntry = object
+    nick: string
+    expiry: float            ## epochTime() when this entry expires
+
   Channel = object
     name: string
     messages: ScrollableTextView
@@ -602,6 +630,7 @@ type
     topic: string
     unread: int
     mentions: int           ## Count of unread messages mentioning our nick
+    typing: seq[TypingEntry] ## Nicks currently typing (with expiry timestamps)
 
   BatchMessage = object
     ## A single message accumulated inside a BATCH.
@@ -873,6 +902,7 @@ proc containsMention(text, nick: string): bool =
   false
 
 var activeTheme = darkTheme()  ## Global theme reference, updated when MasterState.theme changes
+updateMircColorsForTheme(isDark = true)
 
 # ============================================================
 # Chat channel management
@@ -895,6 +925,49 @@ proc getOrCreateChannel(cs: IrcChatState, name: string): int =
   ch.messages.showTimestamps = true
   cs.channels.add(ch)
   return cs.channels.len - 1
+
+const TypingTimeoutSec = 6.0  ## Typing indicators expire after 6 seconds
+
+proc setTyping(ch: var Channel, nick: string, active: bool) =
+  ## Update typing state for a nick in this channel.
+  let now = epochTime()
+  if active:
+    for i in 0 ..< ch.typing.len:
+      if ch.typing[i].nick == nick:
+        ch.typing[i].expiry = now + TypingTimeoutSec
+        return
+    ch.typing.add(TypingEntry(nick: nick, expiry: now + TypingTimeoutSec))
+  else:
+    for i in countdown(ch.typing.len - 1, 0):
+      if ch.typing[i].nick == nick:
+        ch.typing.delete(i)
+        return
+
+proc expireTyping(ch: var Channel): bool =
+  ## Remove expired typing entries. Returns true if any were removed.
+  let now = epochTime()
+  var removed = false
+  for i in countdown(ch.typing.len - 1, 0):
+    if ch.typing[i].expiry <= now:
+      ch.typing.delete(i)
+      removed = true
+  return removed
+
+proc clearTyping(ch: var Channel, nick: string) =
+  ## Remove a nick from typing (e.g. when they send a message).
+  for i in countdown(ch.typing.len - 1, 0):
+    if ch.typing[i].nick == nick:
+      ch.typing.delete(i)
+      return
+
+proc typingText(ch: Channel): string =
+  ## Build the typing indicator string for display.
+  case ch.typing.len
+  of 0: ""
+  of 1: ch.typing[0].nick & " is typing..."
+  of 2: ch.typing[0].nick & " and " & ch.typing[1].nick & " are typing..."
+  of 3: ch.typing[0].nick & ", " & ch.typing[1].nick & ", and " & ch.typing[2].nick & " are typing..."
+  else: $ch.typing.len & " people are typing..."
 
 proc isMention(cs: IrcChatState, text, channelName: string, highlights: seq[string] = @[]): bool =
   ## True if the text mentions our nick, highlight words, or is a DM.
@@ -937,24 +1010,51 @@ proc addMsg(cs: IrcChatState, channelName, nick, text: string, highlights: seq[s
     # Mention highlighting overrides everything
     spans.add(StyledSpan(text: stripped, style: st))
   else:
-    # Parse mIRC formatting, then overlay URL highlighting
+    # Parse mIRC formatting and merge with default style
     let bodySpans = parseIrcFormatting(text)
     let urls = findUrls(stripped)
     if urls.len == 0:
-      # No URLs — just use parsed spans
+      # No URLs — use parsed spans with default style as base
       for s in bodySpans:
-        spans.add(s)
+        var merged = styleDefault
+        if s.style.fg.kind != ckNone: merged.fg = s.style.fg
+        if s.style.bg.kind != ckNone: merged.bg = s.style.bg
+        merged.attrs = merged.attrs + s.style.attrs
+        spans.add(StyledSpan(text: s.text, style: merged))
     else:
-      # Apply URL underline style to URL regions
-      # Reconstruct from stripped text with URL highlighting
-      var pos = 0
-      for urlRange in urls:
-        if urlRange.start > pos:
-          spans.add(StyledSpan(text: stripped[pos ..< urlRange.start], style: styleDefault))
-        spans.add(StyledSpan(text: stripped[urlRange.start ..< urlRange.stop], style: activeTheme.urlStyle))
-        pos = urlRange.stop
-      if pos < stripped.len:
-        spans.add(StyledSpan(text: stripped[pos ..< stripped.len], style: styleDefault))
+      # Overlay URL highlighting on mIRC-parsed spans.
+      # First, flatten parsed spans into a position-indexed list.
+      var flatSpans: seq[StyledSpan] = @[]
+      for s in bodySpans:
+        var merged = styleDefault
+        if s.style.fg.kind != ckNone: merged.fg = s.style.fg
+        if s.style.bg.kind != ckNone: merged.bg = s.style.bg
+        merged.attrs = merged.attrs + s.style.attrs
+        flatSpans.add(StyledSpan(text: s.text, style: merged))
+      # Walk through flat spans and apply URL style where ranges overlap
+      var charPos = 0  # Position in stripped text
+      for fs in flatSpans:
+        let spanStart = charPos
+        let spanEnd = charPos + fs.text.len
+        var pos = 0  # Position within this span's text
+        for urlRange in urls:
+          if urlRange.stop <= spanStart or urlRange.start >= spanEnd:
+            continue  # No overlap
+          # Emit pre-URL portion
+          let urlStartInSpan = max(0, urlRange.start - spanStart)
+          if urlStartInSpan > pos:
+            spans.add(StyledSpan(text: fs.text[pos ..< urlStartInSpan], style: fs.style))
+          # Emit URL portion with underline
+          let urlEndInSpan = min(fs.text.len, urlRange.stop - spanStart)
+          var urlSt = activeTheme.urlStyle
+          # Keep mIRC attrs (bold, italic) on URLs
+          urlSt.attrs = urlSt.attrs + fs.style.attrs
+          spans.add(StyledSpan(text: fs.text[urlStartInSpan ..< urlEndInSpan], style: urlSt))
+          pos = urlEndInSpan
+        # Emit remaining text after last URL
+        if pos < fs.text.len:
+          spans.add(StyledSpan(text: fs.text[pos ..< fs.text.len], style: fs.style))
+        charPos = spanEnd
   cs.channels[idx].messages.addLine(nickPrefix & stripped, st, ts, spans)
   logMessage(channelName, nickPrefix & stripped)
   if idx != cs.activeChannel:
@@ -965,22 +1065,28 @@ proc addMsg(cs: IrcChatState, channelName, nick, text: string, highlights: seq[s
 proc addAction(cs: IrcChatState, channelName, nick, text: string, highlights: seq[string] = @[]) =
   let idx = cs.getOrCreateChannel(channelName)
   let ts = now().format("HH:mm")
-  let mention = cs.isMention(text, channelName, highlights)
+  let stripped = stripIrcFormatting(text)
+  let mention = cs.isMention(stripped, channelName, highlights)
   let st = if mention: activeTheme.mention.italic() else: activeTheme.nick(nick).italic()
-  cs.channels[idx].messages.addLine("* " & nick & " " & text, st, ts)
-  logMessage(channelName, "* " & nick & " " & text)
+  let actionPrefix = "* " & nick & " "
+  var spans: seq[StyledSpan] = @[StyledSpan(text: actionPrefix, style: st)]
+  for sp in parseIrcFormatting(text):
+    var merged = st
+    if sp.style.fg.kind != ckNone: merged.fg = sp.style.fg
+    if sp.style.bg.kind != ckNone: merged.bg = sp.style.bg
+    merged.attrs = merged.attrs + sp.style.attrs
+    spans.add(StyledSpan(text: sp.text, style: merged))
+  cs.channels[idx].messages.addLine(actionPrefix & stripped, st, ts, spans)
+  logMessage(channelName, actionPrefix & stripped)
   if idx != cs.activeChannel:
     cs.channels[idx].unread += 1
     if mention:
       cs.channels[idx].mentions += 1
 
-proc addSystem(cs: IrcChatState, channelName, text: string) =
-  let idx = cs.getOrCreateChannel(channelName)
-  let ts = now().format("HH:mm")
-  let prefix = "*** "
+proc addSystemLine(cs: IrcChatState, idx: int, prefix, text, ts: string) =
+  ## Add a single system line with mIRC formatting parsed.
   var spans = @[StyledSpan(text: prefix, style: activeTheme.system)]
   for sp in parseIrcFormatting(text):
-    # Merge system style as base, let mIRC colors override
     var merged = activeTheme.system
     if sp.style.fg.kind != ckNone: merged.fg = sp.style.fg
     if sp.style.bg.kind != ckNone: merged.bg = sp.style.bg
@@ -989,19 +1095,49 @@ proc addSystem(cs: IrcChatState, channelName, text: string) =
   let stripped = prefix & stripIrcFormatting(text)
   cs.channels[idx].messages.addLine(stripped, activeTheme.system, ts, spans)
 
+proc addSystem(cs: IrcChatState, channelName, text: string) =
+  let idx = cs.getOrCreateChannel(channelName)
+  let ts = now().format("HH:mm")
+  let lines = text.split('\n')
+  for i, line in lines:
+    let prefix = if i == 0: "*** " else: "    "
+    let lineTs = if i == 0: ts else: ""
+    cs.addSystemLine(idx, prefix, line, lineTs)
+
+proc addTopic(cs: IrcChatState, channelName, header, topicText: string) =
+  ## Display a topic with long text split at " - " separators.
+  let idx = cs.getOrCreateChannel(channelName)
+  let ts = now().format("HH:mm")
+  let stripped = stripIrcFormatting(topicText)
+  # Only split if the stripped text is long enough to warrant it
+  if stripped.len > 80 and " - " in stripped:
+    # Split the raw topic (with mIRC codes) at " - " boundaries.
+    # We need to split the raw text so each segment keeps its color codes.
+    let rawParts = topicText.split(" - ")
+    for i, part in rawParts:
+      let prefix = if i == 0: "*** " else: "    "
+      let lineTs = if i == 0: ts else: ""
+      let lineText = if i == 0: header & part else: "- " & part
+      cs.addSystemLine(idx, prefix, lineText, lineTs)
+  else:
+    cs.addSystemLine(idx, "*** ", header & topicText, ts)
+
 proc addError(cs: IrcChatState, channelName, text: string) =
   let idx = cs.getOrCreateChannel(channelName)
   let ts = now().format("HH:mm")
-  let prefix = "!!! "
-  var spans = @[StyledSpan(text: prefix, style: activeTheme.error)]
-  for sp in parseIrcFormatting(text):
-    var merged = activeTheme.error
-    if sp.style.fg.kind != ckNone: merged.fg = sp.style.fg
-    if sp.style.bg.kind != ckNone: merged.bg = sp.style.bg
-    merged.attrs = merged.attrs + sp.style.attrs
-    spans.add(StyledSpan(text: sp.text, style: merged))
-  let stripped = prefix & stripIrcFormatting(text)
-  cs.channels[idx].messages.addLine(stripped, activeTheme.error, ts, spans)
+  let lines = text.split('\n')
+  for i, line in lines:
+    let prefix = if i == 0: "!!! " else: "    "
+    let lineTs = if i == 0: ts else: ""
+    var spans = @[StyledSpan(text: prefix, style: activeTheme.error)]
+    for sp in parseIrcFormatting(line):
+      var merged = activeTheme.error
+      if sp.style.fg.kind != ckNone: merged.fg = sp.style.fg
+      if sp.style.bg.kind != ckNone: merged.bg = sp.style.bg
+      merged.attrs = merged.attrs + sp.style.attrs
+      spans.add(StyledSpan(text: sp.text, style: merged))
+    let stripped = prefix & stripIrcFormatting(line)
+    cs.channels[idx].messages.addLine(stripped, activeTheme.error, lineTs, spans)
 
 proc addServerMsg(cs: IrcChatState, text: string) =
   cs.addSystem(ServerChannel, text)
@@ -1401,6 +1537,10 @@ proc processIrcEventsForChat(ms: MasterState, cs: IrcChatState): bool =
       of iekPrivMsg:
         let target = evt.pmTarget
         let source = evt.pmPrefix.nick
+        # Clear typing indicator — they sent a message, so they're done typing
+        let typIdx = cs.findChannel(target)
+        if typIdx >= 0:
+          cs.channels[typIdx].clearTyping(source)
         # Check ignore list
         if source.toLowerAscii in ms.config.ignoreList.mapIt(it.toLowerAscii):
           discard
@@ -1500,9 +1640,9 @@ proc processIrcEventsForChat(ms: MasterState, cs: IrcChatState): bool =
         if idx >= 0:
           cs.channels[idx].topic = evt.topicText
           if evt.topicBy.len > 0:
-            cs.addSystem(evt.topicChannel, evt.topicBy & " changed the topic to: " & evt.topicText)
+            cs.addTopic(evt.topicChannel, evt.topicBy & " set topic: ", evt.topicText)
           else:
-            cs.addSystem(evt.topicChannel, "Topic: " & evt.topicText)
+            cs.addTopic(evt.topicChannel, "Topic: ", evt.topicText)
       of iekCtcp:
         if evt.ctcpCommand == "ACTION":
           let target = evt.ctcpTarget
@@ -1522,7 +1662,7 @@ proc processIrcEventsForChat(ms: MasterState, cs: IrcChatState): bool =
             let idx = cs.findChannel(ch)
             if idx >= 0:
               cs.channels[idx].topic = topic
-              cs.addSystem(ch, "Topic: " & topic)
+              cs.addTopic(ch, "Topic: ", topic)
         of RPL_NAMREPLY:
           if evt.numParams.len >= 4:
             let ch = evt.numParams[2]
@@ -1779,6 +1919,11 @@ proc processIrcEventsForChat(ms: MasterState, cs: IrcChatState): bool =
       of iekDccResume:
         cs.addServerMsg("DCC RESUME from " & evt.dccSource)
         changed = true
+      of iekTyping:
+        let idx = cs.findChannel(evt.typingTarget)
+        if idx >= 0:
+          cs.channels[idx].setTyping(evt.typingNick, evt.typingActive)
+          changed = true
       else:
         discard
     except Exception:
@@ -2136,6 +2281,7 @@ proc handleChatCommand(ms: MasterState, cmd: string) =
       let name = parts[1].strip().toLowerAscii
       ms.theme = getTheme(name)
       activeTheme = ms.theme
+      updateMircColorsForTheme(isDark = name != "light")
       ms.config.themeName = name
       saveConfig(ms.config)
       cs.addSystem(cs.currentChannel.name, "Theme changed to: " & name)
@@ -2264,8 +2410,12 @@ proc handleChatSend(ms: MasterState) =
     if ch == ServerChannel:
       cs.addError(ch, "Cannot send messages to server console")
     else:
-      discard cs.client.privMsg(ch, text)
-      cs.addMsg(ch, cs.myNick, text)
+      let lines = text.split('\n')
+      for line in lines:
+        let stripped = line.strip(chars = {'\r'})
+        if stripped.len > 0:
+          discard cs.client.privMsg(ch, stripped)
+          cs.addMsg(ch, cs.myNick, stripped)
 
 # ============================================================
 # Rendering: Loading screen
@@ -2781,6 +2931,13 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
            return true
          return true  # Trap all keys
        ).withFocus(true)
+    )
+
+  # Typing indicator (above status bar, looks like it's in the chat)
+  let typingStr = ch.typingText()
+  if typingStr.len > 0:
+    chatChildren.add(
+      text(" " & typingStr, style(clBrightBlack).italic()).withHeight(fixed(1))
     )
 
   chatChildren.add(cs.statusBar.toWidget())
@@ -3336,6 +3493,7 @@ proc handleMasterTick(ms: MasterState): bool =
         if ms.config.themeName.len > 0:
           ms.theme = getTheme(ms.config.themeName)
           activeTheme = ms.theme
+          updateMircColorsForTheme(isDark = ms.config.themeName != "light")
         # Apply logging config
         if ms.config.loggingEnabled and ms.config.logDir.len > 0:
           logConfig = (true, ms.config.logDir)
@@ -3359,6 +3517,11 @@ proc handleMasterTick(ms: MasterState): bool =
   if ms.screen == asChat:
     if ms.processIrcEvents():
       changed = true
+    # Expire stale typing indicators
+    for cs in ms.chats:
+      for i in 0 ..< cs.channels.len:
+        if cs.channels[i].expireTyping():
+          changed = true
     # Periodic lag ping (every 30 seconds) — ping all connected servers
     let now = epochTime()
     if now - ms.lastPingTime > 30.0:
@@ -3446,6 +3609,7 @@ proc main() =
     lastPingTime: epochTime(),
   )
   activeTheme = ms.theme
+  updateMircColorsForTheme(isDark = true)
 
   if cliMode:
     # Direct connect from CLI args — skip config loading

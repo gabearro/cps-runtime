@@ -20,7 +20,8 @@ import ../io/proxy
 import ../concurrency/channels
 import ../tls/client as tlsclient
 import ./protocol
-import std/[times, base64, strutils]
+import ./sasl
+import std/[times, base64, strutils, tables, options, sequtils]
 
 export protocol
 
@@ -51,6 +52,13 @@ type
     saslUsername*: string       ## SASL PLAIN username (empty = no SASL)
     saslPassword*: string       ## SASL PLAIN password
     requestedCaps*: seq[string] ## IRCv3 capabilities to request
+    aggregateBatches*: bool     ## Aggregate BATCH messages (default false for backward compat)
+    initialAway*: string        ## Initial AWAY message (pre-away cap, empty = not away)
+    webircPassword*: string     ## WEBIRC password (empty = no WEBIRC)
+    webircGateway*: string      ## WEBIRC gateway name
+    webircHostname*: string     ## WEBIRC hostname
+    webircIp*: string           ## WEBIRC IP address
+    saslMechanism*: SaslMechanism ## Pluggable SASL mechanism (nil = use saslUsername/saslPassword → PLAIN)
 
   IrcClient* = ref object
     ## An event-driven IRC client.
@@ -68,6 +76,11 @@ type
     lastPingSent*: float        ## epochTime when last PING sent
     lagMs*: int                 ## Current lag in milliseconds (-1 = unknown)
     isAway*: bool               ## True if marked away
+    isupport*: ISupport         ## Parsed ISUPPORT (005) parameters
+    batchAggregator*: BatchAggregator  ## Batch message aggregator
+    nextLabel: int              ## Auto-incrementing label counter
+    pendingLabels: Table[string, CpsFuture[CompletedBatch]] ## Pending labeled-response futures
+    serverSaslMechs: seq[string] ## SASL mechanisms advertised by server
 
 # ============================================================
 # Config constructors
@@ -90,9 +103,17 @@ proc newIrcClientConfig*(host: string, port: int = 6667,
     ctcpVersion: "CPS IRC Client 1.0",
     eventBufferSize: 256,
     useTls: false,
-    requestedCaps: @["server-time", "message-tags", "away-notify", "account-notify",
-                     "extended-join", "multi-prefix", "cap-notify", "chghost",
-                     "setname", "invite-notify", "userhost-in-names", "sasl", "batch"],
+    requestedCaps: @[capServerTime, capMessageTags, capAwayNotify, capAccountNotify,
+                     capExtendedJoin, capMultiPrefix, capCapNotify, capChghost,
+                     capSetname, capInviteNotify, capUserhostInNames, capSasl, capBatch,
+                     capLabeledResponse, capEchoMessage, capAccountTag,
+                     capStandardReplies,
+                     capDraftChathistory, capDraftMessageRedaction, capDraftChannelRename,
+                     capDraftReadMarker, capDraftMultiline,
+                     capMonitor, capDraftPreAway, capDraftNoImplicitNames,
+                     capDraftExtendedIsupport, capDraftEventPlayback,
+                     capDraftExtendedMonitor, capDraftAccountRegistration,
+                     capDraftMetadata2],
   )
 
 # ============================================================
@@ -106,6 +127,9 @@ proc newIrcClient*(config: IrcClientConfig): IrcClient =
     currentNick: config.nick,
     events: newAsyncChannel[IrcEvent](config.eventBufferSize),
     lagMs: -1,
+    isupport: newISupport(),
+    batchAggregator: newBatchAggregator(config.aggregateBatches),
+    pendingLabels: initTable[string, CpsFuture[CompletedBatch]](),
   )
 
 proc newIrcClient*(host: string, port: int = 6667,
@@ -163,6 +187,186 @@ proc sendPing*(client: IrcClient, token: string = "lagcheck"): CpsVoidFuture =
   client.lastPingSent = epochTime()
   client.sendRaw(formatIrcMessage("PING", token))
 
+proc sendTagged*(client: IrcClient, tags: Table[string, string],
+                  command: string, params: varargs[string]): CpsVoidFuture =
+  ## Send an IRC message with tags.
+  client.sendRaw(formatTaggedMessage(tags, command, params))
+
+# ============================================================
+# MONITOR commands
+# ============================================================
+
+proc monitorAdd*(client: IrcClient, targets: varargs[string]): CpsVoidFuture =
+  client.sendRaw(formatMonitorAdd(targets))
+
+proc monitorRemove*(client: IrcClient, targets: varargs[string]): CpsVoidFuture =
+  client.sendRaw(formatMonitorRemove(targets))
+
+proc monitorClear*(client: IrcClient): CpsVoidFuture =
+  client.sendRaw(formatMonitorClear())
+
+proc monitorList*(client: IrcClient): CpsVoidFuture =
+  client.sendRaw(formatMonitorList())
+
+proc monitorStatus*(client: IrcClient): CpsVoidFuture =
+  client.sendRaw(formatMonitorStatus())
+
+# ============================================================
+# CHATHISTORY commands
+# ============================================================
+
+proc chathistoryLatest*(client: IrcClient, target: string, msgidOrTimestamp: string = "*", limit: int = 50): CpsVoidFuture =
+  client.sendRaw(formatChathistoryLatest(target, msgidOrTimestamp, limit))
+
+proc chathistoryBefore*(client: IrcClient, target, msgidOrTimestamp: string, limit: int = 50): CpsVoidFuture =
+  client.sendRaw(formatChathistoryBefore(target, msgidOrTimestamp, limit))
+
+proc chathistoryAfter*(client: IrcClient, target, msgidOrTimestamp: string, limit: int = 50): CpsVoidFuture =
+  client.sendRaw(formatChathistoryAfter(target, msgidOrTimestamp, limit))
+
+proc chathistoryBetween*(client: IrcClient, target: string, start, stop: string, limit: int = 50): CpsVoidFuture =
+  client.sendRaw(formatChathistoryBetween(target, start, stop, limit))
+
+proc chathistoryAround*(client: IrcClient, target, msgidOrTimestamp: string, limit: int = 50): CpsVoidFuture =
+  client.sendRaw(formatChathistoryAround(target, msgidOrTimestamp, limit))
+
+proc chathistoryTargets*(client: IrcClient, start, stop: string, limit: int = 50): CpsVoidFuture =
+  client.sendRaw(formatChathistoryTargets(start, stop, limit))
+
+# ============================================================
+# REDACT
+# ============================================================
+
+proc redact*(client: IrcClient, target, msgid: string, reason: string = ""): CpsVoidFuture =
+  client.sendRaw(formatRedact(target, msgid, reason))
+
+# ============================================================
+# Client-only tags: reply, react, typing
+# ============================================================
+
+proc replyTo*(client: IrcClient, target, msgid, text: string): CpsVoidFuture =
+  ## Send a PRIVMSG with +draft/reply tag.
+  var tags = initTable[string, string]()
+  tags[tagReply] = msgid
+  client.sendRaw(formatTaggedMessage(tags, "PRIVMSG", target, text))
+
+proc react*(client: IrcClient, target, msgid, reaction: string): CpsVoidFuture =
+  ## Send a TAGMSG with +draft/react tag.
+  var tags = initTable[string, string]()
+  tags[tagReact] = reaction
+  tags[tagReply] = msgid
+  client.sendRaw(formatTagMsg(target, tags))
+
+proc unreact*(client: IrcClient, target, msgid, reaction: string): CpsVoidFuture =
+  ## Send a TAGMSG with +draft/unreact tag.
+  var tags = initTable[string, string]()
+  tags[tagUnreact] = reaction
+  tags[tagReply] = msgid
+  client.sendRaw(formatTagMsg(target, tags))
+
+proc sendTyping*(client: IrcClient, target: string, active: bool = true): CpsVoidFuture =
+  ## Send a TAGMSG with +typing tag.
+  var tags = initTable[string, string]()
+  tags[tagTyping] = if active: "active" else: "done"
+  client.sendRaw(formatTagMsg(target, tags))
+
+proc sendWithChannelContext*(client: IrcClient, target, channel, text: string): CpsVoidFuture =
+  ## Send a PRIVMSG with +draft/channel-context tag.
+  var tags = initTable[string, string]()
+  tags[tagChannelContext] = channel
+  client.sendRaw(formatTaggedMessage(tags, "PRIVMSG", target, text))
+
+# ============================================================
+# Multiline messages
+# ============================================================
+
+proc sendMultiline*(client: IrcClient, target, text: string): CpsVoidFuture {.cps.} =
+  ## Send a multiline message. Uses draft/multiline batch if cap is enabled,
+  ## otherwise falls back to multiple PRIVMSGs.
+  let lines = text.split('\n')
+  let lineCount = lines.len
+  if lineCount <= 1 or "draft/multiline" notin client.enabledCaps:
+    # Simple fallback: send each line as separate PRIVMSG
+    for idx in 0 ..< lineCount:
+      if lines[idx].len > 0:
+        await client.privMsg(target, lines[idx])
+  else:
+    # Use multiline batch
+    client.nextLabel += 1
+    let batchRef = "ml" & $client.nextLabel
+    await client.sendRaw(formatIrcMessage("BATCH", "+" & batchRef, "draft/multiline", target))
+    for idx in 0 ..< lineCount:
+      var tags = initTable[string, string]()
+      tags[tagBatch] = batchRef
+      await client.sendRaw(formatTaggedMessage(tags, "PRIVMSG", target, lines[idx]))
+    await client.sendRaw(formatIrcMessage("BATCH", "-" & batchRef))
+
+# ============================================================
+# Labeled-response
+# ============================================================
+
+proc generateLabel(client: IrcClient): string =
+  client.nextLabel += 1
+  result = $client.nextLabel
+
+proc sendLabeled*(client: IrcClient, command: string, params: seq[string]): CpsFuture[CompletedBatch] {.cps.} =
+  ## Send a command with a label tag and return the labeled-response batch.
+  let label = client.generateLabel()
+  var tags = initTable[string, string]()
+  tags[tagLabel] = label
+
+  let labelFut = newCpsFuture[CompletedBatch]()
+  client.pendingLabels[label] = labelFut
+
+  # Build and send the tagged message
+  let paramCount = params.len
+  var msgStr = formatTagPrefix(tags) & command
+  for i in 0 ..< paramCount:
+    msgStr.add(' ')
+    if i == paramCount - 1:
+      msgStr.add(':')
+    msgStr.add(params[i])
+  msgStr.add("\r\n")
+  await client.sendRaw(msgStr)
+
+  let batchResult: CompletedBatch = await labelFut
+  return batchResult
+
+# ============================================================
+# Account registration
+# ============================================================
+
+proc register*(client: IrcClient, account: string, email: string = "*", password: string = "*"): CpsVoidFuture =
+  client.sendRaw(formatRegister(account, email, password))
+
+proc verify*(client: IrcClient, account, code: string): CpsVoidFuture =
+  client.sendRaw(formatVerify(account, code))
+
+# ============================================================
+# MARKREAD
+# ============================================================
+
+proc markread*(client: IrcClient, target, timestamp: string): CpsVoidFuture =
+  client.sendRaw(formatMarkread(target, timestamp))
+
+# ============================================================
+# WEBIRC
+# ============================================================
+
+proc sendWebirc*(client: IrcClient, password, gateway, hostname, ip: string,
+                 options: seq[string] = @[]): CpsVoidFuture =
+  client.sendRaw(formatWebirc(password, gateway, hostname, ip, options))
+
+# ============================================================
+# WHO/WHOX
+# ============================================================
+
+proc who*(client: IrcClient, target: string): CpsVoidFuture =
+  client.sendRaw(formatWho(target))
+
+proc whox*(client: IrcClient, target: string, fields: string = "%tcnuhraf", token: string = ""): CpsVoidFuture =
+  client.sendRaw(formatWhox(target, fields, token))
+
 # ============================================================
 # Internal: emit events
 # ============================================================
@@ -175,13 +379,19 @@ proc emit(client: IrcClient, event: IrcEvent): CpsVoidFuture =
 # ============================================================
 
 proc doRegister(client: IrcClient): CpsVoidFuture {.cps.} =
-  ## Send CAP LS, NICK/USER (and optionally PASS) to register.
+  ## Send CAP LS, NICK/USER (and optionally PASS/WEBIRC) to register.
   ## CAP negotiation and SASL are handled in processMessage.
+
+  # WEBIRC must be sent before any other commands
+  if client.config.webircPassword.len > 0:
+    await client.sendRaw(formatWebirc(client.config.webircPassword,
+      client.config.webircGateway, client.config.webircHostname, client.config.webircIp))
+
   # Start IRCv3 CAP negotiation
   if client.config.requestedCaps.len > 0:
     client.capNegotiating = true
     await client.sendRaw(formatIrcMessage("CAP", "LS", "302"))
-  
+
   if client.config.password.len > 0:
     await client.sendRaw(formatPass(client.config.password))
   await client.sendRaw(formatNick(client.config.nick))
@@ -208,9 +418,45 @@ proc handleCtcp(client: IrcClient, source, command, args: string): CpsVoidFuture
 # Internal: process a single message
 # ============================================================
 
+proc completeLabeledBatch(client: IrcClient, batch: CompletedBatch) =
+  ## Check if a completed batch has a label tag and resolve the pending future.
+  # Labeled batches have the label on the opening BATCH command
+  # We check if any pending label matches
+  discard  # Label resolution happens via the batch ref label tracking below
+
 proc processMessage(client: IrcClient, msg: IrcMessage): CpsVoidFuture {.cps.} =
   ## Process a parsed IRC message and emit appropriate events.
   let event = classifyMessage(msg)
+
+  # Batch aggregation: if enabled, feed through aggregator
+  if client.batchAggregator.enabled:
+    if event.kind == iekBatch or client.batchAggregator.isInBatch(msg):
+      let batchResult = client.batchAggregator.processBatch(event, msg)
+      if batchResult.isSome:
+        let completedBatch = batchResult.get()
+
+        # Check for labeled-response: look for label tag
+        let label = msg.tags.getOrDefault(tagLabel, "")
+
+        if label.len > 0 and label in client.pendingLabels:
+          let pendingFut = client.pendingLabels[label]
+          client.pendingLabels.del(label)
+          pendingFut.complete(completedBatch)
+        else:
+          # Emit as iekCompletedBatch event
+          await client.emit(IrcEvent(kind: iekCompletedBatch,
+            cbBatchRef: completedBatch.batchRef,
+            cbBatchType: completedBatch.batchType,
+            cbBatchParams: completedBatch.batchParams,
+            cbMessages: completedBatch.messages.mapIt(it.event),
+            cbNestedBatches: @[]))
+      # Suppress individual events while batching (except batch start/end which we track)
+      if event.kind != iekBatch:
+        return
+      # For iekBatch events, still emit them for backward compat
+      # but skip further processing
+      await client.emit(event)
+      return
 
   case event.kind
   of iekPing:
@@ -236,6 +482,9 @@ proc processMessage(client: IrcClient, msg: IrcMessage): CpsVoidFuture {.cps.} =
           let capName = if avail.contains('='): avail.split('=')[0] else: avail
           if capName == cap:
             toRequest.add(cap)
+            # Track SASL mechanisms advertised by server
+            if capName == "sasl" and avail.contains('='):
+              client.serverSaslMechs = avail.split('=')[1].split(',')
             break
       if toRequest.len > 0:
         await client.sendRaw(formatIrcMessage("CAP", "REQ", toRequest.join(" ")))
@@ -249,9 +498,24 @@ proc processMessage(client: IrcClient, msg: IrcMessage): CpsVoidFuture {.cps.} =
         if cleanCap.len > 0 and cleanCap notin client.enabledCaps:
           client.enabledCaps.add(cleanCap)
       # Check if SASL should be initiated
-      if "sasl" in client.enabledCaps and client.config.saslUsername.len > 0:
+      if "sasl" in client.enabledCaps and
+         (client.config.saslUsername.len > 0 or client.config.saslMechanism != nil):
         client.saslState = 1
-        await client.sendRaw(formatIrcMessage("AUTHENTICATE", "PLAIN"))
+        # Determine mechanism
+        var mechName = "PLAIN"
+        if client.config.saslMechanism != nil:
+          mechName = client.config.saslMechanism.name
+        elif client.serverSaslMechs.len > 0:
+          # Auto-select best mechanism based on server's list
+          let autoMech = selectBestMechanism(client.serverSaslMechs,
+            client.config.saslUsername, client.config.saslPassword)
+          client.config.saslMechanism = autoMech
+          mechName = autoMech.name
+        else:
+          # Default to PLAIN using username/password
+          client.config.saslMechanism = newSaslPlain(
+            client.config.saslUsername, client.config.saslPassword)
+        await client.sendRaw(formatIrcMessage("AUTHENTICATE", mechName))
       else:
         client.capNegotiating = false
         await client.sendRaw(formatIrcMessage("CAP", "END"))
@@ -275,12 +539,33 @@ proc processMessage(client: IrcClient, msg: IrcMessage): CpsVoidFuture {.cps.} =
   of iekMessage:
     # Handle AUTHENTICATE challenge
     if msg.command == "AUTHENTICATE":
-      if client.saslState == 1 and msg.params.len > 0 and msg.params[0] == "+":
-        # Server ready for credentials — send SASL PLAIN
-        let payload = "\0" & client.config.saslUsername & "\0" & client.config.saslPassword
-        let encoded = base64.encode(payload)
-        client.saslState = 2
-        await client.sendRaw(formatIrcMessage("AUTHENTICATE", encoded))
+      if client.saslState >= 1 and msg.params.len > 0:
+        let challenge = msg.params[0]
+        if client.config.saslMechanism != nil:
+          let stepResult = client.config.saslMechanism.processChallenge(challenge)
+          if stepResult.failed:
+            client.saslState = 0
+            client.capNegotiating = false
+            await client.sendRaw(formatIrcMessage("AUTHENTICATE", "*"))
+            await client.sendRaw(formatIrcMessage("CAP", "END"))
+            await client.emit(IrcEvent(kind: iekError, errMsg: "SASL failed: " & stepResult.errorMsg))
+          elif stepResult.response.len > 0:
+            client.saslState = 2
+            await client.sendRaw(formatIrcMessage("AUTHENTICATE", stepResult.response))
+            if stepResult.finished:
+              client.saslState = 3  # Waiting for server result
+          else:
+            # Empty response with finished=true means no response needed
+            client.saslState = 3
+        else:
+          # Legacy fallback: SASL PLAIN with username/password
+          if challenge == "+":
+            let payload = "\0" & client.config.saslUsername & "\0" & client.config.saslPassword
+            let encoded = base64.encode(payload)
+            client.saslState = 2
+            await client.sendRaw(formatIrcMessage("AUTHENTICATE", encoded))
+          else:
+            await client.emit(event)
       else:
         await client.emit(event)
     else:
@@ -295,8 +580,17 @@ proc processMessage(client: IrcClient, msg: IrcMessage): CpsVoidFuture {.cps.} =
       if event.numParams.len > 0:
         client.currentNick = event.numParams[0]
       await client.emit(IrcEvent(kind: iekConnected))
+      # Send initial AWAY if pre-away cap is enabled
+      if client.config.initialAway.len > 0 and "draft/pre-away" in client.enabledCaps:
+        await client.sendRaw(formatIrcMessage("AWAY", client.config.initialAway))
+        client.isAway = true
       for ch in client.config.autoJoinChannels:
         await client.joinChannel(ch)
+      await client.emit(event)
+
+    of RPL_ISUPPORT:
+      # Parse ISUPPORT tokens
+      client.isupport.updateIsupport(event.numParams)
       await client.emit(event)
 
     of ERR_NICKNAMEINUSE:

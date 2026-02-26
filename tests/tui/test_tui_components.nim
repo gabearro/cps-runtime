@@ -262,7 +262,7 @@ block testNotifications:
   na.notify("Warning: lag detected", nlWarning)
   assert na.notifications.len == 2
   let w = na.toWidget()
-  assert w.kind == wkContainer  # vbox
+  assert w.kind == wkCustom  # custom rendering widget
   echo "PASS: notifications"
 
 # ============================================================

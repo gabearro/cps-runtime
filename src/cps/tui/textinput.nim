@@ -86,6 +86,7 @@ proc moveWordRight*(ti: TextInput) =
 # ============================================================
 
 proc insert*(ti: TextInput, ch: char) =
+  if ch in {'\n', '\r'}: return  # Single-line input: reject newlines
   if ti.maxLen > 0 and ti.text.len >= ti.maxLen:
     return
   ti.text.insert($ch, ti.cursor)

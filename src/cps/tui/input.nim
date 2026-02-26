@@ -461,16 +461,33 @@ proc readInput*(readSize: int = 256): CpsFuture[seq[InputEvent]] {.cps.} =
     return @[]
   return parseInputEvents(raw)
 
-proc tryReadInput*(readSize: int = 256): seq[InputEvent] =
+proc tryReadInput*(readSize: int = 4096): seq[InputEvent] =
   ## Non-blocking input read. Returns any available input events
   ## without yielding to the event loop. Returns @[] if no data.
+  ## When a bracketed paste start is detected, keeps reading until
+  ## the paste end marker is found (to avoid fragmenting pastes).
   ensureStdinNonBlocking()
   var buf = newString(readSize)
   let n = read(STDIN_FILENO, addr buf[0], readSize.cint)
-  if n > 0:
-    buf.setLen(n)
-    return parseInputEvents(buf)
-  return @[]
+  if n <= 0:
+    return @[]
+  buf.setLen(n)
+  # Check if we have an incomplete bracketed paste (start marker without end marker).
+  # Paste start = ESC[200~ , Paste end = ESC[201~
+  const pasteStart = "\e[200~"
+  const pasteEnd = "\e[201~"
+  if pasteStart in buf and pasteEnd notin buf:
+    # Keep reading until we find the end marker or hit a size limit
+    const maxPasteSize = 256 * 1024  # 256KB max paste
+    var chunk = newString(readSize)
+    while buf.len < maxPasteSize:
+      let m = read(STDIN_FILENO, addr chunk[0], readSize.cint)
+      if m <= 0:
+        break
+      buf.add(chunk[0 ..< m])
+      if pasteEnd in buf:
+        break
+  return parseInputEvents(buf)
 
 # ============================================================
 # Event-driven frame wait

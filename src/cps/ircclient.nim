@@ -14,9 +14,11 @@ import cps/irc/client
 import cps/irc/dcc
 import cps/irc/xdcc
 import cps/irc/ebook_indexer
+import cps/irc/sasl
 
 export protocol
 export client
 export dcc
 export xdcc
 export ebook_indexer
+export sasl
