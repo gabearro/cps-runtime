@@ -166,13 +166,22 @@ proc writeStrClip*(buf: var CellBuffer, x, y, maxWidth: int, text: string,
 
 proc render*(buf: CellBuffer): string =
   ## Full render of the buffer (no diffing, used for initial draw).
-  result = moveTo(0, 0)
+  ##
+  ## Each row starts with moveTo + clearLine to erase any content left
+  ## by terminal reflow during resize. After writing the last character
+  ## of each row, we send CUB (cursor backward) to cancel the terminal's
+  ## "pending wrap" state — without this, if the buffer is wider than the
+  ## actual terminal (race during resize), writing at the last column
+  ## triggers auto-wrap, which cascades into scroll and shifts all
+  ## subsequent absolute moveTo positions, corrupting the bottom rows
+  ## (chatbox, help bar). CUB is harmless when no pending wrap exists.
+  result = ""
   var lastStyle = styleDefault
   var styleActive = false
 
   for y in 0 ..< buf.height:
-    if y > 0:
-      result.add(moveTo(0, y))
+    result.add(moveTo(0, y))
+    result.add(clearLine)
     for x in 0 ..< buf.width:
       let c = buf[x, y]
       if c.style != lastStyle or not styleActive:
@@ -181,6 +190,9 @@ proc render*(buf: CellBuffer): string =
         lastStyle = c.style
         styleActive = true
       result.add(c.ch)
+    # Cancel pending wrap after last character to prevent scroll cascade.
+    if buf.width > 0:
+      result.add("\e[D")
 
   if styleActive:
     result.add(resetAnsi)

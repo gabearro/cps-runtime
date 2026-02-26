@@ -410,7 +410,7 @@ proc stdinOnReadable() =
     let f = stdinPendingFut
     stdinPendingFut = nil
     f.complete("")
-  # If EAGAIN, leave fut pending — selector will fire again when data arrives
+  # If EAGAIN or EINTR, leave fut pending — selector will fire again
 
 proc readInputRaw*(readSize: int = 256): CpsFuture[string] =
   ## Read raw bytes from stdin asynchronously using the event loop selector.
@@ -461,20 +461,167 @@ proc readInput*(readSize: int = 256): CpsFuture[seq[InputEvent]] {.cps.} =
     return @[]
   return parseInputEvents(raw)
 
+proc tryReadInput*(readSize: int = 256): seq[InputEvent] =
+  ## Non-blocking input read. Returns any available input events
+  ## without yielding to the event loop. Returns @[] if no data.
+  ensureStdinNonBlocking()
+  var buf = newString(readSize)
+  let n = read(STDIN_FILENO, addr buf[0], readSize.cint)
+  if n > 0:
+    buf.setLen(n)
+    return parseInputEvents(buf)
+  return @[]
+
+# ============================================================
+# Event-driven frame wait
+# ============================================================
+#
+# tuiWaitFrame(ms) returns a future that completes when ANY of:
+#   - Stdin becomes readable (user input)
+#   - Wake pipe fires (SIGWINCH / tuiWake)
+#   - Timer expires (frame interval timeout)
+#
+# This is the core primitive for the reactive main loop.
+# The main loop awaits this, then does a non-blocking tryReadInput().
+
+var pendingFrameFut*: CpsVoidFuture = nil
+var stdinForFrameRegistered = false
+
+proc stdinFrameWake() =
+  ## Selector callback for stdin — wakes the frame future without reading.
+  ## Data stays in the kernel buffer; tryReadInput() picks it up.
+  if pendingFrameFut != nil and not pendingFrameFut.finished:
+    let f = pendingFrameFut
+    pendingFrameFut = nil
+    f.complete()
+
+proc registerStdinForFrame*() =
+  ## Register stdin with the event loop so it wakes the frame future.
+  if stdinForFrameRegistered:
+    return
+  ensureStdinNonBlocking()
+  let loop = getEventLoop()
+  loop.registerRead(STDIN_FILENO.int, stdinFrameWake)
+  stdinForFrameRegistered = true
+  # Mark as registered so unregisterStdin knows about it
+  stdinRegistered = true
+
+proc tuiWaitFrame*(ms: int): CpsVoidFuture =
+  ## Wait for the next frame event. Returns a future that completes when
+  ## stdin has data, the wake pipe fires, or ms milliseconds elapse.
+  let fut = newCpsVoidFuture()
+  pendingFrameFut = fut
+  let loop = getEventLoop()
+  let frameFut = fut
+  loop.registerTimer(ms, proc() =
+    if not frameFut.finished:
+      pendingFrameFut = nil
+      frameFut.complete()
+  )
+  result = fut
+
+# ============================================================
+# Wake pipe — allows signal handlers and components to wake
+# the event loop when the main loop is blocked on readInput().
+# ============================================================
+
+var wakePipeFds: array[2, cint] = [-1.cint, -1.cint]  # [readEnd, writeEnd]
+var wakePipeRegistered = false
+
+proc initWakePipe*() =
+  ## Create the wake pipe and set both ends to non-blocking.
+  if wakePipeFds[0] >= 0:
+    return  # Already initialized
+  if pipe(wakePipeFds) != 0:
+    return  # pipe() failed — fall back to polling
+  # Set both ends non-blocking so write() in signal handler never blocks
+  # and read() in drain callback never blocks.
+  discard fcntl(wakePipeFds[0], F_SETFL,
+                fcntl(wakePipeFds[0], F_GETFL) or O_NONBLOCK)
+  discard fcntl(wakePipeFds[1], F_SETFL,
+                fcntl(wakePipeFds[1], F_GETFL) or O_NONBLOCK)
+
+proc tuiWake*() =
+  ## Wake the event loop by writing a byte to the wake pipe.
+  ## Safe to call from signal handlers (write is async-signal-safe).
+  if wakePipeFds[1] >= 0:
+    var b: uint8 = 1
+    discard write(wakePipeFds[1], addr b, 1)
+
+proc drainWakePipe() =
+  ## Drain all bytes from the wake pipe (callback for event loop).
+  ## Completes the pending frame future so the main loop wakes up
+  ## to check resize/render.
+  var buf: array[64, uint8]
+  while true:
+    let n = read(wakePipeFds[0], addr buf[0], buf.len.cint)
+    if n <= 0:
+      break
+  # Wake the main loop
+  if pendingFrameFut != nil and not pendingFrameFut.finished:
+    let f = pendingFrameFut
+    pendingFrameFut = nil
+    f.complete()
+
+proc registerWakePipe*() =
+  ## Register the wake pipe's read end with the event loop.
+  if wakePipeRegistered or wakePipeFds[0] < 0:
+    return
+  let loop = getEventLoop()
+  loop.registerRead(wakePipeFds[0].int, drainWakePipe)
+  wakePipeRegistered = true
+
+proc closeWakePipe*() =
+  ## Close and unregister the wake pipe.
+  if wakePipeRegistered:
+    try:
+      let loop = getEventLoop()
+      loop.unregister(wakePipeFds[0].int)
+    except Exception:
+      discard
+    wakePipeRegistered = false
+  if wakePipeFds[0] >= 0:
+    discard close(wakePipeFds[0])
+    discard close(wakePipeFds[1])
+    wakePipeFds = [-1.cint, -1.cint]
+
 # ============================================================
 # SIGWINCH handling
 # ============================================================
 
 var sigwinchPending* = false
 
+# Flag to indicate writeOutput is in progress — prevents the signal handler
+# from interleaving clearScreen bytes with frame data.
+var tuiWriteInProgress* {.volatile.}: bool = false
+
+# Pre-allocated clear sequence for the signal handler (needs a runtime address).
+var sigwinchClearSeq: array[13, char] = [
+  '\e', '[', '?', '7', 'l',       # DECAWM off
+  '\e', '[', '2', 'J',            # Clear screen
+  '\e', '[', 'H',                 # Cursor home
+  '\0',                            # NUL terminator (not written)
+]
+
 proc sigwinchHandler(sig: cint) {.noconv.} =
   sigwinchPending = true
+  # Immediately clear the screen to prevent the terminal's reflow from
+  # showing wrapped/garbled content. write() is async-signal-safe.
+  # Skip if a frame write is in progress to avoid interleaved output.
+  if not tuiWriteInProgress:
+    discard write(STDOUT_FILENO, addr sigwinchClearSeq[0], 12)
+  # Wake the event loop so the main loop re-renders immediately.
+  tuiWake()
 
 proc installSigwinchHandler*() =
   ## Install a signal handler for SIGWINCH (terminal resize).
   var sa: Sigaction
   sa.sa_handler = sigwinchHandler
   discard sigemptyset(sa.sa_mask)
+  # SA_RESTART so that read()/write()/poll() throughout the app are not
+  # interrupted by SIGWINCH. The wake pipe is what actually wakes the
+  # event loop — kevent() restarts after the signal and immediately
+  # finds the pipe readable.
   sa.sa_flags = SA_RESTART
   discard sigaction(SIGWINCH, sa, nil)
 

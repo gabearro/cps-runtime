@@ -101,7 +101,12 @@ proc writeOutput(data: string) =
   ## PTY write buffer is full, write() returns EAGAIN — we must poll for
   ## writability and retry, otherwise the frame output is truncated
   ## (causing "vertical rip" artifacts on split view resize).
+  ##
+  ## The tuiWriteInProgress guard tells the SIGWINCH signal handler to
+  ## skip its immediate clearScreen if we're mid-write, avoiding
+  ## interleaved output.
   if data.len > 0:
+    tuiWriteInProgress = true
     var written = 0
     while written < data.len:
       let n = write(STDOUT_FILENO, unsafeAddr data[written], (data.len - written).cint)
@@ -121,9 +126,11 @@ proc writeOutput(data: string) =
         break  # Truly unrecoverable error
       else:
         break  # Zero bytes written — fd closed
+    tuiWriteInProgress = false
 
 proc setup(app: TuiApp) =
   app.terminal.enterRawMode()
+  initWakePipe()
   installSigwinchHandler()
 
   var initSeq = ""
@@ -136,6 +143,7 @@ proc setup(app: TuiApp) =
     app.terminal.mouseEnabled = true
   initSeq.add(enableBracketedPaste)
   app.terminal.bracketedPaste = true
+  initSeq.add(disableAutoWrap)
   initSeq.add(clearScreen)
 
   if app.title.len > 0:
@@ -148,6 +156,7 @@ proc teardown(app: TuiApp) =
   if app.mouseMode:
     cleanupSeq.add(disableMouse)
   cleanupSeq.add(disableBracketedPaste)
+  cleanupSeq.add(enableAutoWrap)
   if not app.cursorVisible:
     cleanupSeq.add(showCursor)
   if app.altScreen:
@@ -155,6 +164,7 @@ proc teardown(app: TuiApp) =
   cleanupSeq.add(resetAnsi)
 
   writeOutput(cleanupSeq)
+  closeWakePipe()
   unregisterStdin()
   app.terminal.leaveRawMode()
 
@@ -166,11 +176,21 @@ proc doRender(app: TuiApp) =
   if app.onRender == nil:
     return
 
+  # Re-query terminal size via ioctl for the absolute latest dimensions.
+  # During rapid resize (drag), SIGWINCH may have fired with an intermediate
+  # size that's already stale by the time we render.
+  let (curCols, curRows) = getTerminalSize()
+  if curCols != app.terminal.width or curRows != app.terminal.height:
+    app.terminal.width = curCols
+    app.terminal.height = curRows
+    app.fullRedraw = true
+
   let w = app.terminal.width
   let h = app.terminal.height
+  let isResize = app.backBuf.width != w or app.backBuf.height != h
 
   # Ensure buffers match terminal size
-  if app.backBuf.width != w or app.backBuf.height != h:
+  if isResize:
     app.backBuf = newCellBuffer(w, h)
     app.frontBuf = newCellBuffer(w, h)
     app.fullRedraw = true
@@ -196,13 +216,19 @@ proc doRender(app: TuiApp) =
   # Terminals that don't support it simply ignore the escape sequences.
   var output: string
   if app.fullRedraw:
-    output = render(app.backBuf)
+    # On resize, clear the screen first to prevent stale content from the
+    # old dimensions showing at wrong positions during drag resize.
+    if isResize:
+      output = clearScreen & render(app.backBuf)
+    else:
+      output = render(app.backBuf)
     app.fullRedraw = false
   else:
     output = diff(app.frontBuf, app.backBuf)
 
   if output.len > 0:
-    writeOutput(beginSyncUpdate & output & endSyncUpdate)
+    # Re-assert DECAWM off every frame — some terminals reset modes on resize.
+    writeOutput(beginSyncUpdate & disableAutoWrap & output & endSyncUpdate)
 
   # Swap buffers
   swap(app.frontBuf, app.backBuf)
@@ -230,21 +256,44 @@ proc stop*(app: TuiApp) =
 
 proc run*(app: TuiApp): CpsVoidFuture {.cps.} =
   ## Main application loop. Runs until app.stop() is called.
+  ##
+  ## Fully event-driven. Each iteration awaits tuiWaitFrame() which
+  ## completes instantly when:
+  ##   - Stdin has data (user input — zero latency)
+  ##   - Wake pipe fires (SIGWINCH / tuiWake — zero latency)
+  ##   - Frame timer expires (picks up background state changes)
+  ##
+  ## While waiting, the event loop's selector monitors ALL fds (TCP
+  ## sockets, DNS, timers, etc.), so background CPS tasks make full
+  ## progress on every tick.
+  ##
   ## This is a CPS proc — call it with runCps(app.run()).
   app.running = true
   app.setup()
 
   try:
+    # Register the wake pipe (for SIGWINCH / tuiWake) and stdin
+    # (for instant input response) with the event loop.
+    registerWakePipe()
+    registerStdinForFrame()
+
     # Initial render
     app.doRender()
 
     let frameIntervalMs = 1000 div max(1, app.targetFps)
 
     while app.running:
-      # Read input (non-blocking via event loop)
-      let events: seq[InputEvent] = await readInput()
+      # Wait for the next event: stdin data, wake pipe, or frame timeout.
+      # The selector monitors all fds, so background tasks (IRC, DNS, etc.)
+      # make progress during this wait.
+      await tuiWaitFrame(frameIntervalMs)
 
-      # Check for terminal resize
+      # Non-blocking input check — grab whatever stdin data is available.
+      let events: seq[InputEvent] = tryReadInput()
+
+      # Check for terminal resize.
+      # The SIGWINCH handler already cleared the screen instantly (to prevent
+      # reflow artifacts). Here we just mark for a full redraw.
       if app.terminal.checkResize():
         app.fullRedraw = true
         app.needsRender = true
@@ -289,10 +338,6 @@ proc run*(app: TuiApp): CpsVoidFuture {.cps.} =
           app.doRender()
         except Exception:
           discard  # Don't crash the app on render errors
-
-      # Yield to event loop for a frame interval (allows I/O processing)
-      if app.running:
-        await cpsSleep(frameIntervalMs)
   finally:
     app.teardown()
 

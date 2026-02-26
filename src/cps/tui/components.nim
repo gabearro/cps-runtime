@@ -33,6 +33,7 @@ type
     dividerStyle*: Style
     dividerChar*: string   ## Character for the divider line
     dragging*: bool
+    lastRect*: Rect        ## Set during render for mouse hit-testing
 
 proc newSplitView*(direction: Direction = dirHorizontal,
                    ratio: float = 0.5,
@@ -769,7 +770,7 @@ proc newNotificationArea*(maxVisible: int = 3,
 proc notify*(na: NotificationArea, message: string,
              level: NotificationLevel = nlInfo,
              duration: float = 5.0) =
-  let now = cpuTime()
+  let now = epochTime()
   na.notifications.add(Notification(
     message: message,
     level: level,
@@ -779,7 +780,7 @@ proc notify*(na: NotificationArea, message: string,
 
 proc tick*(na: NotificationArea): bool =
   ## Remove expired notifications. Returns true if any were removed.
-  let now = cpuTime()
+  let now = epochTime()
   var removed = false
   var i = 0
   while i < na.notifications.len:
@@ -792,10 +793,17 @@ proc tick*(na: NotificationArea): bool =
 
 proc notifStyle(level: NotificationLevel): Style =
   case level
-  of nlInfo: style(clBrightCyan)
-  of nlSuccess: style(clBrightGreen)
-  of nlWarning: style(clBrightYellow)
-  of nlError: style(clBrightRed)
+  of nlInfo: style(clBrightCyan, clDefault)
+  of nlSuccess: style(clBrightGreen, clDefault)
+  of nlWarning: style(clBrightYellow, clDefault)
+  of nlError: style(clBrightRed, clDefault)
+
+proc notifIcon(level: NotificationLevel): string =
+  case level
+  of nlInfo: "i"
+  of nlSuccess: "+"
+  of nlWarning: "!"
+  of nlError: "x"
 
 proc toWidget*(na: NotificationArea): Widget =
   let area = na
@@ -807,16 +815,12 @@ proc toWidget*(na: NotificationArea): Widget =
   let startIdx = max(0, area.notifications.len - visible)
   for i in startIdx ..< area.notifications.len:
     let n = area.notifications[i]
-    let prefix = case n.level
-      of nlInfo: "[i] "
-      of nlSuccess: "[+] "
-      of nlWarning: "[!] "
-      of nlError: "[x] "
     children.add(
-      text(prefix & n.message, notifStyle(n.level))
+      text(" " & notifIcon(n.level) & " " & n.message & " ", notifStyle(n.level))
         .withHeight(fixed(1))
     )
-  vbox(children).withHeight(fixed(visible))
+  border(vbox(children), bsRounded, st = style(clBrightBlack, clBlack))
+    .withStyle(style(clDefault, clBlack))
 
 # ============================================================
 # Tree View
@@ -1192,6 +1196,7 @@ proc toWidgetWithEvents*(sv: SplitView, first, second: Widget): Widget =
   let wRef = w
   let origRender = w.customRender
   w.customRender = proc(buf: var CellBuffer, rect: Rect) =
+    svRef.lastRect = rect
     # Compute child rects for event routing before rendering
     case svRef.direction
     of dirHorizontal:
@@ -1207,15 +1212,21 @@ proc toWidgetWithEvents*(sv: SplitView, first, second: Widget): Widget =
       wRef.customChildRects[0] = Rect(x: rect.x, y: rect.y, w: rect.w, h: firstSize)
       wRef.customChildRects[1] = Rect(x: rect.x, y: rect.y + firstSize + 1, w: rect.w, h: secondSize)
     origRender(buf, rect)
-  w
+  w.withOnMouse(proc(evt: InputEvent): bool =
+    svRef.handleMouse(evt, svRef.lastRect)
+  )
 
 # ============================================================
 # Declarative ScrollableTextView (events built-in)
 # ============================================================
 
-proc toWidgetWithEvents*(sv: ScrollableTextView, height: int = 0): Widget =
+proc toWidgetWithEvents*(sv: ScrollableTextView, height: int = 0,
+                         onSelect: proc(text: string) = nil): Widget =
   ## Render the scrollable text view with built-in scroll and selection handling.
+  ## If `onSelect` is provided, it is called when the user completes a text
+  ## selection (mouse release after drag). Use this for clipboard copy.
   let view = sv
+  let selectCb = onSelect
   sv.toWidget(height)
     .withOnScroll(proc(delta: int) =
       if delta < 0:
@@ -1224,7 +1235,13 @@ proc toWidgetWithEvents*(sv: ScrollableTextView, height: int = 0): Widget =
         view.scrollDown(3, view.lastRect.h)
     )
     .withOnMouse(proc(evt: InputEvent): bool =
-      view.handleMouse(evt)
+      let handled = view.handleMouse(evt)
+      if handled and evt.action == maRelease and view.hasSelection and
+         selectCb != nil:
+        let text = view.getSelectedText()
+        if text.len > 0:
+          selectCb(text)
+      handled
     )
 
 # ============================================================

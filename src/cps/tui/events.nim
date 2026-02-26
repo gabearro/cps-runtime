@@ -215,7 +215,7 @@ proc routeMouseEvent*(hm: HitMap, fm: FocusManager, evt: InputEvent): bool =
           return true
     return false
 
-  # Click events
+  # Click events (left button press)
   if evt.action == maPress and evt.button == mbLeft:
     let idx = hm.findAt(evt.mx, evt.my)
     if idx >= 0:
@@ -233,9 +233,16 @@ proc routeMouseEvent*(hm: HitMap, fm: FocusManager, evt: InputEvent): bool =
         if w.events != nil and w.events.onClick != nil:
           w.events.onClick(evt.mx - r.x, evt.my - r.y)
           return true
+      # No onClick handled it — fall through to onMouse so widgets
+      # that use onMouse for press events (e.g., drag start) get it.
+      for ci in chain:
+        let w = hm.regions[ci].widget
+        if w.events != nil and w.events.onMouse != nil:
+          if w.events.onMouse(evt):
+            return true
     return false
 
-  # Generic mouse events (drag, motion, etc.)
+  # Generic mouse events (motion, release, non-left press)
   if evt.action == maMotion or evt.action == maRelease or
      (evt.action == maPress and evt.button != mbLeft):
     let idx = hm.findAt(evt.mx, evt.my)

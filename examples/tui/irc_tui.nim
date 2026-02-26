@@ -2578,7 +2578,13 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
     tabSt = style(clWhite, clBrightBlack),
     activeSt = style(clBlack, clCyan).bold(),
   ))
-  chatChildren.add(ch.messages.toWidgetWithEvents())
+  let msRefSelect = ms
+  chatChildren.add(ch.messages.toWidgetWithEvents(
+    onSelect = proc(text: string) =
+      msRefSelect.clipboardText = text
+      writeOsc52(text)
+      msRefSelect.notifications.notify("Copied to clipboard", nlSuccess, 2.0)
+  ))
   if nc.active and nc.matches.len > 0:
     let matches = nc.matches
     let sel = nc.selected
@@ -2781,7 +2787,7 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
   # Server tabs (when multi-server)
   var helpItems = [
     kh("^C", "Quit"), kh("Tab", "Complete"), kh("A-Left/Right", "Chan"),
-    kh("^F", "Search"), kh("^K", "Switch"), kh("^O", "URL"),
+    kh("^F", "Search"), kh("^K", "Switch"), kh("^O", "URL"), kh("^Y", "Copy"),
   ]
   if ms.chats.len > 1:
     # Show server tabs before key help
@@ -2810,10 +2816,11 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
   let msRefSv = ms
   cs.splitView.toWidgetWithEvents(channelList, chatArea)
     .withOnMouse(proc(evt: InputEvent): bool =
-      # Trigger full redraw when split view ratio changes from drag
-      if cs.splitView.dragging:
+      # Handle divider drag and trigger full redraw on ratio change
+      let changed = cs.splitView.handleMouse(evt, cs.splitView.lastRect)
+      if changed or cs.splitView.dragging:
         msRefSv.tuiApp.fullRedraw = true
-      false  # Let the split view's internal handler process it
+      changed
     )
 
 # ============================================================
@@ -2901,11 +2908,33 @@ proc renderQuickSwitcher(ms: MasterState, width, height: int): Widget =
    )
 
 proc renderMaster(ms: MasterState, width, height: int): Widget =
-  let main = case ms.screen
+  let baseMain = case ms.screen
     of asLoading: ms.renderLoading(width, height)
     of asSetup: ms.renderSetup(width, height)
     of asServerList: ms.renderServerList(width, height)
     of asChat: ms.renderChat(width, height)
+
+  # Overlay notifications on top of the main content (top-right corner)
+  let notifCount = min(ms.notifications.maxVisible, ms.notifications.notifications.len)
+  let notifWidget = ms.notifications.toWidget()
+  let mainRef = baseMain
+  let notifRef = notifWidget
+  let notifH = notifCount + 2  # +2 for border top/bottom
+  let main = if notifCount > 0:
+    var overlay = custom(proc(buf: var CellBuffer, rect: Rect) =
+      renderWidget(buf, mainRef, rect)
+      # Render notifications in the top-right corner
+      let nw = min(52, rect.w div 2)  # Max width including border
+      if nw > 0:
+        let nx = rect.x + rect.w - nw - 1
+        let ny = rect.y + 1
+        renderWidget(buf, notifRef, Rect(x: nx, y: ny, w: nw, h: notifH))
+    )
+    overlay.customChildren = @[mainRef]
+    overlay.customChildRects = @[Rect(x: 0, y: 0, w: width, h: height)]
+    overlay
+  else:
+    baseMain
 
   if ms.helpDialog.visible:
     # Help dialog is a custom overlay — render main first, then overlay on top
@@ -3139,6 +3168,19 @@ proc handleChatInput(ms: MasterState, evt: InputEvent): bool =
   # @-mention autocomplete navigation is now handled declaratively via
   # withFocusTrap + withOnKey on the popup widget in renderChat.
 
+  # Ctrl+Y: copy selected text to clipboard
+  if evt.isCtrl('y'):
+    let msgView = cs.currentChannel.messages
+    if msgView.hasSelection:
+      let selected = msgView.getSelectedText()
+      if selected.len > 0:
+        ms.clipboardText = selected
+        writeOsc52(selected)
+        ms.notifications.notify("Copied to clipboard", nlSuccess, 2.0)
+    else:
+      ms.notifications.notify("No text selected (drag to select)", nlWarning)
+    return true
+
   # Ctrl+F: search
   if evt.isCtrl('f'):
     ms.startSearch()
@@ -3221,21 +3263,9 @@ proc handleChatInput(ms: MasterState, evt: InputEvent): bool =
     ms.handleChatSend()
     return true
 
-  # Mouse — most clicks are now handled declaratively via onClick handlers on
+  # Mouse — clicks are now handled declaratively via onClick/onMouse handlers on
   # widgets (channel list, tab bar, message view, split view, input field).
-  # Only clipboard copy on selection release remains here.
-  if evt.kind == iekMouse:
-    let msgView = cs.currentChannel.messages
-    # Clipboard copy on selection release (complements toWidgetWithEvents scroll/selection)
-    if evt.action == maRelease and msgView.hasSelection:
-      let selected = msgView.getSelectedText()
-      if selected.len > 0:
-        ms.clipboardText = selected
-        writeOsc52(selected)
-        ms.notifications.notify("Copied to clipboard", nlInfo)
-    # Left click clears any active selection
-    if evt.action == maPress and evt.button == mbLeft:
-      msgView.clearSelection()
+  # Clipboard copy is handled via ScrollableTextView's onSelect callback.
 
   # Text input
   let oldText = ms.inputField.text
@@ -3348,6 +3378,7 @@ proc buildHelpDialog(): Dialog =
     " A-Left/Right  Switch chan   ^C  Quit\n" &
     " C-Left/Right  Switch server F1  Help\n" &
     " PgUp/PgDn  Scroll   ^N/^P  Search nav\n" &
+    " ^Y         Copy selection\n" &
     "\n" &
     "Mouse: click chan/tab, scroll, drag select,\n" &
     "       drag divider to resize",

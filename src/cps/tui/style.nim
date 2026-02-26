@@ -238,8 +238,10 @@ const
   disableMouse* = "\e[?1006l\e[?1002l\e[?1000l"
   enableBracketedPaste* = "\e[?2004h"
   disableBracketedPaste* = "\e[?2004l"
-  beginSyncUpdate* = "\e[?2026h"  ## DEC private mode 2026 — terminal buffers output
-  endSyncUpdate* = "\e[?2026l"    ## Terminal renders buffered output atomically
+  disableAutoWrap* = "\e[?7l"      ## DECAWM reset — chars past right edge are dropped
+  enableAutoWrap* = "\e[?7h"       ## DECAWM set — chars past right edge wrap to next line
+  beginSyncUpdate* = "\e[?2026h"   ## DEC private mode 2026 — terminal buffers output
+  endSyncUpdate* = "\e[?2026l"     ## Terminal renders buffered output atomically
 
 # ============================================================
 # Clipboard via OSC 52
