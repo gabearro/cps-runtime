@@ -214,6 +214,12 @@ const
   tagChannelContext* = "+draft/channel-context"
   tagMultilineConcat* = "draft/multiline-concat"
 
+  # Solanum-specific tags
+  tagSolanumIdentified* = "solanum.chat/identified"  ## User's nick is identified to their account
+  tagSolanumOper* = "solanum.chat/oper"              ## User is an IRC operator (value = oper name if visible)
+  tagSolanumIp* = "solanum.chat/ip"                  ## Sender's real IP address (privileged)
+  tagSolanumRealhost* = "solanum.chat/realhost"       ## Sender's real hostname (privileged)
+
 # ============================================================
 # Standard reply FAIL/WARN/NOTE codes (IRCv3 registry)
 # ============================================================
@@ -354,6 +360,11 @@ const
   capDraftAccountRegistration* = "draft/account-registration"
   capDraftMetadata2* = "draft/metadata-2"
   capTls* = "tls"  ## STARTTLS capability
+
+  # Solanum-specific capabilities
+  capSolanumIdentifyMsg* = "solanum.chat/identify-msg"  ## Tags msgs from identified users
+  capSolanumOper* = "solanum.chat/oper"                 ## Tags msgs from IRC operators
+  capSolanumRealhost* = "solanum.chat/realhost"         ## Tags msgs with sender's real IP/host (privileged)
 
 # ============================================================
 # Tag value escaping/unescaping (IRCv3)
@@ -520,6 +531,31 @@ proc isBot*(msg: IrcMessage): bool =
 proc getBatchRef*(msg: IrcMessage): string =
   ## Get the batch reference tag from a message, or empty string.
   msg.tags.getOrDefault(tagBatch, "")
+
+# Solanum tag helpers
+
+proc isIdentified*(msg: IrcMessage): bool =
+  ## Check if the sender's nick is identified to their account (solanum.chat/identify-msg).
+  ## Different from account-tag: this means the *current nick* is verified,
+  ## not just that the user is logged into some account.
+  msg.tags.hasKey(tagSolanumIdentified)
+
+proc isOper*(msg: IrcMessage): bool =
+  ## Check if the sender is an IRC operator (solanum.chat/oper).
+  msg.tags.hasKey(tagSolanumOper)
+
+proc getOperName*(msg: IrcMessage): string =
+  ## Get the operator name from solanum.chat/oper tag.
+  ## Returns empty string if not an oper or value is hidden.
+  msg.tags.getOrDefault(tagSolanumOper, "")
+
+proc getRealIp*(msg: IrcMessage): string =
+  ## Get the sender's real IP from solanum.chat/ip tag (requires privileges).
+  msg.tags.getOrDefault(tagSolanumIp, "")
+
+proc getRealhost*(msg: IrcMessage): string =
+  ## Get the sender's real hostname from solanum.chat/realhost tag (requires privileges).
+  msg.tags.getOrDefault(tagSolanumRealhost, "")
 
 # ============================================================
 # Batch aggregation types

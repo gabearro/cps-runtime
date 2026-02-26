@@ -1071,4 +1071,117 @@ block testIsupportNewParams:
 
   echo "PASS: ISUPPORT new params"
 
+# ============================================================
+# Test: Solanum capability constants
+# ============================================================
+
+block testSolanumCapConstants:
+  assert capSolanumIdentifyMsg == "solanum.chat/identify-msg"
+  assert capSolanumOper == "solanum.chat/oper"
+  assert capSolanumRealhost == "solanum.chat/realhost"
+
+  echo "PASS: Solanum capability constants"
+
+# ============================================================
+# Test: Solanum tag constants
+# ============================================================
+
+block testSolanumTagConstants:
+  assert tagSolanumIdentified == "solanum.chat/identified"
+  assert tagSolanumOper == "solanum.chat/oper"
+  assert tagSolanumIp == "solanum.chat/ip"
+  assert tagSolanumRealhost == "solanum.chat/realhost"
+
+  echo "PASS: Solanum tag constants"
+
+# ============================================================
+# Test: Solanum identify-msg tag helpers
+# ============================================================
+
+block testSolanumIdentifyMsg:
+  # Identified user message
+  let m1 = parseIrcMessage("@solanum.chat/identified :glguy!x@user/glguy PRIVMSG #channel :hello")
+  assert m1.isIdentified, "Should be identified"
+  assert m1.tags.hasKey(tagSolanumIdentified)
+
+  # Non-identified user message
+  let m2 = parseIrcMessage(":notme!x@host PRIVMSG #channel :hello")
+  assert not m2.isIdentified, "Should not be identified"
+
+  # Identified + account-tag together
+  let m3 = parseIrcMessage("@account=glguy;solanum.chat/identified :glguy!x@user/glguy PRIVMSG #channel :test")
+  assert m3.isIdentified
+  assert m3.getAccount() == "glguy"
+
+  echo "PASS: Solanum identify-msg"
+
+# ============================================================
+# Test: Solanum oper tag helpers
+# ============================================================
+
+block testSolanumOper:
+  # Oper with visible name
+  let m1 = parseIrcMessage("@solanum.chat/oper=glguy :glguy_!x@host PRIVMSG #channel :msg")
+  assert m1.isOper
+  assert m1.getOperName() == "glguy"
+
+  # Oper with hidden name (tag present but no value)
+  let m2 = parseIrcMessage("@solanum.chat/oper :glguy_!x@host PRIVMSG #channel :msg")
+  assert m2.isOper
+  assert m2.getOperName() == "", "Hidden oper name should be empty"
+
+  # Non-oper
+  let m3 = parseIrcMessage(":regular!x@host PRIVMSG #channel :msg")
+  assert not m3.isOper
+
+  echo "PASS: Solanum oper"
+
+# ============================================================
+# Test: Solanum realhost tag helpers
+# ============================================================
+
+block testSolanumRealhost:
+  # Message with both IP and realhost tags
+  let m1 = parseIrcMessage("@solanum.chat/ip=2001:db8::1;solanum.chat/realhost=example.com :user!x@cloaked PRIVMSG #staff :msg")
+  assert m1.getRealIp() == "2001:db8::1"
+  assert m1.getRealhost() == "example.com"
+
+  # Message without realhost tags
+  let m2 = parseIrcMessage(":user!x@cloaked PRIVMSG #channel :msg")
+  assert m2.getRealIp() == ""
+  assert m2.getRealhost() == ""
+
+  # Only IP, no realhost
+  let m3 = parseIrcMessage("@solanum.chat/ip=192.168.1.1 :user!x@cloaked PRIVMSG #staff :msg")
+  assert m3.getRealIp() == "192.168.1.1"
+  assert m3.getRealhost() == ""
+
+  echo "PASS: Solanum realhost"
+
+# ============================================================
+# Test: Solanum tags on classified events
+# ============================================================
+
+block testSolanumClassifiedEvents:
+  # identify-msg on a PRIVMSG should still classify as iekPrivMsg
+  let m1 = parseIrcMessage("@solanum.chat/identified;account=alice :alice!a@host PRIVMSG #test :hi")
+  let e1 = classifyMessage(m1)
+  assert e1.kind == iekPrivMsg
+  assert e1.pmSource == "alice"
+  assert e1.pmText == "hi"
+
+  # oper tag on a MODE should still classify as iekMode
+  let m2 = parseIrcMessage("@solanum.chat/oper=admin :admin!a@host MODE #test +o someone")
+  let e2 = classifyMessage(m2)
+  assert e2.kind == iekMode
+  assert e2.modeTarget == "#test"
+
+  # realhost tags on NOTICE
+  let m3 = parseIrcMessage("@solanum.chat/ip=10.0.0.1;solanum.chat/realhost=real.host.com :staff!s@host NOTICE user :warning")
+  let e3 = classifyMessage(m3)
+  assert e3.kind == iekNotice
+  assert e3.pmSource == "staff"
+
+  echo "PASS: Solanum tags on classified events"
+
 echo "All IRC protocol tests passed!"

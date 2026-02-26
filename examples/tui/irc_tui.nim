@@ -227,6 +227,11 @@ proc parseConfig(data: string): AppConfig =
   if inServer and currentServer.host.len > 0:
     result.servers.add(currentServer)
 
+  # Auto-adjust port when TLS is enabled but port is still the plaintext default
+  for i in 0 ..< result.servers.len:
+    if result.servers[i].useTls and result.servers[i].port == 6667:
+      result.servers[i].port = 6697
+
 # ============================================================
 # Config persistence via CPS IO
 # ============================================================
@@ -2937,7 +2942,7 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
   let typingStr = ch.typingText()
   if typingStr.len > 0:
     chatChildren.add(
-      text(" " & typingStr, style(clBrightBlack).italic()).withHeight(fixed(1))
+      text(" " & typingStr, style(clWhite).italic()).withHeight(fixed(1))
     )
 
   chatChildren.add(cs.statusBar.toWidget())

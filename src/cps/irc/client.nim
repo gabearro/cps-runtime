@@ -81,6 +81,7 @@ type
     nextLabel: int              ## Auto-incrementing label counter
     pendingLabels: Table[string, CpsFuture[CompletedBatch]] ## Pending labeled-response futures
     serverSaslMechs: seq[string] ## SASL mechanisms advertised by server
+    pendingCapLs: seq[string]   ## Accumulates caps across multiline CAP LS 302 responses
 
 # ============================================================
 # Config constructors
@@ -107,7 +108,8 @@ proc newIrcClientConfig*(host: string, port: int = 6667,
                      capExtendedJoin, capMultiPrefix, capCapNotify, capChghost,
                      capSetname, capInviteNotify, capUserhostInNames, capSasl, capBatch,
                      capLabeledResponse, capEchoMessage, capAccountTag,
-                     capStandardReplies,
+                     capStandardReplies, capTls,
+                     capSolanumIdentifyMsg, capSolanumOper, capSolanumRealhost,
                      capDraftChathistory, capDraftMessageRedaction, capDraftChannelRename,
                      capDraftReadMarker, capDraftMultiline,
                      capMonitor, capDraftPreAway, capDraftNoImplicitNames,
@@ -473,24 +475,42 @@ proc processMessage(client: IrcClient, msg: IrcMessage): CpsVoidFuture {.cps.} =
     # IRCv3 CAP negotiation
     case event.capSubcommand
     of "LS":
-      # Server sent available caps. Find intersection with requested caps.
-      let available = if event.capParams.len > 0: event.capParams[0].split(' ') else: @[]
-      var toRequest: seq[string] = @[]
-      for cap in client.config.requestedCaps:
-        for avail in available:
-          # Handle caps with values like "sasl=PLAIN,EXTERNAL"
-          let capName = if avail.contains('='): avail.split('=')[0] else: avail
-          if capName == cap:
-            toRequest.add(cap)
-            # Track SASL mechanisms advertised by server
-            if capName == "sasl" and avail.contains('='):
-              client.serverSaslMechs = avail.split('=')[1].split(',')
-            break
-      if toRequest.len > 0:
-        await client.sendRaw(formatIrcMessage("CAP", "REQ", toRequest.join(" ")))
+      # CAP LS 302 multiline support:
+      # :server CAP nick LS * :cap1 cap2   (more coming — "*" is capParams[0])
+      # :server CAP nick LS :cap3 cap4     (final — no "*")
+      let isMultiline = event.capParams.len >= 2 and event.capParams[0] == "*"
+      let capListStr = if isMultiline: event.capParams[1]
+                       elif event.capParams.len > 0: event.capParams[0]
+                       else: ""
+      let lineCaps = capListStr.split(' ')
+      for c in lineCaps:
+        if c.len > 0:
+          client.pendingCapLs.add(c)
+
+      if isMultiline:
+        # More LS lines coming — wait for the final one
+        discard
       else:
-        client.capNegotiating = false
-        await client.sendRaw(formatIrcMessage("CAP", "END"))
+        # Final LS line — process all accumulated caps
+        let available = client.pendingCapLs
+        client.pendingCapLs = @[]
+
+        var toRequest: seq[string] = @[]
+        for cap in client.config.requestedCaps:
+          for avail in available:
+            # Handle caps with values like "sasl=PLAIN,EXTERNAL"
+            let capName = if avail.contains('='): avail.split('=')[0] else: avail
+            if capName == cap:
+              toRequest.add(cap)
+              # Track SASL mechanisms advertised by server
+              if capName == "sasl" and avail.contains('='):
+                client.serverSaslMechs = avail.split('=')[1].split(',')
+              break
+        if toRequest.len > 0:
+          await client.sendRaw(formatIrcMessage("CAP", "REQ", toRequest.join(" ")))
+        else:
+          client.capNegotiating = false
+          await client.sendRaw(formatIrcMessage("CAP", "END"))
     of "ACK":
       let acked = if event.capParams.len > 0: event.capParams[0].split(' ') else: @[]
       for cap in acked:
@@ -524,7 +544,20 @@ proc processMessage(client: IrcClient, msg: IrcMessage): CpsVoidFuture {.cps.} =
       client.capNegotiating = false
       await client.sendRaw(formatIrcMessage("CAP", "END"))
     of "NEW":
-      # Server offers new caps (cap-notify)
+      # Server offers new caps (cap-notify) — request any we want
+      let newCaps = if event.capParams.len > 0: event.capParams[0].split(' ') else: @[]
+      var toRequest: seq[string] = @[]
+      for cap in client.config.requestedCaps:
+        if cap notin client.enabledCaps:
+          for avail in newCaps:
+            let capName = if avail.contains('='): avail.split('=')[0] else: avail
+            if capName == cap:
+              toRequest.add(cap)
+              if capName == "sasl" and avail.contains('='):
+                client.serverSaslMechs = avail.split('=')[1].split(',')
+              break
+      if toRequest.len > 0:
+        await client.sendRaw(formatIrcMessage("CAP", "REQ", toRequest.join(" ")))
       await client.emit(event)
     of "DEL":
       # Server removed caps
