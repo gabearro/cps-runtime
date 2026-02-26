@@ -2708,9 +2708,9 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
     " lag:" & $lag & "ms "
   else: ""
   let lagSt = if cs.client.lagMs < 0: ms.theme.statusBg
-              elif cs.client.lagMs < 200: ms.theme.lagGood.bg(clCyan)
-              elif cs.client.lagMs < 500: ms.theme.lagWarn.bg(clCyan)
-              else: ms.theme.lagBad.bg(clCyan)
+              elif cs.client.lagMs < 200: style(clBlack, clCyan)
+              elif cs.client.lagMs < 500: style(clBlack, clCyan).bold()
+              else: style(clRed, clCyan).bold()
 
   # Away indicator
   let awayStr = if cs.isAway: " [AWAY] " else: ""
@@ -3177,10 +3177,15 @@ proc handleSetupInput(ms: MasterState, evt: InputEvent): bool =
     if ms.config.profile.realname.len == 0:
       ms.config.profile.realname = nick
     let serverName = ms.setupFields[sfServerName].text.strip()
-    let port = try: parseInt(ms.setupFields[sfPort].text.strip()) except: 6667
+    var port = try: parseInt(ms.setupFields[sfPort].text.strip()) except: 6667
     let channels = ms.setupFields[sfChannels].text.strip().split(',').filterIt(it.strip().len > 0)
     let tlsText = ms.setupFields[sfTls].text.strip().toLowerAscii
     let useTls = tlsText in ["yes", "true", "1", "y"]
+    # Auto-adjust port when TLS is enabled but port is still the plaintext default
+    if useTls and port == 6667:
+      port = 6697
+    elif not useTls and port == 6697:
+      port = 6667
     let server = ServerEntry(
       name: if serverName.len > 0: serverName else: host,
       host: host,
@@ -3206,10 +3211,15 @@ proc buildServerFromFields(ms: MasterState): ServerEntry =
   ## Build a ServerEntry from the add/edit form fields.
   let name = ms.addFields[0].text.strip()
   let host = ms.addFields[1].text.strip()
-  let port = try: parseInt(ms.addFields[2].text.strip()) except: 6667
+  var port = try: parseInt(ms.addFields[2].text.strip()) except: 6667
   let channels = ms.addFields[3].text.strip().split(',').filterIt(it.strip().len > 0)
   let tlsText = ms.addFields[5].text.strip().toLowerAscii
   let useTls = tlsText in ["yes", "true", "1", "y"]
+  # Auto-adjust port when TLS is enabled but port is still the plaintext default
+  if useTls and port == 6667:
+    port = 6697
+  elif not useTls and port == 6697:
+    port = 6667
   ServerEntry(
     name: if name.len > 0: name else: host,
     host: host,
