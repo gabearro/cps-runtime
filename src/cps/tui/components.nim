@@ -805,22 +805,60 @@ proc notifIcon(level: NotificationLevel): string =
   of nlWarning: "!"
   of nlError: "x"
 
-proc toWidget*(na: NotificationArea): Widget =
+proc toWidget*(na: NotificationArea, maxWidth: int = 50): Widget =
+  ## Render notifications as a floating bordered box.
+  ## Returns a custom widget that draws itself at the top-right of its rect.
   let area = na
   let visible = min(area.maxVisible, area.notifications.len)
   if visible == 0:
     return spacer(0).withHeight(fixed(0))
 
-  var children: seq[Widget] = @[]
+  # Pre-compute notification lines and max content width
   let startIdx = max(0, area.notifications.len - visible)
+  var lines: seq[(string, Style)] = @[]
+  var contentW = 0
   for i in startIdx ..< area.notifications.len:
     let n = area.notifications[i]
-    children.add(
-      text(" " & notifIcon(n.level) & " " & n.message & " ", notifStyle(n.level))
-        .withHeight(fixed(1))
-    )
-  border(vbox(children), bsRounded, st = style(clBrightBlack, clBlack))
-    .withStyle(style(clDefault, clBlack))
+    let line = " " & notifIcon(n.level) & " " & n.message & " "
+    lines.add((line, notifStyle(n.level)))
+    contentW = max(contentW, line.len)
+  contentW = min(contentW, maxWidth)
+  let boxW = contentW + 2  # +2 for left/right border
+  let boxH = visible + 2   # +2 for top/bottom border
+  let bc = borderChars(bsRounded)
+  let borderSt = style(clBrightBlack, clBlack)
+  let bgSt = style(clDefault, clBlack)
+  let linesCapture = lines
+
+  custom(proc(buf: var CellBuffer, rect: Rect) =
+    # Position: top-right of the given rect, flush to right edge
+    let bx = rect.x + rect.w - boxW
+    let by = rect.y
+
+    # Fill background
+    buf.fill(bx, by, boxW, boxH, " ", bgSt)
+
+    # Draw border
+    buf.setCell(bx, by, bc.topLeft, borderSt)
+    for x in bx + 1 ..< bx + boxW - 1:
+      buf.setCell(x, by, bc.horizontal, borderSt)
+    buf.setCell(bx + boxW - 1, by, bc.topRight, borderSt)
+
+    buf.setCell(bx, by + boxH - 1, bc.bottomLeft, borderSt)
+    for x in bx + 1 ..< bx + boxW - 1:
+      buf.setCell(x, by + boxH - 1, bc.horizontal, borderSt)
+    buf.setCell(bx + boxW - 1, by + boxH - 1, bc.bottomRight, borderSt)
+
+    for y in by + 1 ..< by + boxH - 1:
+      buf.setCell(bx, y, bc.vertical, borderSt)
+      buf.setCell(bx + boxW - 1, y, bc.vertical, borderSt)
+
+    # Draw notification lines inside the border
+    for i, entry in linesCapture:
+      let (line, st) = entry
+      let displayLine = if line.len > contentW: line[0 ..< contentW] else: line
+      buf.writeStrClip(bx + 1, by + 1 + i, contentW, displayLine, st)
+  )
 
 # ============================================================
 # Tree View

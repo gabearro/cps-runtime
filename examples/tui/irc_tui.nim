@@ -977,12 +977,31 @@ proc addAction(cs: IrcChatState, channelName, nick, text: string, highlights: se
 proc addSystem(cs: IrcChatState, channelName, text: string) =
   let idx = cs.getOrCreateChannel(channelName)
   let ts = now().format("HH:mm")
-  cs.channels[idx].messages.addLine("*** " & text, activeTheme.system, ts)
+  let prefix = "*** "
+  var spans = @[StyledSpan(text: prefix, style: activeTheme.system)]
+  for sp in parseIrcFormatting(text):
+    # Merge system style as base, let mIRC colors override
+    var merged = activeTheme.system
+    if sp.style.fg.kind != ckNone: merged.fg = sp.style.fg
+    if sp.style.bg.kind != ckNone: merged.bg = sp.style.bg
+    merged.attrs = merged.attrs + sp.style.attrs
+    spans.add(StyledSpan(text: sp.text, style: merged))
+  let stripped = prefix & stripIrcFormatting(text)
+  cs.channels[idx].messages.addLine(stripped, activeTheme.system, ts, spans)
 
 proc addError(cs: IrcChatState, channelName, text: string) =
   let idx = cs.getOrCreateChannel(channelName)
   let ts = now().format("HH:mm")
-  cs.channels[idx].messages.addLine("!!! " & text, activeTheme.error, ts)
+  let prefix = "!!! "
+  var spans = @[StyledSpan(text: prefix, style: activeTheme.error)]
+  for sp in parseIrcFormatting(text):
+    var merged = activeTheme.error
+    if sp.style.fg.kind != ckNone: merged.fg = sp.style.fg
+    if sp.style.bg.kind != ckNone: merged.bg = sp.style.bg
+    merged.attrs = merged.attrs + sp.style.attrs
+    spans.add(StyledSpan(text: sp.text, style: merged))
+  let stripped = prefix & stripIrcFormatting(text)
+  cs.channels[idx].messages.addLine(stripped, activeTheme.error, ts, spans)
 
 proc addServerMsg(cs: IrcChatState, text: string) =
   cs.addSystem(ServerChannel, text)
@@ -2525,7 +2544,7 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
     of icsConnecting: " [connecting...] "
     of icsRegistering: " [registering...] "
     of icsConnected: ""
-  let topicStr = if ch.topic.len > 0: " " & ch.topic & " " else: ""
+  let topicStr = if ch.topic.len > 0: " " & stripIrcFormatting(ch.topic) & " " else: ""
   let userStr = if ch.users.len > 0: " " & $ch.users.len & " users " else: ""
 
   # Lag indicator
@@ -2915,20 +2934,14 @@ proc renderMaster(ms: MasterState, width, height: int): Widget =
     of asChat: ms.renderChat(width, height)
 
   # Overlay notifications on top of the main content (top-right corner)
-  let notifCount = min(ms.notifications.maxVisible, ms.notifications.notifications.len)
-  let notifWidget = ms.notifications.toWidget()
+  let notifCount = ms.notifications.notifications.len
   let mainRef = baseMain
-  let notifRef = notifWidget
-  let notifH = notifCount + 2  # +2 for border top/bottom
   let main = if notifCount > 0:
+    let notifRef = ms.notifications.toWidget()
     var overlay = custom(proc(buf: var CellBuffer, rect: Rect) =
       renderWidget(buf, mainRef, rect)
-      # Render notifications in the top-right corner
-      let nw = min(52, rect.w div 2)  # Max width including border
-      if nw > 0:
-        let nx = rect.x + rect.w - nw - 1
-        let ny = rect.y + 1
-        renderWidget(buf, notifRef, Rect(x: nx, y: ny, w: nw, h: notifH))
+      # Notification widget draws itself flush-right within the given rect
+      renderWidget(buf, notifRef, Rect(x: rect.x, y: rect.y + 1, w: rect.w, h: rect.h - 1))
     )
     overlay.customChildren = @[mainRef]
     overlay.customChildRects = @[Rect(x: 0, y: 0, w: width, h: height)]
