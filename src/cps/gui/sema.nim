@@ -989,6 +989,9 @@ proc semanticCheck*(
     if component.name in componentNames:
       result.diagnostics.add mkDiagnostic(component.range, gsError, "duplicate component '" & component.name & "'", "GUI_SEMA_COMPONENT_DUP")
     componentNames.incl component.name
+  # Include view names extracted from escape Swift files
+  for viewName in program.escapeViewNames:
+    componentNames.incl viewName
 
   var actionByName: Table[string, GuiActionDecl]
   var actionNames: HashSet[string]

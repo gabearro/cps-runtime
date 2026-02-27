@@ -1,0 +1,75 @@
+component UserRow(user: IrcUser, isDark: Bool) {
+  let textPrimaryColor = isDark ? Color(red: 0.89, green: 0.92, blue: 0.98) : token.color.textPrimary
+  let textMutedColor = isDark ? Color(red: 0.67, green: 0.72, blue: 0.80) : token.color.textMuted
+
+  HStack(spacing: 4) {
+    if user.prefix != "" {
+      Text(user.prefix)
+        .font(.caption)
+        .bold()
+        .foregroundColor(
+          user.prefix == "@" || user.prefix == "~" || user.prefix == "&"
+            ? token.color.opPrefix
+            : user.prefix == "+"
+              ? token.color.voicePrefix
+              : token.color.halfopPrefix
+        )
+        .frame(width: 14, alignment: Alignment.trailing)
+    } else {
+      Spacer()
+        .frame(width: 14)
+    }
+
+    Text(user.nick)
+      .font(.callout)
+      .foregroundColor(user.isAway ? textMutedColor : textPrimaryColor)
+      .opacity(user.isAway ? 0.6 : 1.0)
+      .lineLimit(1)
+
+    Spacer()
+  }
+  .padding(vertical: 3, horizontal: 8)
+}
+
+component UserListSidebar(isDark: Bool) {
+  let textSubtleColor = isDark ? Color(red: 0.52, green: 0.58, blue: 0.67) : token.color.textSubtle
+  let surfaceColor = isDark ? Color(red: 0.11, green: 0.14, blue: 0.20) : token.color.surface
+
+  VStack(spacing: 0) {
+    HStack {
+      Text("USERS")
+        .font(.caption2)
+        .foregroundColor(textSubtleColor)
+
+      Spacer()
+
+      Text("\(currentUserCount)")
+        .font(.caption2)
+        .foregroundColor(textSubtleColor)
+        .monospacedDigit()
+    }
+    .padding(vertical: 8, horizontal: 12)
+
+    Divider()
+      .padding(horizontal: 8)
+
+    if users.count == 0 {
+      Text("No users")
+        .font(.caption)
+        .foregroundColor(textSubtleColor)
+        .padding(12)
+    } else {
+      List {
+        ForEach(items: users, item: user) {
+          UserRow(user: user, isDark: isDark)
+            .listRowSeparator(Visibility.hidden)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            .listRowBackground(Color.clear)
+        }
+      }
+      .listStyle(PlainListStyle())
+      .scrollContentBackground(Visibility.hidden)
+    }
+  }
+  .background(surfaceColor)
+}

@@ -1,0 +1,171 @@
+component MessageRow(message: IrcMessage, isDark: Bool) {
+  let textSubtleColor = isDark ? Color(red: 0.52, green: 0.58, blue: 0.67) : token.color.textSubtle
+  let mentionBgColor = isDark ? Color(red: 0.25, green: 0.20, blue: 0.08, opacity: 0.5) : Color(red: 1.0, green: 0.97, blue: 0.88)
+
+  HStack(alignment: VerticalAlignment.top, spacing: 8) {
+    Text(message.timestamp)
+      .font(.caption)
+      .foregroundColor(textSubtleColor)
+      .monospacedDigit()
+      .frame(width: 42, alignment: Alignment.trailing)
+
+    if message.kind == "system" {
+      Text("--")
+        .font(.caption)
+        .foregroundColor(textSubtleColor)
+
+      RichMessageText(spansJson: message.spans)
+        .font(.callout)
+        .opacity(0.7)
+    } else if message.kind == "error" {
+      Text("!!")
+        .font(.caption)
+        .foregroundColor(token.color.danger)
+        .bold()
+
+      RichMessageText(spansJson: message.spans)
+        .font(.callout)
+    } else if message.kind == "action" {
+      Text("*")
+        .font(.callout)
+        .foregroundColor(textSubtleColor)
+
+      HStack(spacing: 4) {
+        Text(message.nick)
+          .font(.callout)
+          .bold()
+          .foregroundColor(NickColor.forNick(message.nick))
+
+        RichMessageText(spansJson: message.spans)
+          .font(.callout)
+          .italic()
+      }
+    } else {
+      Text(message.nick)
+        .font(.callout)
+        .bold()
+        .foregroundColor(message.isOwn ? token.color.accent : NickColor.forNick(message.nick))
+        .frame(minWidth: 60, alignment: Alignment.trailing)
+        .lineLimit(1)
+
+      RichMessageText(spansJson: message.spans)
+        .font(.callout)
+    }
+
+    Spacer()
+  }
+  .padding(vertical: 2, horizontal: 8)
+  .background(message.isMention ? mentionBgColor : Color.clear)
+}
+
+component ChatArea(isDark: Bool) {
+  let textPrimaryColor = isDark ? Color(red: 0.89, green: 0.92, blue: 0.98) : token.color.textPrimary
+  let textMutedColor = isDark ? Color(red: 0.67, green: 0.72, blue: 0.80) : token.color.textMuted
+  let textSubtleColor = isDark ? Color(red: 0.52, green: 0.58, blue: 0.67) : token.color.textSubtle
+  let surfaceColor = isDark ? Color(red: 0.11, green: 0.14, blue: 0.20) : token.color.surface
+  let borderColor = isDark ? Color(red: 0.23, green: 0.29, blue: 0.38) : token.color.border
+  let pageBackgroundColor = isDark
+    ? Color(red: 0.06, green: 0.08, blue: 0.12)
+    : Color(red: 0.98, green: 0.98, blue: 0.99)
+
+  VStack(spacing: 0) {
+    if activeChannelName != "" {
+      HStack(spacing: 8) {
+        Text(activeChannelName)
+          .font(.headline)
+          .foregroundColor(textPrimaryColor)
+
+        if currentTopic != "" {
+          Divider()
+            .frame(height: 16)
+
+          Text(currentTopic)
+            .font(.caption)
+            .foregroundColor(textMutedColor)
+            .lineLimit(1)
+        }
+
+        Spacer()
+
+        Button(action: ToggleUserList) {
+          HStack(spacing: 4) {
+            Image(systemName: "person.2")
+            Text("\(currentUserCount)")
+              .monospacedDigit()
+          }
+        }
+        .buttonStyle(BorderlessButtonStyle())
+        .font(.caption)
+        .foregroundColor(textMutedColor)
+      }
+      .padding(vertical: 8, horizontal: 12)
+      .background(surfaceColor)
+
+      Divider()
+    }
+
+    if activeChannelName == "" {
+      ContentUnavailableView(
+        "No channel selected",
+        systemImage: "bubble.left.and.bubble.right",
+        description: "Connect to a server and join a channel to start chatting"
+      )
+      .frame(maxWidth: Double.infinity, maxHeight: Double.infinity)
+    } else {
+      List {
+        ForEach(items: messages, item: msg) {
+          MessageRow(message: msg, isDark: isDark)
+            .listRowSeparator(Visibility.hidden)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            .listRowBackground(Color.clear)
+            .id(msg.id)
+        }
+      }
+      .listStyle(PlainListStyle())
+      .scrollContentBackground(Visibility.hidden)
+      .defaultScrollAnchor(UnitPoint.bottom)
+
+      if typingText != "" {
+        HStack {
+          Text(typingText)
+            .font(.caption)
+            .foregroundColor(textSubtleColor)
+            .italic()
+            .padding(horizontal: 12)
+
+          Spacer()
+        }
+        .padding(vertical: 2)
+      }
+
+      Divider()
+
+      HStack(spacing: 8) {
+        TextField("Type a message...", text: inputText)
+          .textFieldStyle(PlainTextFieldStyle())
+          .font(.body)
+          .onSubmit(perform: SendMessage)
+
+        Button(action: SendMessage) {
+          Image(systemName: "paperplane.fill")
+        }
+        .buttonStyle(BorderlessButtonStyle())
+        .foregroundColor(token.color.accent)
+        .disabled(inputText == "")
+        .keyboardShortcut(KeyEquivalent.return, modifiers: EventModifiers.command)
+      }
+      .padding(vertical: 10, horizontal: 12)
+      .background(surfaceColor)
+    }
+  }
+  .frame(maxWidth: Double.infinity, maxHeight: Double.infinity)
+  .background(pageBackgroundColor)
+  .toolbar {
+    ToolbarItem(placement: ToolbarItemPlacement.primaryAction) {
+      Button(action: ShowConnectForm) {
+        Label("New Connection", systemImage: "plus")
+      }
+      .keyboardShortcut("n", modifiers: EventModifiers.command)
+    }
+  }
+}

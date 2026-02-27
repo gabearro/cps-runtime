@@ -289,6 +289,7 @@ type
     components*: seq[GuiComponentDecl]
     viewModifiers*: seq[GuiViewModifierDecl]
     escapes*: seq[GuiEscapeDecl]
+    escapeViewNames*: seq[string]  # View struct names extracted from escape Swift files
     bridge*: GuiBridgeDecl
     window*: GuiWindowDecl
     settingsComponent*: string  # optional: component name for macOS Settings scene

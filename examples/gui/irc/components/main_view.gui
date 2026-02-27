@@ -1,0 +1,20 @@
+component IrcApp {
+  @Environment(.colorScheme) colorScheme: ColorScheme
+  let isDark = colorScheme == ColorScheme.dark
+
+  NavigationSplitView {
+    ServerSidebar(isDark: isDark)
+      .frame(minWidth: 200, idealWidth: 220, maxWidth: 280)
+    ChatArea(isDark: isDark)
+    if showUserList {
+      UserListSidebar(isDark: isDark)
+        .frame(minWidth: 140, idealWidth: 180, maxWidth: 240)
+    }
+  }
+  .navigationSplitViewStyle(BalancedNavigationSplitViewStyle())
+  .sheet(isPresented: showConnectForm) {
+    ConnectForm(isDark: isDark)
+  }
+  .onAppear(perform: LoadConfig)
+  .onAppear(perform: StartPoll)
+}

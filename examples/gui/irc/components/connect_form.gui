@@ -1,0 +1,66 @@
+component ConnectForm(isDark: Bool) {
+  let textPrimaryColor = isDark ? Color(red: 0.89, green: 0.92, blue: 0.98) : token.color.textPrimary
+  let textMutedColor = isDark ? Color(red: 0.67, green: 0.72, blue: 0.80) : token.color.textMuted
+
+  VStack(spacing: 16) {
+    HStack {
+      Text("Connect to Server")
+        .font(.title2)
+        .bold()
+        .foregroundColor(textPrimaryColor)
+
+      Spacer()
+
+      Button(action: HideConnectForm) {
+        Image(systemName: "xmark.circle.fill")
+      }
+      .buttonStyle(BorderlessButtonStyle())
+      .foregroundColor(textMutedColor)
+    }
+
+    Form {
+      Section("Server") {
+        TextField("Hostname", text: connectHost)
+          .textFieldStyle(RoundedBorderTextFieldStyle())
+
+        TextField("Port", text: connectPort)
+          .textFieldStyle(RoundedBorderTextFieldStyle())
+
+        Toggle("Use TLS", isOn: connectUseTls)
+      }
+
+      Section("Identity") {
+        TextField("Nickname", text: connectNick)
+          .textFieldStyle(RoundedBorderTextFieldStyle())
+
+        SecureField("Server Password (optional)", text: connectPassword)
+          .textFieldStyle(RoundedBorderTextFieldStyle())
+      }
+
+      Section("SASL Authentication (optional)") {
+        TextField("SASL Username", text: connectSaslUser)
+          .textFieldStyle(RoundedBorderTextFieldStyle())
+
+        SecureField("SASL Password", text: connectSaslPass)
+          .textFieldStyle(RoundedBorderTextFieldStyle())
+      }
+    }
+    .formStyle(GroupedFormStyle())
+
+    HStack(spacing: 12) {
+      Spacer()
+
+      Button("Cancel", action: HideConnectForm)
+        .buttonStyle(BorderedButtonStyle())
+        .controlSize(.large)
+
+      Button("Connect", action: Connect)
+        .buttonStyle(BorderedProminentButtonStyle())
+        .controlSize(.large)
+        .keyboardShortcut(KeyEquivalent.return, modifiers: EventModifiers.command)
+    }
+    .padding(top: 8)
+  }
+  .padding(24)
+  .frame(minWidth: 420, idealWidth: 480, minHeight: 400)
+}

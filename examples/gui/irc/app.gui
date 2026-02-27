@@ -1,0 +1,176 @@
+include "components/*.gui"
+
+app CpsIrc {
+  window {
+    title: "CPS IRC"
+    width: 1200
+    height: 800
+    minWidth: 900
+    minHeight: 600
+    maxWidth: 2400
+    maxHeight: 1600
+    showTitleBar: true
+    closeAppOnLastWindowClose: true
+  }
+
+  tokens {
+    color.accent = "#3b82f6"
+    color.success = "#22c55e"
+    color.warning = "#f59e0b"
+    color.danger = "#ef4444"
+
+    color.textPrimary = "#1e293b"
+    color.textMuted = "#64748b"
+    color.textSubtle = "#94a3b8"
+
+    color.surface = "#ffffff"
+    color.border = "#e2e8f0"
+    color.badgeBg = "#f1f5f9"
+    color.rowSelected = "#eff6ff"
+    color.mentionBg = "#fef3c7"
+
+    color.opPrefix = "#dc2626"
+    color.voicePrefix = "#16a34a"
+    color.halfopPrefix = "#2563eb"
+
+    spacing.xs = 4
+    spacing.sm = 8
+    spacing.md = 12
+    spacing.lg = 20
+  }
+
+  model IrcServer {
+    id: Int
+    name: String
+    host: String
+    port: Int
+    nick: String
+    useTls: Bool
+    connected: Bool
+    connecting: Bool
+    lagMs: Int
+    isAway: Bool
+  }
+
+  model IrcChannel {
+    id: Int
+    serverId: Int
+    name: String
+    topic: String
+    unread: Int
+    mentions: Int
+    userCount: Int
+  }
+
+  model IrcMessage {
+    id: Int
+    kind: String
+    nick: String
+    text: String
+    timestamp: String
+    isMention: Bool
+    isOwn: Bool
+    spans: String
+  }
+
+  model IrcUser {
+    nick: String
+    prefix: String
+    isAway: Bool
+  }
+
+  state {
+    servers: IrcServer[] = []
+    activeServerId: Int = -1
+
+    channels: IrcChannel[] = []
+    activeChannelName: String = ""
+
+    messages: IrcMessage[] = []
+
+    users: IrcUser[] = []
+
+    inputText: String = ""
+
+    showConnectForm: Bool = false
+    connectHost: String = ""
+    connectPort: String = "6667"
+    connectNick: String = ""
+    connectUseTls: Bool = false
+    connectPassword: String = ""
+    connectSaslUser: String = ""
+    connectSaslPass: String = ""
+
+    showUserList: Bool = true
+
+    completionSuggestions: String[] = []
+    completionActive: Bool = false
+    completionIndex: Int = -1
+
+    statusText: String = "Disconnected"
+    pollActive: Bool = false
+
+    currentTopic: String = ""
+    currentUserCount: Int = 0
+
+    typingText: String = ""
+    lastMessageId: Int = 0
+
+    computed hasActiveServer: Bool = activeServerId >= 0
+    computed hasActiveChannel: Bool = activeChannelName != ""
+  }
+
+  action Poll owner nim
+  action StartPoll owner both
+  action Connect owner nim
+  action Disconnect owner nim
+  action SwitchServer(serverId: Int) owner both
+  action Reconnect owner nim
+  action SwitchChannel(channelName: String) owner both
+  action JoinChannel owner nim
+  action PartChannel owner nim
+  action CloseChannel owner nim
+  action SendMessage owner nim
+  action UpdateInput owner both
+  action ToggleUserList owner both
+  action ShowConnectForm owner both
+  action HideConnectForm owner both
+  action TabComplete owner nim
+  action AcceptCompletion owner nim
+  action SaveServer owner nim
+  action RemoveServer(serverId: Int) owner nim
+  action LoadConfig owner nim
+
+  reducer {
+    on StartPoll {
+      set pollActive = true
+      emit timer.interval(id: "poll", ms: 100, action: Poll)
+    }
+
+    on SwitchServer(serverId) {
+      set activeServerId = serverId
+    }
+
+    on SwitchChannel(channelName) {
+      set activeChannelName = channelName
+    }
+
+    on ToggleUserList {
+      set showUserList = !showUserList
+    }
+
+    on ShowConnectForm {
+      set showConnectForm = true
+    }
+
+    on HideConnectForm {
+      set showConnectForm = false
+    }
+  }
+
+  escape swiftFile "swift/RichMessageText.swift"
+
+  bridge {
+    nimEntry: "bridge.nim"
+  }
+}

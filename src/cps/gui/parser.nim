@@ -1438,6 +1438,12 @@ proc parseUiNode(p: var ParserState): GuiUiNode =
   if p.atIdent("if"):
     return p.parseConditionalNode()
 
+  # Guard: if we don't see an identifier, skip the token to avoid infinite loops
+  if not p.atKind(gtkIdentifier):
+    let tok = p.advance()
+    p.addDiagTok(tok, "expected view name (identifier), got " & tokenKindText(tok.kind), "GUI_PARSE_VIEW")
+    return GuiUiNode(name: "__error__", range: tok.range)
+
   let headPath = p.parseIdentifierPath()
   let nodeName = headPath.path.join(".")
   var args: seq[GuiExpr] = @[]
@@ -1582,6 +1588,9 @@ proc parseComponentDecl(p: var ParserState): GuiComponentDecl =
           of "AccessibilityFocusState": gpwAccessibilityFocusState
           else: gpwState
         discard p.advance()  # consume wrapper name
+        # Optional 'var' or 'let' keyword (Swift-style: @State var x: T)
+        if p.atIdent("var") or p.atIdent("let"):
+          discard p.advance()
         let varName = p.expectIdentifier("for @" & wrapperName & " variable name")
         discard p.expectKind(gtkColon, "after variable name")
         let typ = p.parseTypeRef("for variable type")
@@ -2027,6 +2036,38 @@ proc visitGuiFile(
     for resolved in paths:
       visitGuiFile(resolved, prog, diagnostics, visited)
 
+proc extractSwiftViewNames(swiftContent: string): seq[string] =
+  ## Extract struct names conforming to View from a Swift file.
+  ## Matches patterns like: struct FooView: View {
+  ##   or: struct FooView : View {
+  ##   or: struct FooView: SomeProtocol, View {
+  for line in swiftContent.splitLines():
+    let stripped = line.strip()
+    if not stripped.startsWith("struct "):
+      continue
+    let afterStruct = stripped[7..^1].strip()
+    let colonIdx = afterStruct.find(':')
+    if colonIdx < 0:
+      continue
+    let structName = afterStruct[0 ..< colonIdx].strip()
+    if structName.len == 0 or structName[0] < 'A' or structName[0] > 'Z':
+      continue
+    # Check if "View" appears in the conformance list
+    let conformances = afterStruct[colonIdx + 1 .. ^1].strip()
+    for part in conformances.split(','):
+      let trimmed = part.strip()
+      # Strip everything after { or where
+      var proto = trimmed
+      let braceIdx = proto.find('{')
+      if braceIdx >= 0:
+        proto = proto[0 ..< braceIdx].strip()
+      let whereIdx = proto.find("where")
+      if whereIdx >= 0:
+        proto = proto[0 ..< whereIdx].strip()
+      if proto == "View":
+        result.add structName
+        break
+
 proc parseGuiProgram*(entryFile: string): tuple[program: GuiProgram, diagnostics: seq[GuiDiagnostic]] =
   let normalizedEntry = normalizedPath(entryFile)
   var prog = GuiProgram(entryFile: normalizedEntry)
@@ -2034,4 +2075,19 @@ proc parseGuiProgram*(entryFile: string): tuple[program: GuiProgram, diagnostics
   var visited: HashSet[string]
 
   visitGuiFile(normalizedEntry, prog, diagnostics, visited)
+
+  # Extract view names from escape Swift files
+  let entryDir = normalizedEntry.parentDir()
+  for esc in prog.escapes:
+    if esc.swiftFile.len > 0:
+      let swiftPath = if esc.swiftFile.isAbsolute: esc.swiftFile
+                      else: entryDir / esc.swiftFile
+      if swiftPath.fileExists:
+        try:
+          let content = readFile(swiftPath)
+          for viewName in extractSwiftViewNames(content):
+            prog.escapeViewNames.add viewName
+        except CatchableError:
+          discard
+
   result = (prog, diagnostics)

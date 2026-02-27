@@ -1,0 +1,18 @@
+component StatusBar(isDark: Bool) {
+  let textSubtleColor = isDark ? Color(red: 0.52, green: 0.58, blue: 0.67) : token.color.textSubtle
+  let badgeBgColor = isDark
+    ? Color(red: 0.10, green: 0.12, blue: 0.18)
+    : token.color.badgeBg
+
+  HStack {
+    Text(statusText)
+      .font(.caption)
+      .foregroundColor(textSubtleColor)
+      .lineLimit(1)
+
+    Spacer()
+  }
+  .padding(vertical: 6, horizontal: 12)
+  .frame(maxWidth: Double.infinity, alignment: Alignment.leading)
+  .background(badgeBgColor)
+}

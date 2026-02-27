@@ -1536,6 +1536,15 @@ proc processIrcEventsForChat(ms: MasterState, cs: IrcChatState): bool =
         cs.myNick = cs.client.currentNick
         cs.addServerMsg("Connected as " & cs.myNick)
         ms.notifications.notify("Connected to " & cs.client.config.host, nlSuccess)
+        # On reconnect, re-join all open IRC channels that aren't in autoJoinChannels
+        # (autoJoinChannels are already re-joined by the client on 001).
+        # Also clear stale user lists — they'll be repopulated by NAMES replies.
+        for i in 0 ..< cs.channels.len:
+          let chName = cs.channels[i].name
+          if chName != ServerChannel and chName.isChannel():
+            cs.channels[i].users = @[]
+            if chName notin cs.client.config.autoJoinChannels:
+              discard cs.client.joinChannel(chName)
       of iekDisconnected:
         cs.addServerMsg("Disconnected: " & evt.reason)
         ms.notifications.notify("Disconnected", nlWarning)

@@ -1301,10 +1301,8 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
   outLines.add "struct GUIState: Codable {"
 
   var hasComputed = false
-  # Build a temporary context for computed property expressions
+  # Use empty context for computed properties — they live inside GUIState, no state. prefix needed
   var stateCtx = EmitContext()
-  for field in ir.stateFields:
-    stateCtx.stateNames.incl swiftIdent(field.name)
 
   for field in ir.stateFields:
     let fName = swiftIdent(field.name)
