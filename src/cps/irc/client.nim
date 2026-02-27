@@ -21,7 +21,8 @@ import ../concurrency/channels
 import ../tls/client as tlsclient
 import ./protocol
 import ./sasl
-import std/[times, base64, strutils, tables, options, sequtils]
+import std/[times, base64, strutils, tables, options, sequtils, nativesockets]
+from std/posix import shutdown, SHUT_RDWR
 
 export protocol
 
@@ -74,6 +75,7 @@ type
     capNegotiating: bool        ## True during CAP negotiation
     saslState: int              ## 0=none, 1=waitingAck, 2=waitingAuth, 3=waitingResult
     lastPingSent*: float        ## epochTime when last PING sent
+    lastDataReceived*: float    ## epochTime when last data received from server
     lagMs*: int                 ## Current lag in milliseconds (-1 = unknown)
     isAway*: bool               ## True if marked away
     isupport*: ISupport         ## Parsed ISUPPORT (005) parameters
@@ -669,14 +671,76 @@ proc processMessage(client: IrcClient, msg: IrcMessage): CpsVoidFuture {.cps.} =
 
 proc readLoop(client: IrcClient): CpsVoidFuture {.cps.} =
   ## Main read loop: reads lines from the server, parses and processes them.
-  while client.stream != nil and not client.stream.closed:
-    let line = await client.reader.readLine("\r\n")
-    if line.len == 0 and client.reader.atEof:
-      break
-    if line.len > 0:
-      let msg = parseIrcMessage(line)
-      if msg.command.len > 0:
-        await client.processMessage(msg)
+  ## Handles stream errors gracefully (e.g., when keepAliveLoop force-closes
+  ## the stream due to ping timeout).
+  var streamError = false
+  while not streamError and client.stream != nil and not client.stream.closed:
+    try:
+      let line = await client.reader.readLine("\r\n")
+      if line.len == 0 and client.reader.atEof:
+        streamError = true
+      elif line.len > 0:
+        client.lastDataReceived = epochTime()
+        let msg = parseIrcMessage(line)
+        if msg.command.len > 0:
+          await client.processMessage(msg)
+    except CatchableError:
+      streamError = true  # Stream error (e.g., force-closed by keepAliveLoop)
+
+# ============================================================
+# Internal: keep-alive / ping timeout
+# ============================================================
+
+proc abortSocket(client: IrcClient) =
+  ## Shutdown the underlying socket to force pending reads to return EOF.
+  ## Unlike close(), shutdown() causes the selector to fire readable events
+  ## so that blocked reads in readLoop get an EOF/error immediately.
+  if client.stream == nil:
+    return
+  var fd: SocketHandle = osInvalidSocket
+  if client.stream of tlsclient.TlsStream:
+    fd = tlsclient.TlsStream(client.stream).tcpStream.fd
+  elif client.stream of ProxyStream:
+    let tcp = ProxyStream(client.stream).getUnderlyingTcpStream()
+    fd = tcp.fd
+  elif client.stream of TcpStream:
+    fd = TcpStream(client.stream).fd
+  if fd != osInvalidSocket:
+    discard shutdown(fd, SHUT_RDWR)
+
+proc keepAliveLoop(client: IrcClient): CpsVoidFuture {.cps.} =
+  ## Periodically send PINGs and detect dead connections.
+  ## If no data is received within pingTimeoutMs, shutdown the socket
+  ## to trigger reconnection via readLoop exit.
+  let timeoutMs = client.config.pingTimeoutMs
+  let checkIntervalMs = max(timeoutMs div 3, 1000)
+  var done = false
+
+  while not done and client.stream != nil and not client.stream.closed:
+    await cpsSleep(checkIntervalMs)
+
+    if client.stream == nil or client.stream.closed:
+      done = true
+    elif client.state != icsConnected:
+      # Not yet registered, skip pinging
+      discard
+    else:
+      let now = epochTime()
+      let silentMs = int((now - client.lastDataReceived) * 1000)
+
+      if silentMs >= timeoutMs:
+        # No data for the full timeout period — connection is dead.
+        # Use shutdown() instead of close() so pending reads get EOF.
+        await client.emit(IrcEvent(kind: iekError,
+          errMsg: "Ping timeout (" & $(timeoutMs div 1000) & "s)"))
+        client.abortSocket()
+        done = true
+      elif silentMs >= checkIntervalMs:
+        # Server has been quiet — send a PING to probe
+        try:
+          await client.sendPing("keepalive")
+        except CatchableError:
+          done = true  # Send failed, stream is broken
 
 # ============================================================
 # Internal: establish connection
@@ -731,8 +795,18 @@ proc run*(client: IrcClient): CpsVoidFuture {.cps.} =
   while true:
     let connected = await client.connectToServer()
     if connected:
+      client.lastDataReceived = epochTime()
       await client.doRegister()
+
+      # Start keep-alive loop in background (runs concurrently via event loop).
+      # It sends periodic PINGs and force-closes the stream on timeout.
+      let keepAliveFut = keepAliveLoop(client)
+
       await client.readLoop()
+
+      # readLoop exited — cancel keep-alive (it will also exit on its own
+      # when it sees the stream is closed/nil, but cancel is immediate)
+      keepAliveFut.cancel()
 
       # Disconnected
       client.state = icsDisconnected

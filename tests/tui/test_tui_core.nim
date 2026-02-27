@@ -670,6 +670,134 @@ block testDslProperties:
   assert w.layout.gap == 2
   echo "PASS: dsl properties"
 
+block testDslIfElse:
+  let showFooter = true
+  let w = tui:
+    if showFooter:
+      text "Footer"
+    else:
+      text "Hidden"
+  assert w.kind == wkText
+  assert w.text == "Footer"
+  let showFooter2 = false
+  let w2 = tui:
+    if showFooter2:
+      text "Footer"
+    else:
+      text "Hidden"
+  assert w2.kind == wkText
+  assert w2.text == "Hidden"
+  echo "PASS: dsl if/else"
+
+block testDslIfNoElse:
+  let show = false
+  let w = tui:
+    if show:
+      text "Visible"
+  # Without else, should get spacer(0) fallback
+  assert w.kind == wkSpacer
+  echo "PASS: dsl if without else"
+
+block testDslElifChain:
+  let mode = 2
+  let w = tui:
+    if mode == 1:
+      text "One"
+    elif mode == 2:
+      text "Two"
+    elif mode == 3:
+      text "Three"
+    else:
+      text "Other"
+  assert w.kind == wkText
+  assert w.text == "Two"
+  echo "PASS: dsl elif chain"
+
+block testDslForLoop:
+  let names = @["Alice", "Bob", "Carol"]
+  let w = tui:
+    vbox:
+      for name in names:
+        text name
+  assert w.kind == wkContainer
+  assert w.children.len == 1  # The for-loop produces a containerFromSeq
+  let inner = w.children[0]
+  assert inner.kind == wkContainer
+  assert inner.children.len == 3
+  assert inner.children[0].text == "Alice"
+  assert inner.children[1].text == "Bob"
+  assert inner.children[2].text == "Carol"
+  echo "PASS: dsl for loop"
+
+block testDslForLoopEmpty:
+  let names: seq[string] = @[]
+  let w = tui:
+    for name in names:
+      text name
+  assert w.kind == wkContainer
+  assert w.children.len == 0
+  echo "PASS: dsl for loop empty"
+
+block testDslForWithNested:
+  let items = @[("key1", "val1"), ("key2", "val2")]
+  let w = tui:
+    vbox:
+      for (k, v) in items:
+        hbox:
+          label k
+          text v
+  assert w.kind == wkContainer
+  let inner = w.children[0]
+  assert inner.kind == wkContainer
+  assert inner.children.len == 2
+  assert inner.children[0].kind == wkContainer  # hbox
+  assert inner.children[0].layout.direction == dirHorizontal
+  echo "PASS: dsl for with nested"
+
+block testDslIfInsideFor:
+  let names = @["Alice", "Bob"]
+  let highlight = "Bob"
+  let w = tui:
+    vbox:
+      for name in names:
+        if name == highlight:
+          label name
+        else:
+          text name
+  assert w.kind == wkContainer
+  let inner = w.children[0]
+  assert inner.kind == wkContainer
+  assert inner.children.len == 2
+  # Alice -> text, Bob -> label (auto-sized)
+  assert inner.children[0].kind == wkText
+  assert inner.children[0].layout.width.kind == szFlex  # text has flex width
+  assert inner.children[1].kind == wkText
+  assert inner.children[1].layout.width.kind == szAuto   # label has auto width
+  echo "PASS: dsl if inside for"
+
+block testDslScrollView:
+  let child = text("scrollable content")
+  let w = tui:
+    scrollView child
+  assert w.kind == wkScrollView
+  assert w.scrollChild.kind == wkText
+  assert w.scrollChild.text == "scrollable content"
+  echo "PASS: dsl scrollView"
+
+block testDslPropertyConsolidated:
+  # Verify the consolidated property system works for various properties
+  let w = tui:
+    vbox:
+      style = style(clRed)
+      gap = 3
+      direction = dirHorizontal
+      text "Test"
+  assert w.style.fg == clRed
+  assert w.layout.gap == 3
+  assert w.layout.direction == dirHorizontal
+  assert w.children.len == 1
+  echo "PASS: dsl property consolidated"
+
 # ============================================================
 # Integration test: full widget tree render
 # ============================================================
@@ -695,6 +823,192 @@ block testFullRender:
   # Label
   assert buf[0, 15].ch == ">"
   echo "PASS: full render integration"
+
+# ============================================================
+# DSL new feature tests
+# ============================================================
+
+block testDslWidthHeightIntLiteral:
+  let w = tui:
+    vbox:
+      text "A", width=14
+      text "B", height=3
+  assert w.kind == wkContainer
+  assert w.children[0].layout.width.kind == szFixed
+  assert w.children[0].layout.width.fixed == 14
+  assert w.children[1].layout.height.kind == szFixed
+  assert w.children[1].layout.height.fixed == 3
+  echo "PASS: dsl width/height int literal auto-wrap"
+
+block testDslWidthHeightExplicitFixed:
+  # Explicit fixed() still works
+  let w = tui:
+    text "A", width=fixed(20)
+  assert w.layout.width.kind == szFixed
+  assert w.layout.width.fixed == 20
+  echo "PASS: dsl width/height explicit fixed still works"
+
+block testDslLetVarInBody:
+  let w = tui:
+    vbox:
+      let greeting = "Hello"
+      text greeting
+  assert w.kind == wkContainer
+  assert w.children.len == 1
+  assert w.children[0].kind == wkText
+  assert w.children[0].text == "Hello"
+  echo "PASS: dsl let/var in body"
+
+block testDslDiscardInBody:
+  var sideEffect = 0
+  let w = tui:
+    vbox:
+      discard (sideEffect = 42; 0)
+      text "After"
+  assert w.kind == wkContainer
+  assert w.children.len == 1
+  assert sideEffect == 42
+  echo "PASS: dsl discard in body"
+
+block testDslStmtsInBorder:
+  let w = tui:
+    border "Title":
+      let msg = "inner"
+      text msg
+  assert w.kind == wkBorder
+  assert w.borderChild.kind == wkText
+  assert w.borderChild.text == "inner"
+  echo "PASS: dsl statements in border"
+
+block testDslWhen:
+  const useFeature = true
+  let w = tui:
+    when useFeature:
+      text "Feature ON"
+    else:
+      text "Feature OFF"
+  assert w.kind == wkText
+  assert w.text == "Feature ON"
+  echo "PASS: dsl when"
+
+block testDslCase:
+  let mode = 2
+  let w = tui:
+    case mode
+    of 1:
+      text "One"
+    of 2:
+      text "Two"
+    else:
+      text "Other"
+  assert w.kind == wkText
+  assert w.text == "Two"
+  echo "PASS: dsl case"
+
+block testDslCaseNoElse:
+  let mode = 99
+  let w = tui:
+    case mode
+    of 1: text "One"
+    of 2: text "Two"
+    else: spacer()
+  assert w.kind == wkSpacer
+  echo "PASS: dsl case with else fallback"
+
+block testDslFocusable:
+  let w = tui:
+    vbox:
+      focusable = true
+      text "Focusable"
+  assert w.kind == wkContainer
+  assert w.focusable == true
+  assert w.trapFocus == true
+  echo "PASS: dsl focusable compound property"
+
+block testDslTopLevelStmts:
+  # Statements at the top level of a tui: block (not inside a widget body)
+  let w = tui:
+    let greeting = "Hello"
+    text greeting
+  assert w.kind == wkText
+  assert w.text == "Hello"
+  echo "PASS: dsl top-level statements"
+
+block testDslTopLevelMixedStmts:
+  # Multiple statements + multiple children at top level
+  let w = tui:
+    let a = "First"
+    let b = "Second"
+    text a
+    text b
+  assert w.kind == wkContainer
+  assert w.children.len == 2
+  assert w.children[0].text == "First"
+  assert w.children[1].text == "Second"
+  echo "PASS: dsl top-level mixed statements + children"
+
+block testDslBorderTitleStyle:
+  # border with titleStyle= named constructor arg (not a widget property)
+  let w = tui:
+    border "Title", bsRounded, titleStyle=style(clBrightCyan):
+      text "Content"
+  assert w.kind == wkBorder
+  assert w.borderTitle == "Title"
+  assert w.borderStyle == bsRounded
+  assert w.borderTitleStyle.fg == clBrightCyan
+  echo "PASS: dsl border titleStyle passthrough"
+
+block testDslTextEmptyString:
+  # Verify text "" with explicit style works correctly
+  let w = tui:
+    text "", style(clRed)
+  assert w.kind == wkText
+  assert w.text == ""
+  assert w.style.fg == clRed
+  echo "PASS: dsl text empty string with style"
+
+block testDslPropertyShorthand:
+  # Verify `gap 2` shorthand (call syntax) works alongside `gap = 2` (assign syntax)
+  let w1 = tui:
+    vbox:
+      gap 2
+      text "A"
+  let w2 = tui:
+    vbox:
+      gap = 2
+      text "A"
+  assert w1.layout.gap == 2
+  assert w2.layout.gap == 2
+  echo "PASS: dsl property shorthand"
+
+block testDslProcInBlock:
+  ## Test that proc definitions work inside DSL blocks
+  let w = tui:
+    vbox:
+      proc makeLabel(s: string): Widget =
+        text(">> " & s)
+      makeLabel("Hello")
+      makeLabel("World")
+  assert w.kind == wkContainer
+  assert w.children.len == 2
+  assert w.children[0].text == ">> Hello"
+  assert w.children[1].text == ">> World"
+  echo "PASS: dsl proc in block"
+
+block testDslFuncCallPassthrough:
+  ## Test that arbitrary function calls returning Widget pass through
+  proc myWidget(label: string, active: bool): Widget =
+    if active: text(label, styleBold)
+    else: text(label)
+  let w = tui:
+    vbox:
+      myWidget("Item 1", true)
+      myWidget("Item 2", false)
+  assert w.kind == wkContainer
+  assert w.children.len == 2
+  assert w.children[0].text == "Item 1"
+  assert w.children[1].text == "Item 2"
+  echo "PASS: dsl func call passthrough"
 
 echo ""
 echo "All TUI tests passed!"

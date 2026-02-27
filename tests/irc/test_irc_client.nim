@@ -235,7 +235,74 @@ block testNickCollision:
   echo "PASS: Nick collision handling"
 
 # ============================================================
-# Test 3: Auto-join channels
+# Test 3: Ping timeout detection and reconnection
+# ============================================================
+
+block testPingTimeout:
+  let listener = tcpListen("127.0.0.1", 0)
+  let port = getListenerPort(listener)
+
+  # Mock server: accepts connection, sends 001, then goes completely silent.
+  # The client should detect the dead connection via ping timeout and disconnect.
+  proc silentServer(l: TcpListener): CpsFuture[seq[string]] {.cps.} =
+    var lines: seq[string]
+    let clientConn = await l.accept()
+    let stream = clientConn.AsyncStream
+    let reader = newBufferedReader(stream)
+
+    # Read registration lines (CAP LS, NICK, USER)
+    for i in 0 ..< 3:
+      let line = await reader.readLine("\r\n")
+      lines.add(line)
+
+    # Send CAP NAK to skip cap negotiation, then send 001 welcome
+    await stream.write(":server CAP * NAK :*\r\n")
+    await stream.write(":server 001 testbot :Welcome\r\n")
+
+    # Now read whatever the client sends (PINGs, etc) until the stream closes
+    var streamDead = false
+    while not streamDead:
+      try:
+        let line = await reader.readLine("\r\n")
+        if line.len == 0 and reader.atEof:
+          streamDead = true
+        elif line.len > 0:
+          lines.add(line)
+      except CatchableError:
+        streamDead = true
+    return lines
+
+  var config = newIrcClientConfig("127.0.0.1", port, "testbot")
+  config.autoReconnect = false
+  config.pingTimeoutMs = 3000  # Short timeout for testing (3s)
+  let ircClient = newIrcClient(config)
+
+  let serverFut = silentServer(listener)
+
+  # Run the client — it should connect, register, then time out and disconnect.
+  # keepAliveLoop checks every max(3000/3, 1000) = 1000ms.
+  # After ~1s of silence it sends a PING, after ~3s total it force-closes.
+  let clientFut = ircClient.run()
+
+  runUntil(clientFut, 10000)
+
+  # Verify the client detected the timeout and disconnected
+  assert ircClient.state == icsDisconnected, "Client should be disconnected after ping timeout"
+
+  # Verify the server received a PING from the keep-alive loop
+  if serverFut.finished:
+    let lines = serverFut.read()
+    var gotPing = false
+    for line in lines:
+      if line.contains("PING") and line.contains("keepalive"):
+        gotPing = true
+    assert gotPing, "Server should have received a keepalive PING"
+
+  listener.close()
+  echo "PASS: Ping timeout detection"
+
+# ============================================================
+# Test 4: Auto-join channels
 # ============================================================
 
 block testAutoJoin:

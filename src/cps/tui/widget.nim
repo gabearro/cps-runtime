@@ -70,7 +70,6 @@ type
 
   Widget* = ref object
     ## A node in the widget tree.
-    kind*: WidgetKind
     layout*: LayoutProps
     style*: Style
     focusable*: bool
@@ -79,7 +78,7 @@ type
     events*: EventHandlers ## nil when no handlers (common case)
     trapFocus*: bool       ## If true, all key events stay within this subtree
 
-    case wk: WidgetKind
+    case kind*: WidgetKind
     of wkContainer:
       children*: seq[Widget]
     of wkText:
@@ -133,7 +132,7 @@ type
 # ============================================================
 
 proc container*(children: varargs[Widget]): Widget =
-  Widget(kind: wkContainer, wk: wkContainer,
+  Widget(kind: wkContainer,
          layout: defaultLayout,
          style: styleDefault,
          children: @children)
@@ -149,7 +148,7 @@ proc vbox*(children: varargs[Widget]): Widget =
   w
 
 proc text*(s: string, st: Style = styleDefault): Widget =
-  Widget(kind: wkText, wk: wkText,
+  Widget(kind: wkText,
          layout: LayoutProps(
            width: SizeSpec(kind: szFlex, flex: 1.0),
            height: SizeSpec(kind: szAuto),
@@ -161,7 +160,7 @@ proc text*(s: string, st: Style = styleDefault): Widget =
 
 proc label*(s: string, st: Style = styleDefault): Widget =
   ## Short alias for text with auto sizing.
-  Widget(kind: wkText, wk: wkText,
+  Widget(kind: wkText,
          layout: LayoutProps(
            width: SizeSpec(kind: szAuto),
            height: SizeSpec(kind: szFixed, fixed: 1),
@@ -174,7 +173,7 @@ proc label*(s: string, st: Style = styleDefault): Widget =
 proc border*(child: Widget, bs: BorderStyle = bsSingle,
              title: string = "", titleStyle: Style = styleDefault,
              st: Style = styleDefault): Widget =
-  Widget(kind: wkBorder, wk: wkBorder,
+  Widget(kind: wkBorder,
          layout: defaultLayout,
          style: st,
          borderStyle: bs,
@@ -185,7 +184,7 @@ proc border*(child: Widget, bs: BorderStyle = bsSingle,
 proc inputField*(text: string = "", cursor: int = 0,
                  placeholder: string = "",
                  mask: char = '\0', st: Style = styleDefault): Widget =
-  Widget(kind: wkInput, wk: wkInput,
+  Widget(kind: wkInput,
          layout: LayoutProps(
            width: SizeSpec(kind: szFlex, flex: 1.0),
            height: SizeSpec(kind: szFixed, fixed: 1),
@@ -199,7 +198,7 @@ proc inputField*(text: string = "", cursor: int = 0,
 
 proc list*(items: seq[ListItem], selected: int = 0,
            offset: int = 0, highlightStyle: Style = style(clBlack, clWhite)): Widget =
-  Widget(kind: wkList, wk: wkList,
+  Widget(kind: wkList,
          layout: defaultLayout,
          style: styleDefault,
          focusable: true,
@@ -214,7 +213,7 @@ proc listItem*(text: string, selected: bool = false,
 
 proc table*(columns: seq[ColumnDef], rows: seq[seq[string]],
             selected: int = -1, offset: int = 0): Widget =
-  Widget(kind: wkTable, wk: wkTable,
+  Widget(kind: wkTable,
          layout: defaultLayout,
          style: styleDefault,
          focusable: true,
@@ -232,14 +231,14 @@ proc column*(title: string, width: SizeSpec = flex(),
 
 proc spacer*(size: int = 0): Widget =
   if size > 0:
-    Widget(kind: wkSpacer, wk: wkSpacer,
+    Widget(kind: wkSpacer,
            layout: LayoutProps(
              width: SizeSpec(kind: szFixed, fixed: size),
              height: SizeSpec(kind: szFixed, fixed: size),
            ),
            style: styleDefault)
   else:
-    Widget(kind: wkSpacer, wk: wkSpacer,
+    Widget(kind: wkSpacer,
            layout: LayoutProps(
              width: SizeSpec(kind: szFlex, flex: 1.0),
              height: SizeSpec(kind: szFlex, flex: 1.0),
@@ -247,7 +246,7 @@ proc spacer*(size: int = 0): Widget =
            style: styleDefault)
 
 proc scrollView*(child: Widget, scrollX: int = 0, scrollY: int = 0): Widget =
-  Widget(kind: wkScrollView, wk: wkScrollView,
+  Widget(kind: wkScrollView,
          layout: defaultLayout,
          style: styleDefault,
          scrollChild: child,
@@ -258,7 +257,7 @@ proc progressBar*(value: float, fillChar: string = "█",
                   emptyChar: string = "░",
                   st: Style = style(clGreen),
                   bgSt: Style = styleDefault): Widget =
-  Widget(kind: wkProgressBar, wk: wkProgressBar,
+  Widget(kind: wkProgressBar,
          layout: LayoutProps(
            width: SizeSpec(kind: szFlex, flex: 1.0),
            height: SizeSpec(kind: szFixed, fixed: 1),
@@ -272,7 +271,7 @@ proc progressBar*(value: float, fillChar: string = "█",
 proc tabBar*(items: seq[TabItem],
              tabSt: Style = styleDefault,
              activeSt: Style = style(clBlack, clWhite).bold()): Widget =
-  Widget(kind: wkTabs, wk: wkTabs,
+  Widget(kind: wkTabs,
          layout: LayoutProps(
            width: SizeSpec(kind: szFlex, flex: 1.0),
            height: SizeSpec(kind: szFixed, fixed: 1),
@@ -286,10 +285,23 @@ proc tabItem*(label: string, active: bool = false): TabItem =
   TabItem(label: label, active: active)
 
 proc custom*(render: CustomRenderProc): Widget =
-  Widget(kind: wkCustom, wk: wkCustom,
+  Widget(kind: wkCustom,
          layout: defaultLayout,
          style: styleDefault,
          customRender: render)
+
+proc containerFromSeq*(children: seq[Widget],
+                       dir: Direction = dirVertical): Widget =
+  ## Build a container from a seq of children. Used by the DSL `for` loop
+  ## transform to wrap dynamically-generated widget lists.
+  Widget(kind: wkContainer,
+         layout: LayoutProps(
+           direction: dir,
+           width: SizeSpec(kind: szFlex, flex: 1.0),
+           height: SizeSpec(kind: szAuto),
+         ),
+         style: styleDefault,
+         children: children)
 
 # ============================================================
 # Widget property modifiers (builder pattern)

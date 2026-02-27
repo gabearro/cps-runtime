@@ -20,6 +20,226 @@ import ./textinput
 import std/[strutils, times, math]
 
 # ============================================================
+# Overlay
+# ============================================================
+
+type WidgetRef = ref object
+  ## Shared ref wrapper for self-referencing custom widget closures.
+  ## The closure captures the ref and updates customChildRects during render.
+  w*: Widget
+
+proc overlay*(children: varargs[Widget]): Widget =
+  ## Stack children in z-order (first = bottom, last = top).
+  ## Renders each child into the full rect and routes events to all.
+  let kids = @children
+  let wr = WidgetRef()
+  wr.w = custom(proc(buf: var CellBuffer, rect: Rect) =
+    for child in kids:
+      renderWidget(buf, child, rect)
+    wr.w.customChildRects = newSeq[Rect](kids.len)
+    for i in 0 ..< kids.len:
+      wr.w.customChildRects[i] = rect
+  )
+  wr.w.customChildren = kids
+  wr.w.customChildRects = newSeq[Rect](kids.len)
+  wr.w
+
+proc dimOverlay*(base, modal: Widget, screenW, screenH: int): Widget =
+  ## Render base widget, dim the entire screen, then render modal on top.
+  ## Returns a custom widget with both base and modal as event-routable children.
+  let wr = WidgetRef()
+  wr.w = custom(proc(buf: var CellBuffer, rect: Rect) =
+    renderWidget(buf, base, rect)
+    for y in 0 ..< screenH:
+      for x in 0 ..< screenW:
+        let cell = buf[x, y]
+        buf.setCell(x, y, cell.ch, cell.style.dim())
+    renderWidget(buf, modal, rect)
+    let r = Rect(x: 0, y: 0, w: screenW, h: screenH)
+    wr.w.customChildRects = @[r, r]
+  )
+  wr.w.customChildren = @[base, modal]
+  let r = Rect(x: 0, y: 0, w: screenW, h: screenH)
+  wr.w.customChildRects = @[r, r]
+  wr.w
+
+proc centeredPopup*(body: Widget, title: string,
+                    screenW, screenH: int,
+                    width, height: int,
+                    bs: BorderStyle = bsRounded,
+                    titleStyle: Style = styleBold,
+                    shadowStyle: Style = styleDefault): Widget =
+  ## Draw a centered bordered popup with title and body content inside.
+  ## If shadowStyle is not styleDefault, a drop shadow is drawn behind the popup.
+  let dw = min(width, max(screenW - 2, 10))
+  let dh = min(height, max(screenH - 2, 5))
+  let dx = max(0, (screenW - dw) div 2)
+  let dy = max(0, (screenH - dh) div 2)
+  let hasShadow = shadowStyle != styleDefault
+  custom(proc(buf: var CellBuffer, rect: Rect) =
+    # Draw shadow
+    if hasShadow:
+      buf.fill(dx + 1, dy + 1, dw, dh, " ", shadowStyle)
+    # Draw background
+    buf.fill(dx, dy, dw, dh, " ", styleDefault)
+    # Draw border
+    let bc = borderChars(bs)
+    buf.setCell(dx, dy, bc.topLeft, titleStyle)
+    for x in dx + 1 ..< dx + dw - 1:
+      buf.setCell(x, dy, bc.horizontal, titleStyle)
+    buf.setCell(dx + dw - 1, dy, bc.topRight, titleStyle)
+    for y in dy + 1 ..< dy + dh - 1:
+      buf.setCell(dx, y, bc.vertical, titleStyle)
+      buf.setCell(dx + dw - 1, y, bc.vertical, titleStyle)
+    buf.setCell(dx, dy + dh - 1, bc.bottomLeft, titleStyle)
+    for x in dx + 1 ..< dx + dw - 1:
+      buf.setCell(x, dy + dh - 1, bc.horizontal, titleStyle)
+    buf.setCell(dx + dw - 1, dy + dh - 1, bc.bottomRight, titleStyle)
+    # Draw title
+    if title.len > 0 and dw > 4:
+      let maxTitleLen = dw - 4
+      let t = if title.len > maxTitleLen: title[0 ..< maxTitleLen] else: title
+      buf.writeStr(dx + 2, dy, " " & t & " ", titleStyle)
+    # Render body inside
+    let innerRect = Rect(x: dx + 1, y: dy + 1, w: dw - 2, h: dh - 2)
+    renderWidget(buf, body, innerRect)
+  )
+
+proc labeledField*(label: string, field: TextInput,
+                   focused: bool, labelWidth: int = 14,
+                   indicator: string = "",
+                   labelStyle: Style = styleDefault,
+                   onClick: ClickHandler = nil): Widget =
+  ## Form field row: label + text input in an hbox with consistent sizing.
+  field.focused = focused
+  let indLabel = indicator & label
+  let labelSt = if focused: labelStyle.bold() else: labelStyle
+  result = hbox(
+    text(indLabel, labelSt).withWidth(fixed(labelWidth)),
+    field.toWidget(),
+  ).withHeight(fixed(1))
+  if onClick != nil:
+    result = result.withOnClick(onClick)
+
+proc formFields*(labels: openArray[string], fields: openArray[TextInput],
+                 focusIdx: int, labelWidth: int = 14,
+                 labelStyle: Style = styleDefault,
+                 clickHandlerFactory: proc(i: int): ClickHandler = nil): seq[Widget] =
+  ## Render a sequence of labeled form fields.
+  ## Returns a seq of widgets (one per field) ready to add to a container.
+  ## `clickHandlerFactory` is called per-field to produce a click handler (avoids
+  ## the Nim closure-in-loop capture bug).
+  let count = min(labels.len, fields.len)
+  result = newSeq[Widget](count)
+  for i in 0 ..< count:
+    let indicator = if i == focusIdx: "> " else: "  "
+    let handler = if clickHandlerFactory != nil: clickHandlerFactory(i) else: nil
+    result[i] = labeledField(labels[i], fields[i],
+                 focused = (i == focusIdx),
+                 indicator = indicator, labelStyle = labelStyle,
+                 onClick = handler)
+
+proc centeredForm*(content: Widget, title: string, screenW: int,
+                   maxWidth: int = 70,
+                   bs: BorderStyle = bsRounded,
+                   titleStyle: Style = style(clBrightCyan).bold(),
+                   footer: Widget = nil): Widget =
+  ## A centered bordered form with optional footer (e.g., key help bar).
+  ## Common pattern for setup screens and server list forms.
+  let formWidth = min(screenW, maxWidth)
+  let pad = max(0, (screenW - formWidth) div 2)
+  let main = hbox(
+    spacer(pad).withWidth(fixed(pad)),
+    border(content, bs, title, titleStyle = titleStyle).withWidth(fixed(formWidth)),
+    spacer(0),
+  )
+  if footer != nil:
+    vbox(main, footer)
+  else:
+    main
+
+proc cycleFocus*(focusIdx: var int, count: int, evt: InputEvent): bool =
+  ## Handle Tab/Shift+Tab/Up/Down focus cycling for forms.
+  ## Returns true if focus changed (event consumed).
+  if evt.isKey(kcTab) or evt.isKey(kcDown):
+    focusIdx = (focusIdx + 1) mod count
+    return true
+  if evt.isKeyMod(kcTab, {kmShift}) or evt.isKey(kcUp):
+    focusIdx = (focusIdx + count - 1) mod count
+    return true
+  false
+
+proc listNavigate*(selected: var int, count: int, evt: InputEvent,
+                   wrap: bool = false): bool =
+  ## Handle Up/Down arrow key navigation for lists.
+  ## With `wrap=true`, moving past the end wraps to the other end.
+  ## Returns true if the event was consumed.
+  if count <= 0: return false
+  if evt.isKey(kcUp):
+    if selected > 0: selected -= 1
+    elif wrap: selected = count - 1
+    return true
+  if evt.isKey(kcDown):
+    if selected < count - 1: selected += 1
+    elif wrap: selected = 0
+    return true
+  false
+
+proc modalOverlay*(base, modal: Widget,
+                   onDismiss: proc() = nil,
+                   onKey: KeyHandler = nil): Widget =
+  ## Wrap `modal` on top of `base` with focus trap and Escape dismiss.
+  ## If `onDismiss` is nil, Escape is still trapped but does nothing.
+  ## If `onKey` is provided, it is called first; if it returns true the event
+  ## is consumed without reaching the default Escape/trap logic.
+  let dismissCb = onDismiss
+  let keyCb = onKey
+  overlay(base, modal)
+    .withFocusTrap(true)
+    .withFocus(true)
+    .withOnKey(proc(evt: InputEvent): bool =
+      if keyCb != nil and keyCb(evt): return true
+      if evt.isKey(kcEscape):
+        if dismissCb != nil: dismissCb()
+        return true
+      return true  # Trap all keys in the modal
+    )
+
+type
+  ConfirmChoice* = enum
+    ccYes, ccNo
+
+proc confirmDialog*(title: string, rows: seq[Widget],
+                    height: int = 0,
+                    borderSt: BorderStyle = bsRounded,
+                    titleStyle: Style = style(clBrightYellow).bold(),
+                    onChoice: proc(choice: ConfirmChoice)): Widget =
+  ## A bordered Y/N confirmation dialog with focus trap.
+  ## `rows` are the body content widgets. The dialog appends a "[Y] / [N]" prompt.
+  ## Pressing Y/N/Escape calls `onChoice`. The caller is responsible for
+  ## clearing the dialog state in the callback.
+  var bodyRows = rows
+  bodyRows.add(spacer(1))
+  bodyRows.add(text("  [Y] Yes  [N] No", style(clBrightWhite)))
+  let h = if height > 0: height else: bodyRows.len + 2  # +2 for border
+  let choiceCb = onChoice
+  border(vbox(bodyRows), borderSt, title,
+    titleStyle = titleStyle,
+  ).withHeight(fixed(h))
+   .withFocusTrap(true)
+   .withOnKey(proc(evt: InputEvent): bool =
+     if evt.kind == iekKey and evt.key == kcChar:
+       case evt.ch
+       of 'y', 'Y': choiceCb(ccYes); return true
+       of 'n', 'N': choiceCb(ccNo); return true
+       else: return true
+     if evt.isKey(kcEscape):
+       choiceCb(ccNo)
+       return true
+     return true  # Trap all keys
+   ).withFocus(true)
+
+# ============================================================
 # Split View
 # ============================================================
 
@@ -702,40 +922,10 @@ proc toWidget*(d: Dialog, screenW, screenH: int): Widget =
   if not d.visible:
     return spacer(0)
 
-  let dlg = d
-  let rawW = if dlg.width > 0: dlg.width else: screenW * 60 div 100
-  let rawH = if dlg.height > 0: dlg.height else: screenH * 40 div 100
-  let dw = min(rawW, max(screenW - 2, 10))
-  let dh = min(rawH, max(screenH - 2, 5))
-  let dx = max(0, (screenW - dw) div 2)
-  let dy = max(0, (screenH - dh) div 2)
-
-  custom(proc(buf: var CellBuffer, rect: Rect) =
-    # Draw shadow
-    buf.fill(dx + 1, dy + 1, dw, dh, " ", dlg.shadowStyle)
-    # Draw dialog background
-    buf.fill(dx, dy, dw, dh, " ", styleDefault)
-    # Draw border
-    let bc = borderChars(dlg.borderStyle)
-    buf.setCell(dx, dy, bc.topLeft, dlg.titleStyle)
-    for x in dx + 1 ..< dx + dw - 1:
-      buf.setCell(x, dy, bc.horizontal, dlg.titleStyle)
-    buf.setCell(dx + dw - 1, dy, bc.topRight, dlg.titleStyle)
-    for y in dy + 1 ..< dy + dh - 1:
-      buf.setCell(dx, y, bc.vertical, dlg.titleStyle)
-      buf.setCell(dx + dw - 1, y, bc.vertical, dlg.titleStyle)
-    buf.setCell(dx, dy + dh - 1, bc.bottomLeft, dlg.titleStyle)
-    for x in dx + 1 ..< dx + dw - 1:
-      buf.setCell(x, dy + dh - 1, bc.horizontal, dlg.titleStyle)
-    buf.setCell(dx + dw - 1, dy + dh - 1, bc.bottomRight, dlg.titleStyle)
-    # Draw title
-    if dlg.title.len > 0:
-      let titleStr = " " & dlg.title & " "
-      buf.writeStr(dx + 2, dy, titleStr, dlg.titleStyle)
-    # Render body inside
-    let innerRect = Rect(x: dx + 1, y: dy + 1, w: dw - 2, h: dh - 2)
-    renderWidget(buf, dlg.body, innerRect)
-  )
+  let rawW = if d.width > 0: d.width else: screenW * 60 div 100
+  let rawH = if d.height > 0: d.height else: screenH * 40 div 100
+  centeredPopup(d.body, d.title, screenW, screenH, rawW, rawH,
+                d.borderStyle, d.titleStyle, d.shadowStyle)
 
 # ============================================================
 # Notification Area
@@ -1308,3 +1498,44 @@ proc toWidgetWithEvents*(tv: TreeView): Widget =
         else: discard
       return false
     )
+
+# ============================================================
+# Overlay helpers
+# ============================================================
+
+proc overlay*(base: Widget, top: Widget, w, h: int): Widget =
+  ## Layer `top` over `base` using a custom widget. Both widgets
+  ## are registered as custom children for event routing.
+  let baseRef = base
+  let topRef = top
+  var ov = custom(proc(buf: var CellBuffer, rect: Rect) =
+    renderWidget(buf, baseRef, rect)
+    renderWidget(buf, topRef, rect)
+  )
+  ov.customChildren = @[baseRef, topRef]
+  ov.customChildRects = @[Rect(x: 0, y: 0, w: w, h: h),
+                           Rect(x: 0, y: 0, w: w, h: h)]
+  ov
+
+proc overlayDimmed*(base: Widget, top: Widget, w, h: int,
+                    dimStyle: Style = style(clBrightBlack)): Widget =
+  ## Layer `top` over a dimmed version of `base`. The base widget is
+  ## drawn first, then every cell is overwritten with `dimStyle`, then
+  ## `top` is drawn on top. Only `top` is registered as a custom child
+  ## for event routing (the dimmed base is non-interactive).
+  let baseRef = base
+  let topRef = top
+  let ds = dimStyle
+  var ov = custom(proc(buf: var CellBuffer, rect: Rect) =
+    renderWidget(buf, baseRef, rect)
+    # Dim the base by overwriting styles
+    for y in rect.y ..< rect.y + rect.h:
+      for x in rect.x ..< rect.x + rect.w:
+        var c = buf[x, y]
+        c.style = ds
+        buf.setCell(x, y, c.ch, c.style)
+    renderWidget(buf, topRef, rect)
+  )
+  ov.customChildren = @[topRef]
+  ov.customChildRects = @[Rect(x: 0, y: 0, w: w, h: h)]
+  ov

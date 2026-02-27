@@ -1,283 +1,371 @@
-## CPS TUI - Reactive DSL
+## CPS TUI - Declarative DSL
 ##
-## A Nim macro DSL for building reactive TUI interfaces declaratively.
-## Transforms a block of widget descriptions into a widget tree, with
-## automatic re-rendering on state changes.
+## Macro DSL for building TUI widget trees declaratively.
+## Transforms `tui:` blocks into widget constructor calls.
 ##
 ## Example:
 ##   let ui = tui:
 ##     vbox:
 ##       border "Chat", bsRounded:
-##         text messages.val.join("\n"), wrap=twWrap
+##         text messages.join("\n"), wrap=twWrap
 ##       hbox:
 ##         label "> "
 ##         input myInput
 ##
-## The DSL supports:
-## - Widget constructors: vbox, hbox, border, text, label, input, list,
-##   table, spacer, progressBar, tabs, custom
-## - Property assignments: style=, gap=, padding=, width=, height=, id=,
-##   align=, justify=, wrap=, textAlign=, focus=
-## - Reactive bindings: expressions referencing Signal[T] are re-evaluated
+## Supports:
+## - Widgets: vbox, hbox, border, text, label, input, list, table, spacer,
+##   progressBar, tabs, custom, scrollView, container
+## - Properties: style=, gap=, width=, height=, id=, onClick=, onKey=, etc.
+##   Special: focusable= expands to withFocus + withFocusTrap;
+##   width=/height= auto-wraps integer literals in fixed().
+## - Control flow: if/elif/else, for, case/of, when
+## - Statements: let, var, discard inside widget blocks
 
-import std/[macros, strutils]
+import std/macros
 
-proc isWidgetIdent(n: NimNode): bool =
-  ## Check if an ident is a known widget constructor.
-  if n.kind != nnkIdent:
-    return false
-  let name = n.strVal
-  name in ["vbox", "hbox", "border", "text", "label", "input",
-           "list", "table", "spacer", "progressBar", "tabs",
-           "custom", "scrollView", "container"]
+# ============================================================
+# Dispatch tables
+# ============================================================
 
-proc transformPropertyAssign(call: NimNode, prop: string, value: NimNode): NimNode =
-  ## Generate a property modifier call on the widget.
-  case prop
-  of "style": return newCall(ident"withStyle", call, value)
-  of "gap": return newCall(ident"withGap", call, value)
-  of "padding": return newCall(ident"withPadding", call, value)
-  of "width": return newCall(ident"withWidth", call, value)
-  of "height": return newCall(ident"withHeight", call, value)
-  of "id": return newCall(ident"withId", call, value)
-  of "align": return newCall(ident"withAlign", call, value)
-  of "justify": return newCall(ident"withJustify", call, value)
-  of "wrap": return newCall(ident"withWrap", call, value)
-  of "textAlign": return newCall(ident"withTextAlign", call, value)
-  of "focus": return newCall(ident"withFocus", call, value)
-  of "direction": return newCall(ident"withDirection", call, value)
-  of "constraint": return newCall(ident"withConstraint", call, value)
-  of "onClick": return newCall(ident"withOnClick", call, value)
-  of "onKey": return newCall(ident"withOnKey", call, value)
-  of "onScroll": return newCall(ident"withOnScroll", call, value)
-  of "onMouse": return newCall(ident"withOnMouse", call, value)
-  of "onFocus": return newCall(ident"withOnFocus", call, value)
-  of "onBlur": return newCall(ident"withOnBlur", call, value)
-  of "focusTrap": return newCall(ident"withFocusTrap", call, value)
-  else:
-    error("Unknown TUI property: " & prop, value)
-    call  # Unreachable but satisfies return type
+const PropertyMap* = [
+  ("style", "withStyle"), ("gap", "withGap"), ("padding", "withPadding"),
+  ("width", "withWidth"), ("height", "withHeight"), ("id", "withId"),
+  ("align", "withAlign"), ("justify", "withJustify"), ("wrap", "withWrap"),
+  ("textAlign", "withTextAlign"), ("focus", "withFocus"),
+  ("direction", "withDirection"), ("constraint", "withConstraint"),
+  ("onClick", "withOnClick"), ("onKey", "withOnKey"),
+  ("onScroll", "withOnScroll"), ("onMouse", "withOnMouse"),
+  ("onFocus", "withOnFocus"), ("onBlur", "withOnBlur"),
+  ("focusTrap", "withFocusTrap"),
+]
 
-proc transformDslNode(n: NimNode): NimNode
+const PassthroughWidgets* = [
+  ## DSL name -> constructor proc name for widgets that forward args directly.
+  ("spacer", "spacer"), ("progressBar", "progressBar"),
+  ("tabs", "tabBar"), ("custom", "custom"),
+  ("scrollView", "scrollView"), ("list", "list"), ("table", "table"),
+]
 
-proc extractBody(n: NimNode): tuple[props: seq[NimNode], children: seq[NimNode]] =
-  ## Separate property assignments from child widgets in a body block.
-  result.props = @[]
-  result.children = @[]
+proc lookupProperty(name: string): string =
+  for (k, v) in PropertyMap:
+    if k == name: return v
+
+proc lookupPassthrough(name: string): string =
+  for (k, v) in PassthroughWidgets:
+    if k == name: return v
+
+proc isWidgetName(name: string): bool =
+  name in ["vbox", "hbox", "container", "overlay", "border", "text", "label", "input"] or
+  lookupPassthrough(name) != ""
+
+proc isKnownProperty(name: string): bool =
+  name == "focusable" or lookupProperty(name) != ""
+
+proc isPropertyShorthand(n: NimNode): bool =
+  ## Detect `gap 2` style shorthand: a 2-arg call/command whose name is a
+  ## known property but not a widget name.
+  n.kind in {nnkCall, nnkCommand} and n.len == 2 and
+  n[0].kind == nnkIdent and
+  not isWidgetName(n[0].strVal) and
+  isKnownProperty(n[0].strVal)
+
+# ============================================================
+# NimNode helpers
+# ============================================================
+
+proc identDefs(name, typ: string): NimNode =
+  ## Shorthand for `nnkIdentDefs(ident name, ident typ, empty)`.
+  newTree(nnkIdentDefs, ident(name), ident(typ), newEmptyNode())
+
+proc applyProp(w: NimNode, name: string, val: NimNode): NimNode =
+  ## Chain a single property modifier onto a widget expression.
+  # focusable = true -> .withFocus(true).withFocusTrap(true)
+  if name == "focusable":
+    return newCall(ident"withFocusTrap", newCall(ident"withFocus", w, val), val)
+  let meth = lookupProperty(name)
+  if meth == "":
+    error("Unknown TUI property: " & name, val)
+  var v = val
+  # width=14 / height=3 -> withWidth(fixed(14)) / withHeight(fixed(3))
+  if name in ["width", "height"] and val.kind == nnkIntLit:
+    v = newCall(ident"fixed", val)
+  newCall(ident(meth), w, v)
+
+proc applyProps(w: NimNode, props: openArray[NimNode]): NimNode =
+  ## Chain all property assignments onto a widget expression.
+  result = w
+  for p in props:
+    result = applyProp(result, p[0].strVal, p[1])
+
+proc wrapStmts(expr: NimNode, stmts: openArray[NimNode]): NimNode =
+  ## Wrap expression in `block: stmts; expr`, or return as-is if no stmts.
+  if stmts.len == 0: return expr
+  var body = newStmtList()
+  for s in stmts: body.add(s)
+  body.add(expr)
+  newTree(nnkBlockExpr, newEmptyNode(), body)
+
+proc spacerFallback(): NimNode =
+  newCall(ident"spacer", newLit(0))
+
+proc wrapChildren(children: openArray[NimNode]): NimNode =
+  ## Wrap 0+ children: 0 -> spacer, 1 -> identity, 2+ -> vbox.
+  if children.len == 0: return newCall(ident"spacer")
+  if children.len == 1: return children[0]
+  result = newCall(ident"vbox")
+  for c in children: result.add(c)
+
+# ============================================================
+# Body parsing
+# ============================================================
+
+const StmtKinds = {nnkLetSection, nnkVarSection, nnkDiscardStmt,
+                   nnkCommentStmt, nnkPragma, nnkProcDef, nnkFuncDef,
+                   nnkTemplateDef, nnkTypeSection}
+
+proc transform(n: NimNode): NimNode  # forward decl
+
+type Body = tuple[props, stmts, children: seq[NimNode]]
+
+proc parseBody(n: NimNode): Body =
+  ## Classify body nodes into properties, statements, and widget children.
   for child in n:
-    if child.kind == nnkAsgn or
-       (child.kind == nnkExprEqExpr):
+    if child.kind in {nnkAsgn, nnkExprEqExpr}:
       result.props.add(child)
-    elif child.kind == nnkCall and child.len == 2 and
-         child[0].kind == nnkIdent and not isWidgetIdent(child[0]):
-      # Could be a property assignment like: gap 2
-      # But could also be a function call. Heuristic: known props.
-      let name = child[0].strVal
-      if name in ["style", "gap", "padding", "width", "height", "id",
-                   "align", "justify", "wrap", "textAlign", "focus",
-                   "direction", "constraint",
-                   "onClick", "onKey", "onScroll", "onMouse",
-                   "onFocus", "onBlur", "focusTrap"]:
-        result.props.add(newTree(nnkAsgn, child[0], child[1]))
-      else:
-        result.children.add(transformDslNode(child))
+    elif child.kind in StmtKinds:
+      result.stmts.add(child)
+    elif child.isPropertyShorthand:
+      result.props.add(newTree(nnkAsgn, child[0], child[1]))
     else:
-      result.children.add(transformDslNode(child))
+      result.children.add(transform(child))
 
-proc transformContainer(name: string, n: NimNode): NimNode =
-  ## Transform vbox/hbox/container with optional body.
-  let constructorName = case name
-    of "vbox": "vbox"
-    of "hbox": "hbox"
-    else: "container"
+# ============================================================
+# Widget transforms
+# ============================================================
 
-  # Find the body (last StmtList child)
-  var args: seq[NimNode] = @[]
-  var body: NimNode = nil
+proc buildGeneric(ctor: string, n: NimNode, bodyChildrenAsArgs: bool): NimNode =
+  ## Shared transform for containers (vbox/hbox/container) and passthrough
+  ## widgets (spacer/list/table/etc.). Parses inline args, body block with
+  ## properties/statements/children.
+  ## bodyChildrenAsArgs=true: body children become constructor varargs (containers).
+  ## bodyChildrenAsArgs=false: positional args go to constructor (passthrough).
+  var positional: seq[NimNode]
+  var inlineProps: seq[NimNode]
+  var body: NimNode
   for i in 1 ..< n.len:
-    if n[i].kind == nnkStmtList:
-      body = n[i]
-    elif n[i].kind == nnkExprEqExpr:
-      args.add(n[i])
+    let a = n[i]
+    if a.kind == nnkStmtList:
+      body = a
+    elif a.kind == nnkExprEqExpr and a[0].kind == nnkIdent and
+         isKnownProperty(a[0].strVal):
+      inlineProps.add(a)
     else:
-      args.add(n[i])
+      positional.add(a)
 
-  var result0: NimNode
+  result = newCall(ident(ctor))
+  var stmts: seq[NimNode]
   if body != nil:
-    let (props, children) = extractBody(body)
-    # Build constructor with children as varargs
-    result0 = newCall(ident(constructorName))
-    for child in children:
-      result0.add(child)
-    # Apply properties
-    for prop in props:
-      result0 = transformPropertyAssign(result0, prop[0].strVal, prop[1])
+    let b = parseBody(body)
+    stmts = b.stmts
+    if bodyChildrenAsArgs:
+      for c in b.children: result.add(c)
+    else:
+      for a in positional: result.add(a)
+      # scrollView: body children become the scroll child
+      if ctor == "scrollView" and b.children.len > 0:
+        result.add(wrapChildren(b.children))
+    result = applyProps(result, b.props)
   else:
-    result0 = newCall(ident(constructorName))
+    for a in positional: result.add(a)
+  result = applyProps(result, inlineProps)
+  result = wrapStmts(result, stmts)
 
-  # Apply inline property args
-  for arg in args:
-    if arg.kind == nnkExprEqExpr:
-      result0 = transformPropertyAssign(result0, arg[0].strVal, arg[1])
-
-  return result0
-
-proc transformBorder(n: NimNode): NimNode =
-  ## Transform border with optional title, style, and child body.
-  # border [title] [, borderStyle] : body
+proc buildBorder(n: NimNode): NimNode =
+  ## border [title] [, bsStyle] [, titleStyle=...] [, prop=val]: body
   var title = newLit("")
-  var borderSt = ident"bsSingle"
-  var body: NimNode = nil
-  var inlineProps: seq[NimNode] = @[]
-
+  var bst = ident"bsSingle"
+  var body: NimNode
+  var inlineProps: seq[NimNode]
+  var ctorArgs: seq[NimNode]  # named args forwarded to border() constructor
   for i in 1 ..< n.len:
-    if n[i].kind == nnkStmtList:
-      body = n[i]
-    elif n[i].kind == nnkStrLit:
-      title = n[i]
-    elif n[i].kind == nnkExprEqExpr:
-      inlineProps.add(n[i])
-    elif n[i].kind == nnkIdent and n[i].strVal.startsWith("bs"):
-      borderSt = n[i]
-    else:
-      # Assume it's a title expression
-      title = n[i]
+    let a = n[i]
+    case a.kind
+    of nnkStmtList: body = a
+    of nnkStrLit: title = a
+    of nnkExprEqExpr:
+      if a[0].kind == nnkIdent and isKnownProperty(a[0].strVal):
+        inlineProps.add(a)
+      else:
+        ctorArgs.add(a)  # e.g. titleStyle=style(clRed)
+    of nnkIdent:
+      # Heuristic: idents starting with "bs" are border styles
+      if a.strVal.len >= 2 and a.strVal[0] == 'b' and a.strVal[1] == 's':
+        bst = a
+      else: title = a
+    else: title = a
 
-  var child: NimNode
+  var stmts: seq[NimNode]
   if body != nil:
-    let (props, children) = extractBody(body)
-    if children.len == 1:
-      child = children[0]
-    elif children.len > 1:
-      # Wrap multiple children in vbox
-      child = newCall(ident"vbox")
-      for c in children:
-        child.add(c)
-    else:
-      child = newCall(ident"spacer")
-
-    result = newCall(ident"border", child, borderSt, title)
-    for prop in props:
-      result = transformPropertyAssign(result, prop[0].strVal, prop[1])
+    let b = parseBody(body)
+    stmts = b.stmts
+    var call = newCall(ident"border", wrapChildren(b.children), bst, title)
+    for a in ctorArgs: call.add(a)
+    result = applyProps(call, b.props)
   else:
-    child = newCall(ident"spacer")
-    result = newCall(ident"border", child, borderSt, title)
+    result = newCall(ident"border", newCall(ident"spacer"), bst, title)
+    for a in ctorArgs: result.add(a)
+  result = applyProps(result, inlineProps)
+  result = wrapStmts(result, stmts)
 
-  for prop in inlineProps:
-    result = transformPropertyAssign(result, prop[0].strVal, prop[1])
-
-proc transformText(n: NimNode): NimNode =
-  ## Transform text/label widget.
-  let constructor = n[0].strVal  # "text" or "label"
-  var textExpr: NimNode = newLit("")
-  var stylExpr: NimNode = ident"styleDefault"
-  var props: seq[NimNode] = @[]
-
+proc buildText(n: NimNode): NimNode =
+  ## text/label content [, style] [, prop=val]
+  let ctor = n[0].strVal
+  var content = newLit("")
+  var st = ident"styleDefault"
+  var hasContent = false
+  var props: seq[NimNode]
   for i in 1 ..< n.len:
-    if n[i].kind == nnkExprEqExpr:
-      props.add(n[i])
-    elif n[i].kind == nnkStmtList:
-      # Should not have body for text, but handle gracefully
-      discard
-    elif textExpr.kind == nnkStrLit and textExpr.strVal == "":
-      textExpr = n[i]
-    else:
-      stylExpr = n[i]
+    let a = n[i]
+    if a.kind == nnkExprEqExpr: props.add(a)
+    elif a.kind == nnkStmtList: discard
+    elif not hasContent: content = a; hasContent = true
+    else: st = a
+  applyProps(newCall(ident(ctor), content, st), props)
 
-  result = newCall(ident(constructor), textExpr, stylExpr)
-  for prop in props:
-    result = transformPropertyAssign(result, prop[0].strVal, prop[1])
-
-proc transformInput(n: NimNode): NimNode =
-  ## Transform input widget. Accepts a TextInput ref or inline params.
-  # input myTextInput [, style=...]
-  # OR input text="...", cursor=0, placeholder="..."
+proc buildInput(n: NimNode): NimNode =
+  ## input textInputRef [, prop=val]  OR  input text="...", cursor=0
   if n.len >= 2 and n[1].kind == nnkIdent:
-    # input myTextInput — call toWidget on the TextInput object
     result = newCall(ident"toWidget", n[1])
     for i in 2 ..< n.len:
       if n[i].kind == nnkExprEqExpr:
-        result = transformPropertyAssign(result, n[i][0].strVal, n[i][1])
+        result = applyProp(result, n[i][0].strVal, n[i][1])
   else:
-    # Inline params
     result = newCall(ident"inputField")
     for i in 1 ..< n.len:
       if n[i].kind == nnkExprEqExpr:
-        let pname = n[i][0].strVal
-        case pname
-        of "text", "cursor", "placeholder", "mask", "st":
+        if n[i][0].strVal in ["text", "cursor", "placeholder", "mask", "st"]:
           result.add(newTree(nnkExprEqExpr, n[i][0], n[i][1]))
         else:
-          # widget property
-          result = transformPropertyAssign(result, pname, n[i][1])
+          result = applyProp(result, n[i][0].strVal, n[i][1])
       else:
         result.add(n[i])
 
-proc transformDslNode(n: NimNode): NimNode =
-  ## Transform a single DSL node into widget constructor calls.
+# ============================================================
+# Control flow transforms
+# ============================================================
+
+proc transformConditional(n: NimNode,
+    outKind, elifKind, elseKind: NimNodeKind): NimNode =
+  ## Shared transform for if/when: iterate branches, transform bodies,
+  ## and add a spacer fallback if no else branch is present.
+  result = newNimNode(outKind)
+  var hasElse = false
+  for branch in n:
+    case branch.kind
+    of nnkElifBranch:
+      result.add(newTree(elifKind, branch[0], transform(branch[1])))
+    of nnkElse:
+      hasElse = true
+      result.add(newTree(elseKind, transform(branch[0])))
+    else: discard
+  if not hasElse:
+    result.add(newTree(elseKind, spacerFallback()))
+
+proc transformCase(n: NimNode): NimNode =
+  ## Transform case/of/else — has a discriminator and OfBranch labels,
+  ## so it can't share the if/when path.
+  result = newNimNode(nnkCaseStmt)
+  result.add(n[0])  # discriminator
+  var hasElse = false
+  for i in 1 ..< n.len:
+    let branch = n[i]
+    case branch.kind
+    of nnkOfBranch:
+      var ob = newNimNode(nnkOfBranch)
+      for j in 0 ..< branch.len - 1: ob.add(branch[j])
+      ob.add(transform(branch[^1]))
+      result.add(ob)
+    of nnkElse:
+      hasElse = true
+      result.add(newTree(nnkElse, transform(branch[0])))
+    of nnkElifBranch:
+      result.add(newTree(nnkElifBranch, branch[0], transform(branch[1])))
+    else: discard
+  if not hasElse:
+    result.add(newTree(nnkElse, spacerFallback()))
+
+proc transformFor(n: NimNode): NimNode =
+  ## for vars in iterable: body ->
+  ##   block: var tmp: seq[Widget]; for ...: tmp.add(body); containerFromSeq(tmp)
+  let tmp = genSym(nskVar, "dslFor")
+  let iterIdx = n.len - 2
+  var loop = newNimNode(nnkForStmt)
+  for i in 0 ..< iterIdx: loop.add(n[i])
+  loop.add(n[iterIdx])
+  loop.add(newStmtList(
+    newCall(newDotExpr(tmp, ident"add"), transform(n[^1]))))
+  newTree(nnkBlockExpr, newEmptyNode(), newStmtList(
+    newTree(nnkVarSection, newTree(nnkIdentDefs,
+      tmp, newTree(nnkBracketExpr, ident"seq", ident"Widget"), newEmptyNode())),
+    loop,
+    newCall(ident"containerFromSeq", tmp)))
+
+# ============================================================
+# Main recursive transform
+# ============================================================
+
+proc transform(n: NimNode): NimNode =
   case n.kind
   of nnkCall, nnkCommand:
     if n[0].kind == nnkIdent:
       let name = n[0].strVal
       case name
-      of "vbox", "hbox", "container":
-        return transformContainer(name, n)
-      of "border":
-        return transformBorder(n)
-      of "text", "label":
-        return transformText(n)
-      of "input":
-        return transformInput(n)
-      of "spacer":
-        if n.len > 1:
-          return newCall(ident"spacer", n[1])
-        else:
-          return newCall(ident"spacer")
-      of "progressBar":
-        result = newCall(ident"progressBar")
-        for i in 1 ..< n.len:
-          if n[i].kind != nnkStmtList:
-            result.add(n[i])
-        return result
-      of "tabs":
-        result = newCall(ident"tabBar")
-        for i in 1 ..< n.len:
-          if n[i].kind != nnkStmtList:
-            result.add(n[i])
-        return result
-      of "custom":
-        if n.len > 1:
-          return newCall(ident"custom", n[1])
-        return newCall(ident"custom")
+      of "vbox", "hbox", "container", "overlay":
+        return buildGeneric(name, n, bodyChildrenAsArgs = true)
+      of "border": return buildBorder(n)
+      of "text", "label": return buildText(n)
+      of "input": return buildInput(n)
       else:
-        # Unknown — pass through as a regular call (could be user widget)
-        return n
-    else:
-      return n
+        let ctor = lookupPassthrough(name)
+        if ctor != "":
+          return buildGeneric(ctor, n, bodyChildrenAsArgs = false)
+    n  # unknown call — pass through
+
   of nnkStmtList:
-    # Multiple children — wrap in vbox
-    if n.len == 1:
-      return transformDslNode(n[0])
-    else:
-      result = newCall(ident"vbox")
-      for child in n:
-        result.add(transformDslNode(child))
-      return result
+    if n.len == 1: return transform(n[0])
+    # Separate statements from widget children
+    var stmts: seq[NimNode]
+    var children: seq[NimNode]
+    for child in n:
+      if child.kind in StmtKinds:
+        stmts.add(child)
+      else:
+        children.add(transform(child))
+    let widget = case children.len
+      of 0: spacerFallback()
+      of 1: children[0]
+      else:
+        var v = newCall(ident"vbox")
+        for c in children: v.add(c)
+        v
+    wrapStmts(widget, stmts)
+
+  of nnkIfStmt:
+    transformConditional(n, nnkIfExpr, nnkElifExpr, nnkElseExpr)
+  of nnkWhenStmt:
+    transformConditional(n, nnkWhenStmt, nnkElifBranch, nnkElse)
+  of nnkCaseStmt:
+    transformCase(n)
+  of nnkForStmt:
+    transformFor(n)
   of nnkStrLit, nnkIntLit, nnkFloatLit:
-    # Literal text → text widget
-    return newCall(ident"text", n)
-  of nnkIdent:
-    # Bare identifier — could be a widget variable
-    return n
-  of nnkInfix:
-    # Pass through expressions
-    return n
-  of nnkDotExpr:
-    return n
-  of nnkAsgn, nnkExprEqExpr:
-    return n
+    newCall(ident"text", n)  # literal -> text widget
   else:
-    return n
+    n  # pass through identifiers, dot exprs, infixes, etc.
+
+# ============================================================
+# Public macros
+# ============================================================
 
 macro tui*(body: untyped): untyped =
   ## Build a widget tree from a declarative DSL block.
@@ -286,32 +374,17 @@ macro tui*(body: untyped): untyped =
   ##   let ui = tui:
   ##     vbox:
   ##       text "Hello"
-  ##       hbox gap=1:
-  ##         label "Name:"
-  ##         input myInput
-  result = transformDslNode(body)
+  ##       if showFooter:
+  ##         text "Footer"
+  ##       for name in names:
+  ##         text name
+  transform(body)
 
 macro tuiRender*(body: untyped): untyped =
-  ## Create a render proc from a DSL block.
-  ## The proc receives (width, height: int) and returns Widget.
-  ##
-  ## Example:
-  ##   app.onRender = tuiRender:
-  ##     vbox:
-  ##       text "Size: " & $width & "x" & $height
-  let widthIdent = ident"width"
-  let heightIdent = ident"height"
-  let transformed = transformDslNode(body)
-  result = newTree(nnkLambda,
-    newEmptyNode(),  # name
-    newEmptyNode(),  # terms
-    newEmptyNode(),  # generic params
-    newTree(nnkFormalParams,
-      ident"Widget",
-      newTree(nnkIdentDefs, widthIdent, ident"int", newEmptyNode()),
-      newTree(nnkIdentDefs, heightIdent, ident"int", newEmptyNode()),
-    ),
-    newEmptyNode(),  # pragmas
-    newEmptyNode(),  # reserved
-    newStmtList(transformed),
-  )
+  ## Create a `proc(width, height: int): Widget` from a DSL block.
+  newTree(nnkLambda,
+    newEmptyNode(), newEmptyNode(), newEmptyNode(),
+    newTree(nnkFormalParams, ident"Widget",
+      identDefs("width", "int"), identDefs("height", "int")),
+    newEmptyNode(), newEmptyNode(),
+    newStmtList(transform(body)))

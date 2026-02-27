@@ -563,5 +563,419 @@ block testHitTestList:
   assert hitTestList(3, 5, -1, rect) == -1
   echo "PASS: hit test list"
 
+# ============================================================
+# Overlay tests
+# ============================================================
+
+block testOverlay:
+  let a = text("Bottom layer")
+  let b = text("Top layer")
+  let w = overlay(a, b)
+  assert w.kind == wkCustom
+  assert w.customChildren.len == 2
+  assert w.customChildren[0] == a
+  assert w.customChildren[1] == b
+  echo "PASS: overlay"
+
+block testOverlayRender:
+  var buf = newCellBuffer(20, 5)
+  let bottom = text("AAAA", style(clRed))
+  let top = text("BB", style(clGreen))
+  let w = overlay(bottom, top)
+  renderWidget(buf, w, Rect(x: 0, y: 0, w: 20, h: 5))
+  # Top layer renders last, so "BB" should be at (0,0)
+  assert buf[0, 0].ch == "B"
+  assert buf[1, 0].ch == "B"
+  echo "PASS: overlay render"
+
+block testOverlayCustomChildRects:
+  var buf = newCellBuffer(30, 10)
+  let a = text("A")
+  let b = text("B")
+  let w = overlay(a, b)
+  renderWidget(buf, w, Rect(x: 5, y: 2, w: 20, h: 8))
+  # After render, customChildRects should match the render rect
+  assert w.customChildRects.len == 2
+  assert w.customChildRects[0] == Rect(x: 5, y: 2, w: 20, h: 8)
+  assert w.customChildRects[1] == Rect(x: 5, y: 2, w: 20, h: 8)
+  echo "PASS: overlay customChildRects"
+
+block testOverlaySingle:
+  let a = text("Only child")
+  let w = overlay(a)
+  assert w.kind == wkCustom
+  assert w.customChildren.len == 1
+  echo "PASS: overlay single child"
+
+# ============================================================
+# DimOverlay tests
+# ============================================================
+
+block testDimOverlay:
+  let base = text("Base content")
+  let modal = text("Modal content")
+  let w = dimOverlay(base, modal, 40, 10)
+  assert w.kind == wkCustom
+  assert w.customChildren.len == 2
+  assert w.customChildren[0] == base
+  assert w.customChildren[1] == modal
+  echo "PASS: dim overlay"
+
+block testDimOverlayRender:
+  var buf = newCellBuffer(20, 5)
+  let base = text("Hello", style(clWhite))
+  let modal = text("X", style(clRed))
+  let w = dimOverlay(base, modal, 20, 5)
+  renderWidget(buf, w, Rect(x: 0, y: 0, w: 20, h: 5))
+  # Modal renders on top, so "X" is at (0,0)
+  assert buf[0, 0].ch == "X"
+  echo "PASS: dim overlay render"
+
+# ============================================================
+# CenteredPopup tests
+# ============================================================
+
+block testCenteredPopup:
+  var buf = newCellBuffer(40, 20)
+  let body = text("Popup body")
+  let w = centeredPopup(body, "Title", 40, 20, 20, 10)
+  renderWidget(buf, w, Rect(x: 0, y: 0, w: 40, h: 20))
+  # Popup should be centered: dx = (40-20)/2 = 10, dy = (20-10)/2 = 5
+  assert buf[10, 5].ch == "╭"  # Top-left border (bsRounded)
+  assert buf[29, 5].ch == "╮"  # Top-right border
+  assert buf[10, 14].ch == "╰" # Bottom-left border
+  assert buf[29, 14].ch == "╯" # Bottom-right border
+  echo "PASS: centered popup"
+
+block testCenteredPopupTitle:
+  var buf = newCellBuffer(40, 20)
+  let body = text("Content")
+  let w = centeredPopup(body, "Test", 40, 20, 20, 10)
+  renderWidget(buf, w, Rect(x: 0, y: 0, w: 40, h: 20))
+  # Title " Test " starts at dx+2 = 12
+  assert buf[13, 5].ch == "T"
+  assert buf[14, 5].ch == "e"
+  assert buf[15, 5].ch == "s"
+  assert buf[16, 5].ch == "t"
+  echo "PASS: centered popup title"
+
+block testCenteredPopupShadow:
+  var buf = newCellBuffer(40, 20)
+  let body = text("Content")
+  let shadowSt = style(clBrightBlack)
+  let w = centeredPopup(body, "Test", 40, 20, 20, 10,
+                        shadowStyle = shadowSt)
+  renderWidget(buf, w, Rect(x: 0, y: 0, w: 40, h: 20))
+  # Shadow is at (dx+1, dy+1) = (11, 6) with style applied
+  # The popup background overwrites most of the shadow, but bottom-right corner of shadow should show
+  assert buf[30, 15].style.fg == clBrightBlack  # Shadow extends 1 beyond popup
+  echo "PASS: centered popup shadow"
+
+# ============================================================
+# LabeledField tests
+# ============================================================
+
+block testLabeledField:
+  let ti = newTextInput("Nickname")
+  ti.insertStr("testuser")
+  let w = labeledField("Nick:", ti, focused = true)
+  assert w.kind == wkContainer  # hbox = container with horizontal dir
+  assert w.children.len == 2
+  assert w.children[0].kind == wkText
+  assert w.children[1].kind == wkInput
+  assert ti.focused == true
+  echo "PASS: labeled field"
+
+block testLabeledFieldUnfocused:
+  let ti = newTextInput()
+  let w = labeledField("Label:", ti, focused = false)
+  assert w.kind == wkContainer
+  assert ti.focused == false
+  echo "PASS: labeled field unfocused"
+
+block testLabeledFieldWithIndicator:
+  let ti = newTextInput()
+  let w = labeledField("Name:", ti, focused = true,
+                       indicator = "> ")
+  assert w.children[0].text == "> Name:"
+  echo "PASS: labeled field with indicator"
+
+block testLabeledFieldWithOnClick:
+  var clicked = false
+  let ti = newTextInput()
+  let handler: ClickHandler = proc(mx, my: int) = clicked = true
+  let w = labeledField("Test:", ti, focused = false, onClick = handler)
+  assert w.events != nil
+  assert w.events.onClick != nil
+  w.events.onClick(0, 0)
+  assert clicked
+  echo "PASS: labeled field with onClick"
+
+block testLabeledFieldRender:
+  var buf = newCellBuffer(40, 1)
+  let ti = newTextInput()
+  ti.insertStr("hello")
+  let w = labeledField("Name:", ti, focused = true,
+                       indicator = "> ", labelWidth = 10)
+  renderWidget(buf, w, Rect(x: 0, y: 0, w: 40, h: 1))
+  assert buf[0, 0].ch == ">"
+  assert buf[2, 0].ch == "N"
+  echo "PASS: labeled field render"
+
+# ============================================================
+# Overlay DSL tests
+# ============================================================
+
+block testOverlayDsl:
+  let w = tui:
+    overlay:
+      text "Bottom"
+      text "Top"
+  assert w.kind == wkCustom
+  assert w.customChildren.len == 2
+  echo "PASS: overlay DSL"
+
+block testOverlayDslNested:
+  let w = tui:
+    vbox:
+      text "Header"
+      overlay:
+        text "Base"
+        text "Modal"
+  assert w.kind == wkContainer
+  assert w.children.len == 2
+  assert w.children[1].kind == wkCustom  # overlay
+  assert w.children[1].customChildren.len == 2
+  echo "PASS: overlay DSL nested"
+
+# ============================================================
+# formFields tests
+# ============================================================
+
+block testFormFields:
+  let labels = ["Name:", "Host:", "Port:"]
+  var fields = [newTextInput(), newTextInput(), newTextInput()]
+  fields[0].insertStr("alice")
+  fields[1].insertStr("irc.libera.chat")
+  fields[2].insertStr("6667")
+  let widgets = formFields(labels, fields, focusIdx = 1)
+  assert widgets.len == 3
+  # Second field should be focused
+  assert fields[1].focused == true
+  assert fields[0].focused == false
+  # Each widget is an hbox with text + input
+  for w in widgets:
+    assert w.kind == wkContainer
+    assert w.children.len == 2
+  echo "PASS: formFields"
+
+block testFormFieldsWithClickHandler:
+  let labels = ["A:", "B:"]
+  var fields = [newTextInput(), newTextInput()]
+  var clicked = -1
+  let factory = proc(i: int): ClickHandler =
+    let idx = i
+    result = proc(mx, my: int) = clicked = idx
+  let widgets = formFields(labels, fields, focusIdx = 0,
+                           clickHandlerFactory = factory)
+  assert widgets.len == 2
+  # First should have event handler (from click)
+  assert widgets[0].hasEventHandlers()
+  assert widgets[1].hasEventHandlers()
+  echo "PASS: formFields with click handler"
+
+# ============================================================
+# cycleFocus tests
+# ============================================================
+
+block testCycleFocusTab:
+  var idx = 0
+  let tabEvt = InputEvent(kind: iekKey, key: kcTab, keyMods: {})
+  assert cycleFocus(idx, 3, tabEvt) == true
+  assert idx == 1
+  assert cycleFocus(idx, 3, tabEvt) == true
+  assert idx == 2
+  assert cycleFocus(idx, 3, tabEvt) == true
+  assert idx == 0  # Wraps around
+  echo "PASS: cycleFocus Tab"
+
+block testCycleFocusShiftTab:
+  var idx = 0
+  let shiftTabEvt = InputEvent(kind: iekKey, key: kcTab, keyMods: {kmShift})
+  assert cycleFocus(idx, 3, shiftTabEvt) == true
+  assert idx == 2  # Wraps backward
+  assert cycleFocus(idx, 3, shiftTabEvt) == true
+  assert idx == 1
+  echo "PASS: cycleFocus Shift+Tab"
+
+block testCycleFocusUpDown:
+  var idx = 1
+  let downEvt = InputEvent(kind: iekKey, key: kcDown, keyMods: {})
+  let upEvt = InputEvent(kind: iekKey, key: kcUp, keyMods: {})
+  assert cycleFocus(idx, 3, downEvt) == true
+  assert idx == 2
+  assert cycleFocus(idx, 3, upEvt) == true
+  assert idx == 1
+  echo "PASS: cycleFocus Up/Down"
+
+block testCycleFocusUnhandled:
+  var idx = 1
+  let enterEvt = InputEvent(kind: iekKey, key: kcEnter, keyMods: {})
+  assert cycleFocus(idx, 3, enterEvt) == false
+  assert idx == 1  # Unchanged
+  echo "PASS: cycleFocus unhandled key"
+
+# ============================================================
+# listNavigate tests
+# ============================================================
+
+block testListNavigateDown:
+  var sel = 0
+  let downEvt = InputEvent(kind: iekKey, key: kcDown, keyMods: {})
+  assert listNavigate(sel, 5, downEvt) == true
+  assert sel == 1
+  echo "PASS: listNavigate down"
+
+block testListNavigateUp:
+  var sel = 3
+  let upEvt = InputEvent(kind: iekKey, key: kcUp, keyMods: {})
+  assert listNavigate(sel, 5, upEvt) == true
+  assert sel == 2
+  echo "PASS: listNavigate up"
+
+block testListNavigateClamp:
+  var sel = 4
+  let downEvt = InputEvent(kind: iekKey, key: kcDown, keyMods: {})
+  assert listNavigate(sel, 5, downEvt) == true
+  assert sel == 4  # Clamped at end
+  var sel2 = 0
+  let upEvt = InputEvent(kind: iekKey, key: kcUp, keyMods: {})
+  assert listNavigate(sel2, 5, upEvt) == true
+  assert sel2 == 0  # Clamped at start
+  echo "PASS: listNavigate clamp"
+
+block testListNavigateWrap:
+  var sel = 4
+  let downEvt = InputEvent(kind: iekKey, key: kcDown, keyMods: {})
+  assert listNavigate(sel, 5, downEvt, wrap = true) == true
+  assert sel == 0  # Wrapped to start
+  var sel2 = 0
+  let upEvt = InputEvent(kind: iekKey, key: kcUp, keyMods: {})
+  assert listNavigate(sel2, 5, upEvt, wrap = true) == true
+  assert sel2 == 4  # Wrapped to end
+  echo "PASS: listNavigate wrap"
+
+block testListNavigateEmpty:
+  var sel = 0
+  let downEvt = InputEvent(kind: iekKey, key: kcDown, keyMods: {})
+  assert listNavigate(sel, 0, downEvt) == false  # No items
+  assert sel == 0
+  echo "PASS: listNavigate empty"
+
+# ============================================================
+# confirmDialog tests
+# ============================================================
+
+block testConfirmDialog:
+  var choice: ConfirmChoice = ccNo
+  let w = confirmDialog("Test", @[text("Confirm?")],
+    onChoice = proc(c: ConfirmChoice) = choice = c)
+  assert w.kind == wkBorder
+  assert w.borderTitle == "Test"
+  assert w.trapFocus == true
+  assert w.focused == true
+  assert w.hasEventHandlers()
+  echo "PASS: confirmDialog"
+
+block testConfirmDialogYes:
+  var choice: ConfirmChoice = ccNo
+  let w = confirmDialog("Test", @[text("Confirm?")],
+    onChoice = proc(c: ConfirmChoice) = choice = c)
+  let yEvt = InputEvent(kind: iekKey, key: kcChar, ch: 'Y', keyMods: {})
+  let handled = w.events.onKey(yEvt)
+  assert handled == true
+  assert choice == ccYes
+  echo "PASS: confirmDialog Y choice"
+
+block testConfirmDialogNo:
+  var choice: ConfirmChoice = ccNo
+  var called = false
+  let w = confirmDialog("Test", @[text("Confirm?")],
+    onChoice = proc(c: ConfirmChoice) = called = true; choice = c)
+  let nEvt = InputEvent(kind: iekKey, key: kcChar, ch: 'n', keyMods: {})
+  let handled = w.events.onKey(nEvt)
+  assert handled == true
+  assert called == true
+  assert choice == ccNo
+  echo "PASS: confirmDialog N choice"
+
+block testConfirmDialogEscape:
+  var choice: ConfirmChoice = ccYes  # Start with Yes to confirm it changes
+  let w = confirmDialog("Test", @[text("Confirm?")],
+    onChoice = proc(c: ConfirmChoice) = choice = c)
+  let escEvt = InputEvent(kind: iekKey, key: kcEscape, keyMods: {})
+  let handled = w.events.onKey(escEvt)
+  assert handled == true
+  assert choice == ccNo  # Escape = No
+  echo "PASS: confirmDialog Escape"
+
+# ============================================================
+# modalOverlay tests
+# ============================================================
+
+# ============================================================
+# centeredForm tests
+# ============================================================
+
+block testCenteredForm:
+  let body = text("Hello")
+  let w = centeredForm(body, "Test Form", screenW = 80)
+  # Should be a vbox (no footer) or hbox (just the centered content)
+  # With no footer, it returns the hbox directly
+  assert w.kind == wkContainer
+  assert w.layout.direction == dirHorizontal
+  echo "PASS: centeredForm"
+
+block testCenteredFormWithFooter:
+  let body = text("Hello")
+  let footer = text("Footer")
+  let w = centeredForm(body, "Test Form", screenW = 80, footer = footer)
+  # With footer, it's a vbox with [hbox, footer]
+  assert w.kind == wkContainer
+  assert w.layout.direction == dirVertical
+  assert w.children.len == 2
+  echo "PASS: centeredForm with footer"
+
+# ============================================================
+# modalOverlay tests
+# ============================================================
+
+block testModalOverlay:
+  let base = text("Background")
+  let modal = text("Modal content")
+  let w = modalOverlay(base, modal)
+  assert w.kind == wkCustom
+  assert w.trapFocus == true
+  assert w.focused == true
+  assert w.hasEventHandlers()
+  echo "PASS: modalOverlay"
+
+block testModalOverlayDismiss:
+  var dismissed = false
+  let w = modalOverlay(text("bg"), text("fg"),
+    onDismiss = proc() = dismissed = true)
+  let escEvt = InputEvent(kind: iekKey, key: kcEscape, keyMods: {})
+  let handled = w.events.onKey(escEvt)
+  assert handled == true
+  assert dismissed == true
+  echo "PASS: modalOverlay dismiss"
+
+block testModalOverlayTrapsKeys:
+  let w = modalOverlay(text("bg"), text("fg"))
+  let charEvt = InputEvent(kind: iekKey, key: kcChar, ch: 'x', keyMods: {})
+  let handled = w.events.onKey(charEvt)
+  assert handled == true  # All keys trapped
+  echo "PASS: modalOverlay traps all keys"
+
 echo ""
 echo "All TUI component tests passed!"

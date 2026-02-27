@@ -2471,36 +2471,24 @@ proc renderSetup(ms: MasterState, width, height: int): Widget =
   # Profile section
   rows.add(text("  Profile", style(clBrightWhite).bold().underline()))
   rows.add(spacer(1))
-  for i in sfNick .. sfRealname:
-    let labelSt = if i == ms.setupFocusIdx: style(clBrightWhite).bold()
-                  else: style(clWhite)
-    let indicator = if i == ms.setupFocusIdx: "> " else: "  "
-    ms.setupFields[i].focused = (i == ms.setupFocusIdx)
-    rows.add(
-      hbox(
-        text(indicator & SetupLabels[i], labelSt).withWidth(fixed(14)),
-        ms.setupFields[i].toWidget(),
-      ).withHeight(fixed(1))
-       .withOnClick(ms.makeSetupFieldClickHandler(i))
-    )
+  rows.add formFields(
+    toOpenArray(SetupLabels, sfNick, sfRealname),
+    toOpenArray(ms.setupFields, sfNick, sfRealname),
+    focusIdx = ms.setupFocusIdx - sfNick, labelStyle = style(clWhite),
+    clickHandlerFactory = proc(i: int): ClickHandler =
+      ms.makeSetupFieldClickHandler(sfNick + i))
 
   rows.add(spacer(1))
 
   # Server section
   rows.add(text("  First Server", style(clBrightWhite).bold().underline()))
   rows.add(spacer(1))
-  for i in sfServerName .. sfSaslPass:
-    let labelSt = if i == ms.setupFocusIdx: style(clBrightWhite).bold()
-                  else: style(clWhite)
-    let indicator = if i == ms.setupFocusIdx: "> " else: "  "
-    ms.setupFields[i].focused = (i == ms.setupFocusIdx)
-    rows.add(
-      hbox(
-        text(indicator & SetupLabels[i], labelSt).withWidth(fixed(14)),
-        ms.setupFields[i].toWidget(),
-      ).withHeight(fixed(1))
-       .withOnClick(ms.makeSetupFieldClickHandler(i))
-    )
+  rows.add formFields(
+    toOpenArray(SetupLabels, sfServerName, sfSaslPass),
+    toOpenArray(ms.setupFields, sfServerName, sfSaslPass),
+    focusIdx = ms.setupFocusIdx - sfServerName, labelStyle = style(clWhite),
+    clickHandlerFactory = proc(i: int): ClickHandler =
+      ms.makeSetupFieldClickHandler(sfServerName + i))
 
   rows.add(spacer(1))
 
@@ -2509,23 +2497,11 @@ proc renderSetup(ms: MasterState, width, height: int): Widget =
     rows.add(text("  " & ms.setupError, style(clBrightRed)))
     rows.add(spacer(1))
 
-  let form = vbox(rows)
-  let formWidth = min(width, 70)
-  let pad = max(0, (width - formWidth) div 2)
-
-  vbox(
-    hbox(
-      spacer(pad).withWidth(fixed(pad)),
-      border(form, bsRounded, "Setup",
-        titleStyle = style(clBrightCyan).bold(),
-      ).withWidth(fixed(formWidth)),
-      spacer(0),
-    ),
-    keyHelpBar([
+  centeredForm(vbox(rows), "Setup", width,
+    footer = keyHelpBar([
       kh("Tab", "Next field"), kh("S-Tab", "Prev field"),
       kh("Enter", "Connect"), kh("^C", "Quit"),
-    ]),
-  )
+    ]))
 
 # ============================================================
 # Rendering: Server list screen
@@ -2549,18 +2525,10 @@ proc renderServerList(ms: MasterState, width, height: int): Widget =
     let formTitle = if ms.editServerMode: "  Edit Server" else: "  Add New Server"
     rows.add(text(formTitle, style(clBrightWhite).bold().underline()))
     rows.add(spacer(1))
-    for i in 0 ..< AddFieldCount:
-      let labelSt = if i == ms.addFocusIdx: style(clBrightWhite).bold()
-                    else: style(clWhite)
-      let indicator = if i == ms.addFocusIdx: "> " else: "  "
-      ms.addFields[i].focused = (i == ms.addFocusIdx)
-      rows.add(
-        hbox(
-          text(indicator & AddLabels[i], labelSt).withWidth(fixed(14)),
-          ms.addFields[i].toWidget(),
-        ).withHeight(fixed(1))
-         .withOnClick(ms.makeAddFieldClickHandler(i))
-      )
+    rows.add formFields(AddLabels, ms.addFields,
+               focusIdx = ms.addFocusIdx, labelStyle = style(clWhite),
+               clickHandlerFactory = proc(i: int): ClickHandler =
+                 ms.makeAddFieldClickHandler(i))
     rows.add(spacer(1))
     let enterLabel = if ms.editServerMode: "Save" else: "Save & Connect"
     helpBar = keyHelpBar([
@@ -2600,20 +2568,8 @@ proc renderServerList(ms: MasterState, width, height: int): Widget =
       kh("a", "Add"), kh("e", "Edit"), kh("d", "Delete"), kh("^C", "Quit"),
     ])
 
-  let form = vbox(rows)
-  let formWidth = min(width, 60)
-  let pad = max(0, (width - formWidth) div 2)
-
-  vbox(
-    hbox(
-      spacer(pad).withWidth(fixed(pad)),
-      border(form, bsRounded, "Servers",
-        titleStyle = style(clBrightCyan).bold(),
-      ).withWidth(fixed(formWidth)),
-      spacer(0),
-    ),
-    helpBar,
-  )
+  centeredForm(vbox(rows), "Servers", width, maxWidth = 60,
+    footer = helpBar)
 
 # ============================================================
 # Rendering: Chat screen
@@ -2789,17 +2745,8 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
          if evt.isKey(kcEscape):
            msRefNc.dismissComplete()
            return true
-         if evt.isKey(kcUp):
-           if msRefNc.nickComplete.selected > 0:
-             msRefNc.nickComplete.selected -= 1
-           else:
-             msRefNc.nickComplete.selected = msRefNc.nickComplete.matches.len - 1
-           return true
-         if evt.isKey(kcDown):
-           if msRefNc.nickComplete.selected < msRefNc.nickComplete.matches.len - 1:
-             msRefNc.nickComplete.selected += 1
-           else:
-             msRefNc.nickComplete.selected = 0
+         if listNavigate(msRefNc.nickComplete.selected,
+                         msRefNc.nickComplete.matches.len, evt, wrap = true):
            return true
          if evt.isKey(kcTab) or evt.isKey(kcEnter):
            msRefNc.acceptComplete()
@@ -2843,7 +2790,7 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
        )
     )
 
-  # Paste confirmation dialog (declarative event handling)
+  # Paste confirmation dialog
   if ms.pasteConfirm.active:
     let lineCount = ms.pasteConfirm.lines.len
     var previewRows: seq[Widget] = @[]
@@ -2855,87 +2802,56 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
                    else:
                      "  " & line
       previewRows.add(text(prefix, style(clBrightBlack)))
-    previewRows.add(spacer(1))
-    previewRows.add(text("  [Y] Send  [N] Cancel", style(clBrightWhite)))
     let msRef = ms
     let csRef2 = cs
     let pasteLines = ms.pasteConfirm.lines
     chatChildren.add(
-      border(vbox(previewRows), bsRounded, "Paste Confirm",
-        titleStyle = style(clBrightYellow).bold(),
-      ).withHeight(fixed(min(lineCount + 6, 12)))
-       .withFocusTrap(true)
-       .withOnKey(proc(evt: InputEvent): bool =
-         if evt.kind == iekKey and evt.key == kcChar:
-           case evt.ch
-           of 'y', 'Y':
-             let chName = csRef2.currentChannel.name
-             if chName != ServerChannel:
-               for line in pasteLines:
-                 if line.len > 0:
-                   discard csRef2.client.privMsg(chName, line)
-                   csRef2.addMsg(chName, csRef2.myNick, line)
-             else:
-               csRef2.addError(chName, "Cannot paste to server console")
-             msRef.pasteConfirm = PasteConfirm()
-             return true
-           of 'n', 'N':
-             msRef.pasteConfirm = PasteConfirm()
-             return true
-           else:
-             return true
-         if evt.kind == iekKey and evt.key == kcEscape:
-           msRef.pasteConfirm = PasteConfirm()
-           return true
-         return true  # Trap all keys
-       ).withFocus(true)
+      confirmDialog("Paste Confirm", previewRows,
+        height = min(lineCount + 6, 12),
+        onChoice = proc(choice: ConfirmChoice) =
+          if choice == ccYes:
+            let chName = csRef2.currentChannel.name
+            if chName != ServerChannel:
+              for line in pasteLines:
+                if line.len > 0:
+                  discard csRef2.client.privMsg(chName, line)
+                  csRef2.addMsg(chName, csRef2.myNick, line)
+            else:
+              csRef2.addError(chName, "Cannot paste to server console")
+          msRef.pasteConfirm = PasteConfirm()
+      )
     )
 
-  # DCC transfer confirmation dialog (declarative event handling)
+  # DCC transfer confirmation dialog
   if ms.dccConfirm.active:
     let t = ms.dccConfirm.transfer
     let sizeStr = if t.info.filesize > 0: formatSize(t.info.filesize) else: "unknown"
-    var rows: seq[Widget] = @[]
-    rows.add(text("DCC SEND from " & t.source, style(clBrightYellow).bold()))
-    rows.add(spacer(1))
-    rows.add(text("  File: " & t.info.filename, style(clBrightWhite)))
-    rows.add(text("  Size: " & sizeStr, style(clBrightWhite)))
-    rows.add(text("  From: " & longIpToString(t.info.ip) & ":" & $t.info.port, style(clBrightWhite)))
-    rows.add(text("  Save: " & t.outputPath, style(clBrightWhite)))
-    rows.add(spacer(1))
-    rows.add(text("  [Y] Accept  [N] Decline", style(clBrightWhite)))
+    let dccRows = @[
+      text("DCC SEND from " & t.source, style(clBrightYellow).bold()),
+      spacer(1),
+      text("  File: " & t.info.filename, style(clBrightWhite)),
+      text("  Size: " & sizeStr, style(clBrightWhite)),
+      text("  From: " & longIpToString(t.info.ip) & ":" & $t.info.port, style(clBrightWhite)),
+      text("  Save: " & t.outputPath, style(clBrightWhite)),
+    ]
     let msRef2 = ms
     let csRef3 = cs
     let dccTransfer = t
     chatChildren.add(
-      border(vbox(rows), bsRounded, "DCC Transfer",
-        titleStyle = style(clBrightYellow).bold(),
-      ).withHeight(fixed(10))
-       .withFocusTrap(true)
-       .withOnKey(proc(evt: InputEvent): bool =
-         if evt.kind == iekKey and evt.key == kcChar:
-           case evt.ch
-           of 'y', 'Y':
-             let fut = csRef3.dccManager.acceptOffer(dccTransfer)
-             fut.addCallback(proc() = discard)
-             csRef3.addServerMsg("Accepting: " & dccTransfer.info.filename & " from " & dccTransfer.source)
-             msRef2.dccConfirm = DccConfirm()
-             return true
-           of 'n', 'N':
-             for i in countdown(csRef3.dccManager.pendingOffers.len - 1, 0):
-               if csRef3.dccManager.pendingOffers[i] == dccTransfer:
-                 csRef3.dccManager.pendingOffers.delete(i)
-                 break
-             csRef3.addServerMsg("Declined: " & dccTransfer.info.filename & " from " & dccTransfer.source)
-             msRef2.dccConfirm = DccConfirm()
-             return true
-           else:
-             return true
-         if evt.kind == iekKey and evt.key == kcEscape:
-           msRef2.dccConfirm = DccConfirm()
-           return true
-         return true  # Trap all keys
-       ).withFocus(true)
+      confirmDialog("DCC Transfer", dccRows, height = 10,
+        onChoice = proc(choice: ConfirmChoice) =
+          if choice == ccYes:
+            let fut = csRef3.dccManager.acceptOffer(dccTransfer)
+            fut.addCallback(proc() = discard)
+            csRef3.addServerMsg("Accepting: " & dccTransfer.info.filename & " from " & dccTransfer.source)
+          else:
+            for i in countdown(csRef3.dccManager.pendingOffers.len - 1, 0):
+              if csRef3.dccManager.pendingOffers[i] == dccTransfer:
+                csRef3.dccManager.pendingOffers.delete(i)
+                break
+            csRef3.addServerMsg("Declined: " & dccTransfer.info.filename & " from " & dccTransfer.source)
+          msRef2.dccConfirm = DccConfirm()
+      )
     )
 
   # Typing indicator (above status bar, looks like it's in the chat)
@@ -3008,8 +2924,9 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
 # Master render
 # ============================================================
 
-proc renderQuickSwitcher(ms: MasterState, width, height: int): Widget =
-  if not ms.quickSwitcher.active: return spacer(0)
+proc renderQuickSwitcher(ms: MasterState, base: Widget, width, height: int): Widget =
+  ## Renders the quick switcher as a dimmed modal overlay on top of `base`.
+  if not ms.quickSwitcher.active: return base
   let qs = ms.quickSwitcher
   var rows: seq[Widget] = @[]
   rows.add(
@@ -3028,65 +2945,33 @@ proc renderQuickSwitcher(ms: MasterState, width, height: int): Widget =
   let body = vbox(rows)
   let dw = min(width - 4, 50)
   let dh = visibleCount + 3  # input + items + border
-  let dx = (width - dw) div 2
-  let dy = max(1, (height - dh) div 3)
-  # Capture full screen dimensions for the overlay
-  let fullW = width
-  let fullH = height
+  let popup = centeredPopup(body, "Quick Switch", width, height, dw, dh,
+                            titleStyle = ms.theme.inputPrompt.bold())
   let msRefQs = ms
   let csRefQs = ms.chat
-  custom(proc(buf: var CellBuffer, rect: Rect) =
-    # Semi-transparent dim overlay across the full screen
-    for y in 0 ..< fullH:
-      for x in 0 ..< fullW:
-        let cell = buf[x, y]
-        buf.setCell(x, y, cell.ch, cell.style.dim())
-    # Draw popup background
-    buf.fill(dx, dy, dw, dh, " ", styleDefault)
-    # Draw border
-    let bc = borderChars(bsRounded)
-    buf.setCell(dx, dy, bc.topLeft, ms.theme.inputPrompt)
-    for x in dx + 1 ..< dx + dw - 1:
-      buf.setCell(x, dy, bc.horizontal, ms.theme.inputPrompt)
-    buf.setCell(dx + dw - 1, dy, bc.topRight, ms.theme.inputPrompt)
-    for y in dy + 1 ..< dy + dh - 1:
-      buf.setCell(dx, y, bc.vertical, ms.theme.inputPrompt)
-      buf.setCell(dx + dw - 1, y, bc.vertical, ms.theme.inputPrompt)
-    buf.setCell(dx, dy + dh - 1, bc.bottomLeft, ms.theme.inputPrompt)
-    for x in dx + 1 ..< dx + dw - 1:
-      buf.setCell(x, dy + dh - 1, bc.horizontal, ms.theme.inputPrompt)
-    buf.setCell(dx + dw - 1, dy + dh - 1, bc.bottomRight, ms.theme.inputPrompt)
-    # Title
-    buf.writeStr(dx + 2, dy, " Quick Switch ", ms.theme.inputPrompt.bold())
-    # Render body inside
-    renderWidget(buf, body, Rect(x: dx + 1, y: dy + 1, w: dw - 2, h: dh - 2))
-  ).withFocusTrap(true)
-   .withFocus(true)
-   .withOnKey(proc(evt: InputEvent): bool =
-     if evt.isKey(kcEscape):
-       msRefQs.dismissQuickSwitcher()
-       return true
-     if evt.isKey(kcEnter):
-       if msRefQs.quickSwitcher.filtered.len > 0 and
-          msRefQs.quickSwitcher.selected < msRefQs.quickSwitcher.filtered.len:
-         let idx = msRefQs.quickSwitcher.filtered[msRefQs.quickSwitcher.selected].idx
-         csRefQs.switchChannel(idx)
-       msRefQs.dismissQuickSwitcher()
-       return true
-     if evt.isKey(kcUp):
-       if msRefQs.quickSwitcher.selected > 0:
-         msRefQs.quickSwitcher.selected -= 1
-       return true
-     if evt.isKey(kcDown):
-       if msRefQs.quickSwitcher.selected < msRefQs.quickSwitcher.filtered.len - 1:
-         msRefQs.quickSwitcher.selected += 1
-       return true
-     let oldText = msRefQs.quickSwitcher.input.text
-     let handled = msRefQs.quickSwitcher.input.handleInput(evt)
-     if handled and msRefQs.quickSwitcher.input.text != oldText:
-       msRefQs.updateQuickSwitcher()
-     return handled
-   )
+  dimOverlay(base, popup, width, height)
+    .withFocusTrap(true)
+    .withFocus(true)
+    .withOnKey(proc(evt: InputEvent): bool =
+      if evt.isKey(kcEscape):
+        msRefQs.dismissQuickSwitcher()
+        return true
+      if evt.isKey(kcEnter):
+        if msRefQs.quickSwitcher.filtered.len > 0 and
+           msRefQs.quickSwitcher.selected < msRefQs.quickSwitcher.filtered.len:
+          let idx = msRefQs.quickSwitcher.filtered[msRefQs.quickSwitcher.selected].idx
+          csRefQs.switchChannel(idx)
+        msRefQs.dismissQuickSwitcher()
+        return true
+      if listNavigate(msRefQs.quickSwitcher.selected,
+                      msRefQs.quickSwitcher.filtered.len, evt):
+        return true
+      let oldText = msRefQs.quickSwitcher.input.text
+      let handled = msRefQs.quickSwitcher.input.handleInput(evt)
+      if handled and msRefQs.quickSwitcher.input.text != oldText:
+        msRefQs.updateQuickSwitcher()
+      return handled
+    )
 
 proc renderMaster(ms: MasterState, width, height: int): Widget =
   let baseMain = case ms.screen
@@ -3112,36 +2997,17 @@ proc renderMaster(ms: MasterState, width, height: int): Widget =
     baseMain
 
   if ms.helpDialog.visible:
-    # Help dialog is a custom overlay — render main first, then overlay on top
     let helpWidget = ms.helpDialog.toWidget(width, height)
     let msRefHelp = ms
-    var overlay = custom(proc(buf: var CellBuffer, rect: Rect) =
-      renderWidget(buf, main, rect)
-      renderWidget(buf, helpWidget, rect)
+    modalOverlay(main, helpWidget,
+      onDismiss = proc() = msRefHelp.helpDialog.hide(),
+      onKey = proc(evt: InputEvent): bool =
+        if evt.isKey(kcF1):
+          msRefHelp.helpDialog.hide()
+          return true
     )
-    overlay.customChildren = @[main]
-    overlay.customChildRects = @[Rect(x: 0, y: 0, w: width, h: height)]
-    overlay.withFocusTrap(true)
-     .withFocus(true)
-     .withOnKey(proc(evt: InputEvent): bool =
-       if evt.isKey(kcEscape) or evt.isKey(kcF1):
-         msRefHelp.helpDialog.hide()
-         return true
-       return true  # Trap all keys when help is visible
-     )
   elif ms.quickSwitcher.active:
-    # Quick switcher is a custom overlay — render main first, then overlay on top
-    let qsWidget = ms.renderQuickSwitcher(width, height)
-    var overlay = custom(proc(buf: var CellBuffer, rect: Rect) =
-      renderWidget(buf, main, rect)
-      renderWidget(buf, qsWidget, rect)
-    )
-    # Register both main and qsWidget as custom children for event routing.
-    # qsWidget has withFocusTrap + withOnKey; main has channel list handlers etc.
-    overlay.customChildren = @[main, qsWidget]
-    overlay.customChildRects = @[Rect(x: 0, y: 0, w: width, h: height),
-                                  Rect(x: 0, y: 0, w: width, h: height)]
-    overlay
+    ms.renderQuickSwitcher(main, width, height)
   else:
     main
 
@@ -3150,11 +3016,7 @@ proc renderMaster(ms: MasterState, width, height: int): Widget =
 # ============================================================
 
 proc handleSetupInput(ms: MasterState, evt: InputEvent): bool =
-  if evt.isKey(kcTab) or (evt.isKey(kcDown) and ms.setupFocusIdx < SetupFieldCount - 1):
-    ms.setupFocusIdx = (ms.setupFocusIdx + 1) mod SetupFieldCount
-    return true
-  if evt.isKeyMod(kcTab, {kmShift}) or (evt.isKey(kcUp) and ms.setupFocusIdx > 0):
-    ms.setupFocusIdx = (ms.setupFocusIdx + SetupFieldCount - 1) mod SetupFieldCount
+  if cycleFocus(ms.setupFocusIdx, SetupFieldCount, evt):
     return true
   if evt.isKey(kcEnter):
     # Validate and connect
@@ -3238,11 +3100,7 @@ proc handleServerListInput(ms: MasterState, evt: InputEvent): bool =
       ms.addServerMode = false
       ms.editServerMode = false
       return true
-    if evt.isKey(kcTab) or evt.isKey(kcDown):
-      ms.addFocusIdx = (ms.addFocusIdx + 1) mod AddFieldCount
-      return true
-    if evt.isKeyMod(kcTab, {kmShift}) or evt.isKey(kcUp):
-      ms.addFocusIdx = (ms.addFocusIdx + AddFieldCount - 1) mod AddFieldCount
+    if cycleFocus(ms.addFocusIdx, AddFieldCount, evt):
       return true
     if evt.isKey(kcEnter):
       let host = ms.addFields[1].text.strip()
@@ -3266,13 +3124,7 @@ proc handleServerListInput(ms: MasterState, evt: InputEvent): bool =
     return ms.addFields[ms.addFocusIdx].handleInput(evt)
   else:
     # Server list navigation
-    if evt.isKey(kcUp):
-      if ms.serverListIdx > 0:
-        ms.serverListIdx -= 1
-      return true
-    if evt.isKey(kcDown):
-      if ms.serverListIdx < ms.config.servers.len - 1:
-        ms.serverListIdx += 1
+    if listNavigate(ms.serverListIdx, ms.config.servers.len, evt):
       return true
     if evt.isKey(kcEnter):
       if ms.config.servers.len > 0 and ms.serverListIdx < ms.config.servers.len:
