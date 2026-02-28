@@ -16,13 +16,54 @@ struct MessageSpan: Decodable {
 // MARK: - Nick Color
 
 enum NickColor {
+    // Carefully tuned palette for legibility on dark backgrounds.
+    // Each color is distinct, avoids confusion with UI semantic colors,
+    // and maintains sufficient contrast against #141415 / #fefeff.
+    private static let darkPalette: [Color] = [
+        Color(hue: 0.02, saturation: 0.55, brightness: 0.78),  // warm coral
+        Color(hue: 0.08, saturation: 0.60, brightness: 0.80),  // apricot
+        Color(hue: 0.14, saturation: 0.52, brightness: 0.76),  // amber
+        Color(hue: 0.28, saturation: 0.45, brightness: 0.72),  // sage
+        Color(hue: 0.38, saturation: 0.48, brightness: 0.72),  // seafoam
+        Color(hue: 0.48, saturation: 0.42, brightness: 0.74),  // teal
+        Color(hue: 0.55, saturation: 0.40, brightness: 0.76),  // sky
+        Color(hue: 0.62, saturation: 0.45, brightness: 0.78),  // periwinkle
+        Color(hue: 0.72, saturation: 0.38, brightness: 0.76),  // lavender
+        Color(hue: 0.82, saturation: 0.40, brightness: 0.76),  // mauve
+        Color(hue: 0.92, saturation: 0.42, brightness: 0.76),  // rose
+        Color(hue: 0.42, saturation: 0.50, brightness: 0.70),  // mint
+        Color(hue: 0.58, saturation: 0.50, brightness: 0.75),  // cornflower
+        Color(hue: 0.76, saturation: 0.42, brightness: 0.74),  // wisteria
+        Color(hue: 0.18, saturation: 0.48, brightness: 0.74),  // chartreuse
+        Color(hue: 0.95, saturation: 0.45, brightness: 0.78),  // blush
+    ]
+
+    private static let lightPalette: [Color] = [
+        Color(hue: 0.02, saturation: 0.65, brightness: 0.62),
+        Color(hue: 0.08, saturation: 0.70, brightness: 0.58),
+        Color(hue: 0.14, saturation: 0.60, brightness: 0.56),
+        Color(hue: 0.28, saturation: 0.55, brightness: 0.52),
+        Color(hue: 0.38, saturation: 0.58, brightness: 0.50),
+        Color(hue: 0.48, saturation: 0.52, brightness: 0.52),
+        Color(hue: 0.55, saturation: 0.50, brightness: 0.55),
+        Color(hue: 0.62, saturation: 0.55, brightness: 0.58),
+        Color(hue: 0.72, saturation: 0.48, brightness: 0.56),
+        Color(hue: 0.82, saturation: 0.50, brightness: 0.56),
+        Color(hue: 0.92, saturation: 0.52, brightness: 0.56),
+        Color(hue: 0.42, saturation: 0.60, brightness: 0.48),
+        Color(hue: 0.58, saturation: 0.60, brightness: 0.55),
+        Color(hue: 0.76, saturation: 0.52, brightness: 0.54),
+        Color(hue: 0.18, saturation: 0.58, brightness: 0.52),
+        Color(hue: 0.95, saturation: 0.55, brightness: 0.58),
+    ]
+
     static func forNick(_ nick: String) -> Color {
         var hash: UInt = 5381
         for scalar in nick.unicodeScalars {
             hash = ((hash &<< 5) &+ hash) &+ UInt(scalar.value)
         }
-        let hue = Double(hash % 360) / 360.0
-        return Color(hue: hue, saturation: 0.55, brightness: 0.80)
+        let idx = Int(hash % UInt(darkPalette.count))
+        return darkPalette[idx]
     }
 }
 
@@ -68,14 +109,10 @@ struct RichMessageText: View {
 
     @ViewBuilder
     private func buildTextView(spans: [MessageSpan]) -> some View {
-        // Check if any span has a link
         let hasLinks = spans.contains { $0.link != nil }
-
         if hasLinks {
-            // Use a flow layout of Text + Link views
             buildLinkedText(spans: spans)
         } else {
-            // All plain text: use Text concatenation for efficiency
             buildPlainText(spans: spans)
         }
     }
@@ -108,7 +145,6 @@ struct RichMessageText: View {
 
     @ViewBuilder
     private func buildLinkedText(spans: [MessageSpan]) -> some View {
-        // Group consecutive non-link spans for efficiency
         let groups = groupSpans(spans)
 
         HStack(spacing: 0) {
@@ -116,7 +152,7 @@ struct RichMessageText: View {
                 let group = groups[idx]
                 if let linkUrl = group.linkUrl {
                     Link(group.displayText, destination: URL(string: linkUrl) ?? URL(string: "about:blank")!)
-                        .font(.callout)
+                        .font(.system(size: 13))
                 } else {
                     buildPlainText(spans: group.spans)
                 }

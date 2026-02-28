@@ -42,6 +42,27 @@ const
   tagSaveServer = 17'u32
   tagRemoveServer = 18'u32
   tagLoadConfig = 19'u32
+  tagDisconnectServer = 20'u32
+  tagReconnectServer = 21'u32
+  tagConnectServer = 22'u32
+  tagRemoveServerById = 23'u32
+  tagWhoisUser = 24'u32
+  tagStartDm = 25'u32
+  tagIgnoreUser = 26'u32
+  tagHighlightUser = 27'u32
+  tagShowTransfers = 28'u32
+  tagHideTransfers = 29'u32
+  tagAcceptTransfer = 30'u32
+  tagDeclineTransfer = 31'u32
+  tagShowJoinChannel = 32'u32   # owner swift — not dispatched to bridge
+  tagHideJoinChannel = 33'u32   # owner swift — not dispatched to bridge
+  tagSubmitJoinChannel = 34'u32
+  tagSelectUser = 35'u32
+  tagRequestWhois = 36'u32
+  tagHideWhois = 37'u32         # owner swift
+  tagRetryTransfer = 38'u32
+  tagInputChanged = 39'u32
+  tagCompletionSelect = 40'u32
 
 # ============================================================
 # Bridge types
@@ -51,7 +72,7 @@ type
   BridgeCommandKind = enum
     cmdConnect, cmdDisconnect, cmdSendMessage, cmdJoinChannel, cmdPartChannel,
     cmdChangeNick, cmdSetAway, cmdClearAway, cmdSetTopic, cmdSendRaw,
-    cmdSwitchServer, cmdReconnect, cmdQuit
+    cmdSwitchServer, cmdReconnect, cmdQuit, cmdAcceptDcc, cmdRetryDcc
 
   BridgeCommand = object
     kind: BridgeCommandKind
@@ -68,7 +89,8 @@ type
     uiNewMessage, uiUserJoin, uiUserPart, uiUserQuit, uiUserNick,
     uiTopicChange, uiConnected, uiDisconnected, uiUserList, uiModeChange,
     uiError, uiLagUpdate, uiAwayChange, uiChannelListUpdate, uiTyping,
-    uiNickChange
+    uiNickChange, uiChghost, uiSetname, uiAccount, uiBatchComplete,
+    uiMonOnline, uiMonOffline, uiDccProgress, uiDccComplete, uiDccFailed
 
   UiEvent = object
     kind: UiEventKind
@@ -115,6 +137,8 @@ type
     unread: int
     mentions: int
     userCount: int
+    isChannel: bool
+    isDm: bool
 
   MessageState = object
     id: int
@@ -154,6 +178,23 @@ type
     free: proc(p: pointer) {.cdecl.}
     dispatch: proc(payload: ptr uint8, payloadLen: uint32,
                    outp: ptr GUIBridgeDispatchOutput): int32 {.cdecl.}
+
+  DccTransferState = enum
+    dccPending, dccActive, dccDone, dccDeclined, dccFailed
+
+  DccTransfer = object
+    id: int
+    nick: string
+    filename: string
+    filesize: int64
+    state: DccTransferState
+    progress: float
+    bytesReceived: int64
+    errorText: string
+    outputPath: string
+    serverId: int
+    ip: uint32
+    port: int
 
 const
   guiBridgeAbiVersion = 2'u32
@@ -198,10 +239,12 @@ var
   gConnectSaslUser: string = ""
   gConnectSaslPass: string = ""
 
-  # Tab completion
+  # Tab completion / @-mention autocomplete
   gCompletionSuggestions: seq[string] = @[]
   gCompletionActive: bool = false
   gCompletionIndex: int = -1
+  gMentionAtPos: int = -1  # byte position of '@' trigger (-1 = tab-complete mode)
+  gCompletionSelectIndex: int = -1  # for CompletionSelect action
 
   # Config persistence
   gConfigPath: string = ""
@@ -211,6 +254,38 @@ var
   # Ignore list and highlight words
   gIgnoreList: seq[string] = @[]
   gHighlightWords: seq[string] = @[]
+
+  # Typing state: (serverId:channel) → seq[(nick, epochTime)]
+  gTypingUsers: Table[string, seq[tuple[nick: string, time: float]]]
+
+  # DCC transfers
+  gDccTransfers: seq[DccTransfer]
+  gNextDccId: int = 1
+  gShowTransfers: bool = false
+  gActionTransferId: int = -1
+
+  # Join channel
+  gJoinChannelText: string = ""
+
+  # WHOIS
+  gWhoisNick: string = ""
+  gWhoisInfo: string = ""       # Accumulated WHOIS lines
+  gWhoisActive: bool = false    # Whether we're collecting WHOIS data
+  gSelectedUserNick: string = ""
+
+  # Logging
+  gLoggingEnabled: bool = false
+  gLogDir: string = ""
+
+  # Action params (set by reducer before dispatch)
+  gActionServerId: int = -1
+  gActionNick: string = ""
+
+  # Servers that were intentionally disconnected (don't show as reconnecting)
+  gIntentionalDisconnects: seq[int]
+
+  # echo-message tracking: set of server IDs with echo-message capability
+  gEchoMessageServers: seq[int]
 
   # Event loop side: IRC connections (only accessed from event loop thread)
   gConnections: seq[IrcConnection]
@@ -528,6 +603,9 @@ proc saveConfig() =
     servers.add(obj)
   root["servers"] = servers
   root["showUserList"] = %gShowUserList
+  root["loggingEnabled"] = %gLoggingEnabled
+  if gLogDir.len > 0:
+    root["logDir"] = %gLogDir
   if gIgnoreList.len > 0:
     var ign = newJArray()
     for n in gIgnoreList: ign.add(%n)
@@ -550,6 +628,8 @@ proc loadConfig() =
     if parsed.kind != JObject:
       return
     gShowUserList = jsonBool(parsed, "showUserList", true)
+    gLoggingEnabled = jsonBool(parsed, "loggingEnabled", false)
+    gLogDir = jsonString(parsed, "logDir", "")
     if "servers" in parsed and parsed["servers"].kind == JArray:
       # Clear existing non-connected servers to avoid duplicates on reload
       var keepServers: seq[ServerState] = @[]
@@ -611,6 +691,9 @@ proc loadConfig() =
     discard
 
 # ============================================================
+# Forward declarations
+proc updateTypingText()
+
 # State helpers
 # ============================================================
 
@@ -635,6 +718,19 @@ proc findServerIdx(serverId: int): int =
 proc activeServerIdx(): int =
   findServerIdx(gActiveServerId)
 
+proc syncAutoJoinChannels(serverId: int) =
+  ## Update autoJoinChannels from current channel list and save config.
+  let si = findServerIdx(serverId)
+  if si < 0: return
+  let sk = serverKey(serverId)
+  var chans: seq[string] = @[]
+  if sk in gChannels:
+    for ch in gChannels[sk]:
+      if ch.name != ServerChannel and ch.name.len > 0 and ch.name[0] == '#':
+        chans.add(ch.name)
+  gServers[si].autoJoinChannels = chans
+  saveConfig()
+
 proc ensureChannel(serverId: int, channelName: string) =
   let sk = serverKey(serverId)
   if sk notin gChannels:
@@ -645,6 +741,8 @@ proc ensureChannel(serverId: int, channelName: string) =
       found = true
       break
   if not found:
+    let isCh = channelName.len > 0 and channelName[0] == '#'
+    let isDm = not isCh and channelName != ServerChannel
     gChannels[sk].add(ChannelState(
       id: gNextChannelId,
       serverId: serverId,
@@ -653,8 +751,55 @@ proc ensureChannel(serverId: int, channelName: string) =
       unread: 0,
       mentions: 0,
       userCount: 0,
+      isChannel: isCh,
+      isDm: isDm,
     ))
     inc gNextChannelId
+
+proc ensureDmUsers(serverId: int, channelName: string, otherNick: string) =
+  ## Populate gUsers for a DM channel with both participants.
+  let ck = channelKey(serverId, channelName)
+  if ck notin gUsers:
+    gUsers[ck] = @[]
+  let si = findServerIdx(serverId)
+  let myNick = if si >= 0: gServers[si].nick else: ""
+  for nick in [myNick, otherNick]:
+    if nick.len == 0: continue
+    var found = false
+    for u in gUsers[ck]:
+      if u.nick == nick:
+        found = true
+        break
+    if not found:
+      gUsers[ck].add(UserState(nick: nick, prefix: "", isAway: false))
+  # Update userCount on ChannelState
+  let sk = serverKey(serverId)
+  if sk in gChannels:
+    for i in 0 ..< gChannels[sk].len:
+      if gChannels[sk][i].name == channelName:
+        gChannels[sk][i].userCount = gUsers[ck].len
+        break
+
+proc logToFile(channelName: string, nick: string, text: string, kind: string) =
+  ## Append a message to the per-channel log file.
+  if not gLoggingEnabled or gLogDir.len == 0:
+    return
+  let sanitized = channelName.replace("/", "_").replace("\\", "_")
+  let logPath = gLogDir / sanitized & ".log"
+  let ts = now().format("yyyy-MM-dd HH:mm:ss")
+  let line = case kind
+    of "action": "[" & ts & "] * " & nick & " " & text
+    of "system": "[" & ts & "] -- " & text
+    of "error": "[" & ts & "] !! " & text
+    else:
+      if nick.len > 0: "[" & ts & "] <" & nick & "> " & text
+      else: "[" & ts & "] " & text
+  try:
+    var f = open(logPath, fmAppend)
+    f.writeLine(line)
+    f.close()
+  except CatchableError:
+    discard
 
 proc addMessage(serverId: int, channelName: string, kind: string,
                 nick: string, text: string, isMention: bool, isOwn: bool) =
@@ -674,6 +819,7 @@ proc addMessage(serverId: int, channelName: string, kind: string,
     spans: spansToJson(spans),
   ))
   inc gNextMessageId
+  logToFile(channelName, nick, text, kind)
   # Cap messages
   if gMessages[ck].len > MaxMessagesPerChannel:
     gMessages[ck].delete(0)
@@ -694,6 +840,9 @@ proc addSystemMessage(serverId: int, channelName: string, text: string) =
 
 proc addErrorMessage(serverId: int, channelName: string, text: string) =
   addMessage(serverId, channelName, "error", "", text, false, false)
+
+# Forward declaration
+proc ensureEventLoop()
 
 # ============================================================
 # Slash command parsing
@@ -1000,8 +1149,132 @@ proc handleSlashCommand(serverId: int, text: string): bool =
         "Usage: /server list|switch <id>")
     return true
 
+  of "/log":
+    let parts = if args.len > 0: args.split(' ', 1) else: @["status"]
+    case parts[0].toLowerAscii
+    of "on":
+      gLoggingEnabled = true
+      if gLogDir.len == 0:
+        gLogDir = configDir() / "logs"
+      if not dirExists(gLogDir):
+        createDir(gLogDir)
+      saveConfig()
+      addSystemMessage(serverId, gActiveChannelName,
+        "Logging enabled (dir: " & gLogDir & ")")
+    of "off":
+      gLoggingEnabled = false
+      saveConfig()
+      addSystemMessage(serverId, gActiveChannelName, "Logging disabled")
+    of "dir":
+      if parts.len >= 2 and parts[1].strip().len > 0:
+        gLogDir = parts[1].strip()
+        if not dirExists(gLogDir):
+          try:
+            createDir(gLogDir)
+          except CatchableError:
+            discard
+        saveConfig()
+        addSystemMessage(serverId, gActiveChannelName, "Log directory: " & gLogDir)
+      else:
+        addSystemMessage(serverId, gActiveChannelName,
+          "Log directory: " & (if gLogDir.len > 0: gLogDir else: "(not set)"))
+    of "status":
+      let status = if gLoggingEnabled: "enabled" else: "disabled"
+      addSystemMessage(serverId, gActiveChannelName,
+        "Logging: " & status & " (dir: " & gLogDir & ")")
+    else:
+      addErrorMessage(serverId, gActiveChannelName,
+        "Usage: /log on|off|dir <path>|status")
+    return true
+
+  of "/debug":
+    var debugLines: seq[string] = @[]
+    debugLines.add("--- Debug Info ---")
+    debugLines.add("Servers: " & $gServers.len)
+    debugLines.add("Active server: " & $gActiveServerId)
+    debugLines.add("Active channel: " & gActiveChannelName)
+    let totalMsg = block:
+      var n = 0
+      for k, v in gMessages: n += v.len
+      n
+    debugLines.add("Total messages in memory: " & $totalMsg)
+    debugLines.add("Ignore list: " & (if gIgnoreList.len > 0: gIgnoreList.join(", ") else: "(empty)"))
+    debugLines.add("Highlight words: " & (if gHighlightWords.len > 0: gHighlightWords.join(", ") else: "(empty)"))
+    debugLines.add("Logging: " & (if gLoggingEnabled: "on" else: "off"))
+    debugLines.add("DCC transfers: " & $gDccTransfers.len)
+    debugLines.add("Echo-message servers: " & $gEchoMessageServers.len)
+    for line in debugLines:
+      addSystemMessage(serverId, gActiveChannelName, line)
+    return true
+
+  of "/monitor":
+    if args.len > 0:
+      withLock gLock:
+        gCommandQueue.add(BridgeCommand(kind: cmdSendRaw,
+          serverId: serverId, text: "MONITOR " & args))
+    else:
+      addErrorMessage(serverId, gActiveChannelName,
+        "Usage: /monitor + nick1,nick2 | - nick1 | C | L | S")
+    return true
+
+  of "/accept":
+    let filterNick = if args.len > 0: args.split(' ')[0].toLowerAscii else: ""
+    var accepted = 0
+    for i in 0 ..< gDccTransfers.len:
+      if gDccTransfers[i].state == dccPending and gDccTransfers[i].serverId == serverId:
+        if filterNick.len == 0 or gDccTransfers[i].nick.toLowerAscii == filterNick:
+          gDccTransfers[i].state = dccActive
+          addSystemMessage(serverId, gActiveChannelName,
+            "Accepted DCC transfer: " & gDccTransfers[i].filename & " from " & gDccTransfers[i].nick)
+          # Start the actual download on the event loop
+          ensureEventLoop()
+          withLock gLock:
+            gCommandQueue.add(BridgeCommand(kind: cmdAcceptDcc,
+              serverId: serverId,
+              intParam: gDccTransfers[i].id,
+              text: gDccTransfers[i].filename))
+          inc accepted
+    if accepted == 0:
+      addSystemMessage(serverId, gActiveChannelName, "No pending DCC transfers to accept")
+    return true
+
+  of "/decline":
+    let filterNick = if args.len > 0: args.split(' ')[0].toLowerAscii else: ""
+    var declined = 0
+    for i in 0 ..< gDccTransfers.len:
+      if gDccTransfers[i].state == dccPending and gDccTransfers[i].serverId == serverId:
+        if filterNick.len == 0 or gDccTransfers[i].nick.toLowerAscii == filterNick:
+          gDccTransfers[i].state = dccDeclined
+          addSystemMessage(serverId, gActiveChannelName,
+            "Declined DCC transfer: " & gDccTransfers[i].filename & " from " & gDccTransfers[i].nick)
+          inc declined
+    if declined == 0:
+      addSystemMessage(serverId, gActiveChannelName, "No pending DCC transfers to decline")
+    return true
+
+  of "/transfers":
+    if gDccTransfers.len == 0:
+      addSystemMessage(serverId, gActiveChannelName, "No DCC transfers")
+    else:
+      for t in gDccTransfers:
+        let statusStr = case t.state
+          of dccPending: "PENDING"
+          of dccActive: "ACTIVE"
+          of dccDone: "DONE"
+          of dccDeclined: "DECLINED"
+          of dccFailed: "FAILED"
+        let sizeStr = if t.filesize > 1024 * 1024:
+                        $(t.filesize div (1024 * 1024)) & " MB"
+                      elif t.filesize > 1024:
+                        $(t.filesize div 1024) & " KB"
+                      else:
+                        $t.filesize & " B"
+        addSystemMessage(serverId, gActiveChannelName,
+          "[" & statusStr & "] " & t.filename & " (" & sizeStr & ") from " & t.nick)
+    return true
+
   of "/help":
-    let helpText = "Commands: /join /part /nick /msg /me /topic /quit /raw /away /back /disconnect /close /clear /whois /mode /notice /ignore /unignore /highlight /server /help"
+    let helpText = "Commands: /join /part /nick /msg /me /topic /quit /raw /away /back /disconnect /close /clear /whois /mode /notice /ignore /unignore /highlight /server /log /debug /monitor /accept /decline /transfers /help"
     addSystemMessage(serverId, gActiveChannelName, helpText)
     return true
 
@@ -1030,9 +1303,12 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       uiEvt.channel = event.pmTarget
       uiEvt.nick = event.pmSource
       uiEvt.text = event.pmText
-      # Detect if it's a PM to us (not a channel)
+      # Detect if it's a PM (not a channel) — channel name is the *other* person's nick
       if event.pmTarget.len > 0 and event.pmTarget[0] != '#':
-        uiEvt.channel = event.pmSource  # Show under sender's nick
+        if event.pmSource == client.currentNick:
+          uiEvt.channel = event.pmTarget   # echo-message: we sent this
+        else:
+          uiEvt.channel = event.pmSource   # incoming PM from them
       withLock gLock:
         gEventQueue.add(uiEvt)
 
@@ -1088,6 +1364,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       uiEvt.kind = uiModeChange
       uiEvt.channel = event.modeTarget
       uiEvt.text = event.modeChanges
+      uiEvt.users = event.modeParams
       withLock gLock:
         gEventQueue.add(uiEvt)
 
@@ -1101,6 +1378,8 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
 
     of iekConnected:
       uiEvt.kind = uiConnected
+      # Check if echo-message is enabled
+      uiEvt.boolParam = "echo-message" in client.enabledCaps
       withLock gLock:
         gEventQueue.add(uiEvt)
 
@@ -1129,8 +1408,112 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       of 366:  # RPL_ENDOFNAMES - ignore
         discard
       of 376, 422:  # RPL_ENDOFMOTD, ERR_NOMOTD
-        # MOTD finished, good time to signal fully connected
         discard
+      of 433:  # ERR_NICKNAMEINUSE
+        let idx = findConnection(connId)
+        if idx >= 0:
+          let oldNick = gConnections[idx].myNick
+          let newNick = oldNick & "_"
+          gConnections[idx].myNick = newNick
+          discard spawn client.changeNick(newNick)
+          uiEvt.kind = uiNewMessage
+          uiEvt.channel = ServerChannel
+          uiEvt.nick = ""
+          uiEvt.text = "Nick '" & oldNick & "' in use, trying '" & newNick & "'"
+          uiEvt.text2 = "system"
+          withLock gLock:
+            gEventQueue.add(uiEvt)
+      of 311:  # RPL_WHOISUSER
+        if event.numParams.len >= 5:
+          let line = event.numParams[1] & " (" & event.numParams[2] & "@" & event.numParams[3] & ")\n" & event.numParams[^1]
+          withLock gLock:
+            if gWhoisActive:
+              gWhoisInfo = line
+            else:
+              uiEvt.kind = uiNewMessage
+              uiEvt.channel = ServerChannel
+              uiEvt.nick = ""
+              uiEvt.text = "[WHOIS] " & line
+              uiEvt.text2 = "system"
+              gEventQueue.add(uiEvt)
+      of 312:  # RPL_WHOISSERVER
+        if event.numParams.len >= 3:
+          let line = "Server: " & event.numParams[2] & " (" & event.numParams[^1] & ")"
+          withLock gLock:
+            if gWhoisActive:
+              gWhoisInfo.add("\n" & line)
+            else:
+              uiEvt.kind = uiNewMessage
+              uiEvt.channel = ServerChannel
+              uiEvt.nick = ""
+              uiEvt.text = "[WHOIS] " & line
+              uiEvt.text2 = "system"
+              gEventQueue.add(uiEvt)
+      of 319:  # RPL_WHOISCHANNELS
+        if event.numParams.len >= 2:
+          let line = "Channels: " & event.numParams[^1]
+          withLock gLock:
+            if gWhoisActive:
+              gWhoisInfo.add("\n" & line)
+            else:
+              uiEvt.kind = uiNewMessage
+              uiEvt.channel = ServerChannel
+              uiEvt.nick = ""
+              uiEvt.text = "[WHOIS] " & line
+              uiEvt.text2 = "system"
+              gEventQueue.add(uiEvt)
+      of 317:  # RPL_WHOISIDLE
+        if event.numParams.len >= 3:
+          let secs = try: parseInt(event.numParams[2]) except: 0
+          let idleStr = if secs >= 3600: $(secs div 3600) & "h " & $((secs mod 3600) div 60) & "m"
+                        elif secs >= 60: $(secs div 60) & "m " & $(secs mod 60) & "s"
+                        else: $secs & "s"
+          let line = "Idle: " & idleStr
+          withLock gLock:
+            if gWhoisActive:
+              gWhoisInfo.add("\n" & line)
+            else:
+              uiEvt.kind = uiNewMessage
+              uiEvt.channel = ServerChannel
+              uiEvt.nick = ""
+              uiEvt.text = "[WHOIS] " & line
+              uiEvt.text2 = "system"
+              gEventQueue.add(uiEvt)
+      of 330:  # RPL_WHOISACCOUNT
+        if event.numParams.len >= 3:
+          let line = "Account: " & event.numParams[2]
+          withLock gLock:
+            if gWhoisActive:
+              gWhoisInfo.add("\n" & line)
+            else:
+              uiEvt.kind = uiNewMessage
+              uiEvt.channel = ServerChannel
+              uiEvt.nick = ""
+              uiEvt.text = "[WHOIS] " & line
+              uiEvt.text2 = "system"
+              gEventQueue.add(uiEvt)
+      of 313:  # RPL_WHOISOPERATOR
+        if event.numParams.len >= 2:
+          let line = "IRC Operator"
+          withLock gLock:
+            if gWhoisActive:
+              gWhoisInfo.add("\n" & line)
+      of 335:  # RPL_WHOISBOT
+        withLock gLock:
+          if gWhoisActive:
+            gWhoisInfo.add("\nBot")
+      of 318:  # RPL_ENDOFWHOIS
+        withLock gLock:
+          gWhoisActive = false
+      of 324:  # RPL_CHANNELMODEIS
+        if event.numParams.len >= 2:
+          uiEvt.kind = uiNewMessage
+          uiEvt.channel = event.numParams[1]
+          uiEvt.nick = ""
+          uiEvt.text = "Channel mode: " & event.numParams[2 .. ^1].join(" ")
+          uiEvt.text2 = "system"
+          withLock gLock:
+            gEventQueue.add(uiEvt)
       else:
         # Forward other numerics as system messages
         if event.numParams.len > 0:
@@ -1149,19 +1532,85 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
         uiEvt.nick = event.ctcpSource
         uiEvt.text = event.ctcpArgs
         uiEvt.boolParam = true  # isAction flag
-        # If target is not a channel, show under source nick
+        # If target is not a channel, channel name is the *other* person's nick
         if event.ctcpTarget.len > 0 and event.ctcpTarget[0] != '#':
-          uiEvt.channel = event.ctcpSource
+          if event.ctcpSource == client.currentNick:
+            uiEvt.channel = event.ctcpTarget   # echo-message: we sent this
+          else:
+            uiEvt.channel = event.ctcpSource   # incoming action from them
         withLock gLock:
           gEventQueue.add(uiEvt)
+      elif event.ctcpCommand == "TIME":
+        discard spawn client.ctcpReply(event.ctcpSource, "TIME", now().format("ddd MMM dd HH:mm:ss yyyy"))
       else:
-        discard  # VERSION, PING, etc. handled automatically
+        discard  # VERSION and PING handled by the IRC client library
 
     of iekTyping:
       uiEvt.kind = uiTyping
       uiEvt.channel = event.typingTarget
       uiEvt.nick = event.typingNick
       uiEvt.boolParam = event.typingActive
+      # For DM typing, channel is the *other* person's nick
+      if event.typingTarget.len > 0 and event.typingTarget[0] != '#':
+        uiEvt.channel = event.typingNick  # DM typing: route to sender's nick
+      withLock gLock:
+        gEventQueue.add(uiEvt)
+
+    of iekChghost:
+      uiEvt.kind = uiChghost
+      uiEvt.nick = event.chghostNick
+      uiEvt.text = event.chghostNewUser & "@" & event.chghostNewHost
+      withLock gLock:
+        gEventQueue.add(uiEvt)
+
+    of iekSetname:
+      uiEvt.kind = uiSetname
+      uiEvt.nick = event.setnameNick
+      uiEvt.text = event.setnameRealname
+      withLock gLock:
+        gEventQueue.add(uiEvt)
+
+    of iekAccount:
+      uiEvt.kind = uiAccount
+      uiEvt.nick = event.accountNick
+      uiEvt.text = event.accountName
+      withLock gLock:
+        gEventQueue.add(uiEvt)
+
+    of iekCompletedBatch:
+      uiEvt.kind = uiBatchComplete
+      uiEvt.text = event.cbBatchType
+      uiEvt.text2 = event.cbBatchRef
+      # For netsplit/netjoin, gather nicks from the batch messages
+      var nicks: seq[string] = @[]
+      for msg in event.cbMessages:
+        var nick = ""
+        case msg.kind
+        of iekQuit: nick = msg.quitNick
+        of iekJoin: nick = msg.joinNick
+        of iekPart: nick = msg.partNick
+        of iekPrivMsg: nick = msg.pmSource
+        else: discard
+        if nick.len > 0 and nick notin nicks:
+          nicks.add(nick)
+      uiEvt.users = nicks
+      if event.cbBatchParams.len > 0:
+        uiEvt.channel = event.cbBatchParams[0]
+      withLock gLock:
+        gEventQueue.add(uiEvt)
+
+    of iekBatch:
+      discard  # Individual batch start/end; wait for iekCompletedBatch
+
+    of iekMonOnline:
+      uiEvt.kind = uiMonOnline
+      uiEvt.users = event.monOnlineTargets
+      withLock gLock:
+        gEventQueue.add(uiEvt)
+
+    of iekMonOffline:
+      uiEvt.kind = uiMonOffline
+      uiEvt.users = event.monOfflineTargets
       withLock gLock:
         gEventQueue.add(uiEvt)
 
@@ -1194,8 +1643,104 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       withLock gLock:
         gEventQueue.add(uiEvt)
 
+    of iekDccSend:
+      uiEvt.kind = uiNewMessage
+      uiEvt.channel = ServerChannel
+      uiEvt.nick = ""
+      let sizeKb = event.dccInfo.filesize div 1024
+      uiEvt.text = "DCC SEND from " & event.dccSource & ": " & event.dccInfo.filename & " (" & $sizeKb & " KB) — use /accept or /decline"
+      uiEvt.text2 = "system"
+      withLock gLock:
+        gEventQueue.add(uiEvt)
+        # Track the DCC offer with connection info
+        gDccTransfers.add(DccTransfer(
+          id: gNextDccId,
+          nick: event.dccSource,
+          filename: event.dccInfo.filename,
+          filesize: event.dccInfo.filesize,
+          state: dccPending,
+          progress: 0.0,
+          serverId: connId,
+          ip: event.dccInfo.ip,
+          port: event.dccInfo.port,
+        ))
+        inc gNextDccId
+
+    of iekDccChat:
+      uiEvt.kind = uiNewMessage
+      uiEvt.channel = ServerChannel
+      uiEvt.nick = ""
+      uiEvt.text = "DCC CHAT request from " & event.dccSource & " (not supported)"
+      uiEvt.text2 = "system"
+      withLock gLock:
+        gEventQueue.add(uiEvt)
+
+    of iekDccAccept, iekDccResume:
+      uiEvt.kind = uiNewMessage
+      uiEvt.channel = ServerChannel
+      uiEvt.nick = ""
+      uiEvt.text = "DCC " & (if event.kind == iekDccAccept: "ACCEPT" else: "RESUME") & " from " & event.dccSource
+      uiEvt.text2 = "system"
+      withLock gLock:
+        gEventQueue.add(uiEvt)
+
     else:
       discard
+
+proc pushDccEvent(evKind: UiEventKind, sid: int, tid: int,
+                  msg: string = "") =
+  ## Push a DCC UI event to the event queue (called from event loop thread).
+  var evt: UiEvent
+  evt.kind = evKind
+  evt.serverId = sid
+  evt.intParam = tid
+  evt.text = msg
+  {.cast(gcsafe).}:
+    withLock gLock:
+      gEventQueue.add(evt)
+
+proc makeDccProgressCb(sid: int, tid: int): DccProgressCallback =
+  ## Factory that returns a progress callback for DCC transfers.
+  ## Uses a factory to avoid CPS lambda rewriting issues.
+  result = proc(received: int64, total: int64) =
+    let p = if total > 0: received.float / total.float else: -1.0
+    pushDccEvent(uiDccProgress, sid, tid, $p & "|" & $received)
+
+proc dccDownloader(dccTransferId: int, dccIp: uint32, dccPort: int,
+                    dccFilename: string, dccFilesize: int64,
+                    dccServerId: int): CpsVoidFuture {.cps.} =
+  ## CPS proc that runs on the event loop to download a DCC file.
+  ## Pushes progress/complete/failed events back to the UI.
+
+  # Create a dcc.DccTransfer for the actual download
+  var info: DccInfo
+  info.kind = "SEND"
+  info.filename = dccFilename
+  info.ip = dccIp
+  info.port = dccPort
+  info.filesize = dccFilesize
+
+  let outPath = getHomeDir() / "Downloads" / dccFilename.replace("/", "_").replace("\\", "_")
+  let transfer = dcc.DccTransfer(
+    info: info,
+    source: "",
+    state: dtsIdle,
+    totalBytes: dccFilesize,
+    outputPath: outPath,
+    connectTimeoutMs: 30000,
+  )
+
+  # Set progress callback via factory (avoids CPS lambda issues)
+  transfer.setProgressCallback(makeDccProgressCb(dccServerId, dccTransferId))
+
+  try:
+    await receiveDcc(transfer)
+    if transfer.state == dtsCompleted:
+      pushDccEvent(uiDccComplete, dccServerId, dccTransferId, transfer.outputPath)
+    else:
+      pushDccEvent(uiDccFailed, dccServerId, dccTransferId, transfer.error)
+  except CatchableError as e:
+    pushDccEvent(uiDccFailed, dccServerId, dccTransferId, e.msg)
 
 proc commandProcessor(): CpsVoidFuture {.cps.} =
   ## Runs on event loop thread. Drains command queue every 50ms.
@@ -1211,7 +1756,11 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
         let connId = cmd.serverId
         let existing = findConnection(connId)
         if existing >= 0:
-          continue  # Already connected
+          # Stale connection — clean it up first
+          let oldClient = gConnections[existing].client
+          oldClient.config.autoReconnect = false
+          discard spawn oldClient.disconnect()
+          gConnections.delete(existing)
 
         var cfg = newIrcClientConfig(
           host = cmd.text,
@@ -1221,6 +1770,8 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
         cfg.useTls = cmd.boolParam
         cfg.autoReconnect = true
         cfg.maxReconnectAttempts = 0
+        cfg.reconnectDelayMs = 5000
+        cfg.ctcpVersion = "CPS IRC GUI 1.0"
         if cmd.text3.len > 0:
           cfg.password = cmd.text3
         if cmd.text4.len > 0 and cmd.text5.len > 0:
@@ -1243,7 +1794,14 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
       of cmdDisconnect:
         let idx = findConnection(cmd.serverId)
         if idx >= 0:
-          discard spawn gConnections[idx].client.disconnect()
+          {.cast(gcsafe).}:
+            withLock gLock:
+              if cmd.serverId notin gIntentionalDisconnects:
+                gIntentionalDisconnects.add(cmd.serverId)
+          let client = gConnections[idx].client
+          client.config.autoReconnect = false
+          discard spawn client.disconnect()
+          gConnections.delete(idx)
 
       of cmdSendMessage:
         let idx = findConnection(cmd.serverId)
@@ -1322,12 +1880,47 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
           let reason = if cmd.text.len > 0: cmd.text else: "Goodbye"
           discard spawn gConnections[idx].client.quit(reason)
 
+      of cmdAcceptDcc, cmdRetryDcc:
+        # Look up DCC transfer info and spawn the download.
+        # NOTE: gDccTransfers is accessed locklessly here. The main thread
+        # also reads/writes it without the lock (tagAcceptTransfer), so
+        # using gLock here previously caused a self-deadlock with the
+        # withLock at the top of the loop (CPS try/finally interaction).
+        var dccIp: uint32 = 0
+        var dccPort: int = 0
+        var dccFilename: string = ""
+        var dccFilesize: int64 = 0
+        {.cast(gcsafe).}:
+          for t in gDccTransfers:
+            if t.id == cmd.intParam:
+              dccIp = t.ip
+              dccPort = t.port
+              dccFilename = t.filename
+              dccFilesize = t.filesize
+              break
+        if dccIp == 0 or dccPort == 0:
+          pushDccEvent(uiDccFailed, cmd.serverId, cmd.intParam,
+            "Passive DCC not supported (port=0 or ip=0)")
+        else:
+          try:
+            discard spawn dccDownloader(cmd.intParam, dccIp, dccPort,
+              dccFilename, dccFilesize, cmd.serverId)
+          except Exception as e:
+            stderr.writeLine "[DCC] CRASH in spawn dccDownloader: " & e.msg &
+              " (" & $e.name & ")"
+            pushDccEvent(uiDccFailed, cmd.serverId, cmd.intParam,
+              "DCC spawn failed: " & e.msg)
+
     await cpsSleep(50)
 
 proc eventLoopMain() {.thread.} =
   ## Event loop thread entry point.
   {.cast(gcsafe).}:
-    runCps(commandProcessor())
+    try:
+      runCps(commandProcessor())
+    except Exception as e:
+      stderr.writeLine "[EVENT LOOP] FATAL CRASH: " & e.msg & " (" & $e.name & ")"
+      stderr.writeLine "[EVENT LOOP] Event loop thread is dead — IRC will disconnect"
 
 proc ensureEventLoop() =
   if not gEventLoopRunning:
@@ -1354,6 +1947,12 @@ proc processUiEvents() =
         gServers[si].connected = true
         gServers[si].connecting = false
         gStatusText = "Connected to " & gServers[si].host
+        # Clear from intentional disconnects on reconnect
+        let idx = gIntentionalDisconnects.find(evt.serverId)
+        if idx >= 0: gIntentionalDisconnects.delete(idx)
+        # Track echo-message capability
+        if evt.boolParam and evt.serverId notin gEchoMessageServers:
+          gEchoMessageServers.add(evt.serverId)
         # Ensure server channel exists
         ensureChannel(evt.serverId, ServerChannel)
         if gActiveServerId == evt.serverId and gActiveChannelName.len == 0:
@@ -1370,15 +1969,27 @@ proc processUiEvents() =
     of uiDisconnected:
       if si >= 0:
         gServers[si].connected = false
-        gServers[si].connecting = false
         gServers[si].lagMs = -1
-        gStatusText = "Disconnected from " & gServers[si].host
+        let intentional = evt.serverId in gIntentionalDisconnects
+        if intentional:
+          # Remove from intentional list
+          let idx = gIntentionalDisconnects.find(evt.serverId)
+          if idx >= 0: gIntentionalDisconnects.delete(idx)
+          gServers[si].connecting = false
+          gStatusText = "Disconnected from " & gServers[si].host
+        else:
+          # Connection lost — auto-reconnect will kick in
+          gServers[si].connecting = true
+          gStatusText = "Connection lost to " & gServers[si].host & " — reconnecting..."
         addSystemMessage(evt.serverId, ServerChannel,
           "Disconnected: " & evt.text)
 
     of uiNewMessage:
       let channelName = if evt.channel.len > 0: evt.channel else: ServerChannel
       ensureChannel(evt.serverId, channelName)
+      # For DM channels, ensure both participants are in the user list
+      if channelName.len > 0 and channelName[0] != '#' and channelName != ServerChannel:
+        ensureDmUsers(evt.serverId, channelName, channelName)
 
       # Check ignore list
       if evt.nick.len > 0 and evt.nick.toLowerAscii in gIgnoreList:
@@ -1405,6 +2016,14 @@ proc processUiEvents() =
                     else: "normal"
       addMessage(evt.serverId, channelName, msgKind,
                  evt.nick, evt.text, isMention, isOwn)
+      # Clear typing for this user when they send a message
+      if evt.nick.len > 0:
+        let ck = channelKey(evt.serverId, channelName)
+        if ck in gTypingUsers:
+          for i in countdown(gTypingUsers[ck].len - 1, 0):
+            if gTypingUsers[ck][i].nick == evt.nick:
+              gTypingUsers[ck].delete(i)
+              break
 
     of uiUserJoin:
       ensureChannel(evt.serverId, evt.channel)
@@ -1428,6 +2047,9 @@ proc processUiEvents() =
             break
       addSystemMessage(evt.serverId, evt.channel,
         evt.nick & " has joined " & evt.channel)
+      # If this is our own join, save channel to auto-join list
+      if si >= 0 and evt.nick == gServers[si].nick:
+        syncAutoJoinChannels(evt.serverId)
 
     of uiUserPart:
       let ck = channelKey(evt.serverId, evt.channel)
@@ -1448,10 +2070,11 @@ proc processUiEvents() =
         evt.nick & " has left " & evt.channel & reason)
 
     of uiUserQuit:
-      # Remove user from all channels on this server
+      # Remove user from all channels on this server (skip DMs)
       let sk = serverKey(evt.serverId)
       if sk in gChannels:
         for ch in gChannels[sk]:
+          if ch.isDm: continue
           let ck = channelKey(evt.serverId, ch.name)
           if ck in gUsers:
             for i in countdown(gUsers[ck].len - 1, 0):
@@ -1459,8 +2082,9 @@ proc processUiEvents() =
                 gUsers[ck].delete(i)
                 break
       let reason = if evt.text.len > 0: " (" & evt.text & ")" else: ""
-      # Only show quit in active channel to avoid spam
-      if gActiveServerId == evt.serverId and gActiveChannelName.len > 0:
+      # Show quit message in active channel, but never in DMs or server window
+      if gActiveServerId == evt.serverId and gActiveChannelName.len > 0 and
+         gActiveChannelName[0] == '#':
         addSystemMessage(evt.serverId, gActiveChannelName,
           evt.nick & " has quit" & reason)
 
@@ -1527,10 +2151,53 @@ proc processUiEvents() =
             break
 
     of uiModeChange:
+      # Parse mode changes and update user prefixes
+      if evt.channel.len > 0 and evt.channel[0] == '#' and evt.text.len > 0:
+        let ck = channelKey(evt.serverId, evt.channel)
+        if ck in gUsers:
+          var adding = true
+          var paramIdx = 0
+          for ch in evt.text:
+            case ch
+            of '+': adding = true
+            of '-': adding = false
+            of 'o', 'v', 'h', 'a', 'q':
+              if paramIdx < evt.users.len:
+                let targetNick = evt.users[paramIdx]
+                inc paramIdx
+                let newPrefix = case ch
+                  of 'q': "~"
+                  of 'a': "&"
+                  of 'o': "@"
+                  of 'h': "%"
+                  of 'v': "+"
+                  else: ""
+                for i in 0 ..< gUsers[ck].len:
+                  if gUsers[ck][i].nick == targetNick:
+                    if adding:
+                      gUsers[ck][i].prefix = newPrefix
+                    else:
+                      if gUsers[ck][i].prefix == newPrefix:
+                        gUsers[ck][i].prefix = ""
+                    break
+            of 'b', 'e', 'I', 'k':
+              # Modes that take a parameter but don't affect user prefix
+              inc paramIdx
+            of 'l':
+              if adding: inc paramIdx
+            else:
+              discard  # Parameter-less modes
       addSystemMessage(evt.serverId, evt.channel,
-        "Mode " & evt.channel & " " & evt.text)
+        "Mode " & evt.channel & " " & evt.text &
+        (if evt.users.len > 0: " " & evt.users.join(" ") else: ""))
 
     of uiError:
+      # Detect reconnect messages to update server state
+      if si >= 0 and evt.text.startsWith("Reconnecting in"):
+        gServers[si].connecting = true
+        gStatusText = evt.text
+      elif si >= 0 and evt.text.startsWith("Connection failed"):
+        gServers[si].connecting = true  # Still attempting
       addErrorMessage(evt.serverId,
         if gActiveChannelName.len > 0: gActiveChannelName else: ServerChannel,
         evt.text)
@@ -1557,24 +2224,172 @@ proc processUiEvents() =
       discard
 
     of uiTyping:
-      if evt.serverId == gActiveServerId and evt.channel == gActiveChannelName:
-        if evt.boolParam:
-          gTypingText = evt.nick & " is typing..."
-        else:
-          if gTypingText.startsWith(evt.nick):
-            gTypingText = ""
+      let ck = channelKey(evt.serverId, evt.channel)
+      if ck notin gTypingUsers:
+        gTypingUsers[ck] = @[]
+      if evt.boolParam:
+        # Add or update typing timestamp
+        var found = false
+        for i in 0 ..< gTypingUsers[ck].len:
+          if gTypingUsers[ck][i].nick == evt.nick:
+            gTypingUsers[ck][i].time = epochTime()
+            found = true
+            break
+        if not found:
+          gTypingUsers[ck].add((nick: evt.nick, time: epochTime()))
+      else:
+        # Remove from typing
+        for i in countdown(gTypingUsers[ck].len - 1, 0):
+          if gTypingUsers[ck][i].nick == evt.nick:
+            gTypingUsers[ck].delete(i)
+            break
+      # Rebuild typing indicator text immediately
+      updateTypingText()
 
     of uiNickChange:
       discard
 
+    of uiChghost:
+      if gActiveServerId == evt.serverId and gActiveChannelName.len > 0:
+        addSystemMessage(evt.serverId, gActiveChannelName,
+          evt.nick & " changed host to " & evt.text)
+
+    of uiSetname:
+      if gActiveServerId == evt.serverId and gActiveChannelName.len > 0:
+        addSystemMessage(evt.serverId, gActiveChannelName,
+          evt.nick & " changed realname to " & evt.text)
+
+    of uiAccount:
+      if gActiveServerId == evt.serverId and gActiveChannelName.len > 0:
+        let action = if evt.text == "*": "logged out" else: "logged in as " & evt.text
+        addSystemMessage(evt.serverId, gActiveChannelName,
+          evt.nick & " " & action)
+
+    of uiBatchComplete:
+      let btype = evt.text
+      if btype == "netsplit" or btype == "netjoin":
+        let verb = if btype == "netsplit": "quit" else: "rejoined"
+        let summary = if evt.users.len <= 5:
+                        evt.users.join(", ")
+                      else:
+                        evt.users[0 ..< 5].join(", ") & " and " &
+                          $(evt.users.len - 5) & " others"
+        let server = if evt.channel.len > 0: " (" & evt.channel & ")" else: ""
+        let label = if btype == "netsplit": "Netsplit" else: "Netjoin"
+        # Show in all channels on this server
+        let sk = serverKey(evt.serverId)
+        if sk in gChannels:
+          for ch in gChannels[sk]:
+            if ch.name != ServerChannel:
+              addSystemMessage(evt.serverId, ch.name,
+                label & server & ": " & summary & " " & verb)
+      elif btype == "chathistory":
+        # Replay messages from chathistory batch — already forwarded individually
+        discard
+
+    of uiMonOnline:
+      if gActiveServerId == evt.serverId:
+        for nick in evt.users:
+          addSystemMessage(evt.serverId,
+            if gActiveChannelName.len > 0: gActiveChannelName else: ServerChannel,
+            "MONITOR: " & nick & " is now online")
+
+    of uiMonOffline:
+      if gActiveServerId == evt.serverId:
+        for nick in evt.users:
+          addSystemMessage(evt.serverId,
+            if gActiveChannelName.len > 0: gActiveChannelName else: ServerChannel,
+            "MONITOR: " & nick & " is now offline")
+
+    of uiDccProgress:
+      let tid = evt.intParam
+      let parts = evt.text.split('|')
+      let progress = try: parseFloat(parts[0]) except: 0.0
+      let received = if parts.len > 1: (try: parseBiggestInt(parts[1]) except: 0'i64) else: 0'i64
+      for i in 0 ..< gDccTransfers.len:
+        if gDccTransfers[i].id == tid:
+          gDccTransfers[i].progress = progress
+          gDccTransfers[i].bytesReceived = received
+          break
+
+    of uiDccComplete:
+      let tid = evt.intParam
+      for i in 0 ..< gDccTransfers.len:
+        if gDccTransfers[i].id == tid:
+          gDccTransfers[i].state = dccDone
+          gDccTransfers[i].progress = 1.0
+          gDccTransfers[i].outputPath = evt.text
+          addSystemMessage(evt.serverId, ServerChannel,
+            "DCC transfer complete: " & gDccTransfers[i].filename)
+          break
+
+    of uiDccFailed:
+      let tid = evt.intParam
+      for i in 0 ..< gDccTransfers.len:
+        if gDccTransfers[i].id == tid:
+          gDccTransfers[i].state = dccFailed
+          gDccTransfers[i].errorText = evt.text
+          addSystemMessage(evt.serverId, ServerChannel,
+            "DCC transfer failed: " & gDccTransfers[i].filename &
+            (if evt.text.len > 0: " — " & evt.text else: ""))
+          break
+
 # ============================================================
-# Tab completion
+# Tab completion / @-mention autocomplete
 # ============================================================
 
+proc levenshtein(a, b: string): int =
+  ## Levenshtein edit distance, single-row O(min(m,n)) space.
+  let m = a.len
+  let n = b.len
+  if m == 0: return n
+  if n == 0: return m
+  var row = newSeq[int](n + 1)
+  for j in 0 .. n:
+    row[j] = j
+  for i in 1 .. m:
+    var prev = row[0]
+    row[0] = i
+    for j in 1 .. n:
+      let old = row[j]
+      let cost = if a[i - 1] == b[j - 1]: 0 else: 1
+      row[j] = min(min(row[j] + 1, row[j - 1] + 1), prev + cost)
+      prev = old
+  row[n]
+
+proc fuzzyScore(query, candidate: string): int =
+  ## Lower is better.  0 = exact prefix, 9999 = no match.
+  let q = query.toLowerAscii
+  let c = candidate.toLowerAscii
+  if q.len == 0:
+    return 0
+  if c.startsWith(q):
+    return 0
+  let subIdx = c.find(q)
+  if subIdx >= 0:
+    return subIdx + 1
+  let prefixLen = min(q.len, c.len)
+  let prefixDist = levenshtein(q, c[0 ..< prefixLen])
+  let maxDist = (q.len + 1) div 2
+  if prefixDist <= maxDist:
+    return 100 + prefixDist
+  let fullDist = levenshtein(q, c)
+  if fullDist <= maxDist + 1:
+    return 200 + fullDist
+  return 9999
+
+proc dismissCompletion() =
+  gCompletionActive = false
+  gCompletionSuggestions = @[]
+  gCompletionIndex = -1
+  gMentionAtPos = -1
+
 proc computeCompletions() =
+  ## Tab-complete: match partial word at end of input.
   gCompletionSuggestions = @[]
   gCompletionActive = false
   gCompletionIndex = -1
+  gMentionAtPos = -1
 
   if gInputText.len == 0 or gActiveServerId < 0:
     return
@@ -1600,19 +2415,92 @@ proc computeCompletions() =
     gCompletionActive = true
     gCompletionIndex = 0
 
+proc computeMentionCompletions() =
+  ## @-mention: detect '@' before cursor, fuzzy-match users.
+  ## Called on every input change.
+  if gInputText.len == 0 or gActiveServerId < 0:
+    dismissCompletion()
+    return
+
+  # Scan backwards from end for '@'
+  let cursorPos = gInputText.len  # SwiftUI TextField doesn't expose cursor; use end
+  var atPos = -1
+  for i in countdown(cursorPos - 1, 0):
+    if gInputText[i] == '@':
+      atPos = i
+      break
+    if gInputText[i] == ' ':
+      break
+
+  if atPos < 0:
+    dismissCompletion()
+    return
+
+  # '@' must be at start or preceded by a space
+  if atPos > 0 and gInputText[atPos - 1] != ' ':
+    dismissCompletion()
+    return
+
+  let query = gInputText[atPos + 1 ..< cursorPos]
+
+  # Get my nick to exclude self
+  let si = findServerIdx(gActiveServerId)
+  let myNick = if si >= 0: gServers[si].nick else: ""
+
+  # Score and filter users
+  let ck = channelKey(gActiveServerId, gActiveChannelName)
+  if ck notin gUsers:
+    dismissCompletion()
+    return
+
+  var scored: seq[tuple[score: int, nick: string]] = @[]
+  for u in gUsers[ck]:
+    let nick = u.nick
+    if nick == myNick: continue
+    let s = fuzzyScore(query, nick)
+    if s < 9999:
+      scored.add((s, nick))
+
+  scored.sort(proc(a, b: tuple[score: int, nick: string]): int =
+    result = cmp(a.score, b.score)
+    if result == 0:
+      result = cmp(a.nick.toLowerAscii, b.nick.toLowerAscii)
+  )
+
+  const maxSuggestions = 10
+  gCompletionSuggestions = @[]
+  for i in 0 ..< min(scored.len, maxSuggestions):
+    gCompletionSuggestions.add(scored[i].nick)
+
+  if gCompletionSuggestions.len == 0:
+    dismissCompletion()
+    return
+
+  gCompletionActive = true
+  gMentionAtPos = atPos
+  if gCompletionIndex < 0 or gCompletionIndex >= gCompletionSuggestions.len:
+    gCompletionIndex = 0
+
 proc acceptCompletion() =
   if not gCompletionActive or gCompletionIndex < 0 or
      gCompletionIndex >= gCompletionSuggestions.len:
     return
 
   let completed = gCompletionSuggestions[gCompletionIndex]
-  let lastSpace = gInputText.rfind(' ')
-  let prefix = if lastSpace >= 0: gInputText[0 .. lastSpace] else: ""
-  let suffix = if lastSpace < 0: ": " else: " "
-  gInputText = prefix & completed & suffix
-  gCompletionSuggestions = @[]
-  gCompletionActive = false
-  gCompletionIndex = -1
+
+  if gMentionAtPos >= 0:
+    # @-mention mode: replace from '@' to end of query
+    let before = gInputText[0 ..< gMentionAtPos]
+    let suffix = if gMentionAtPos == 0: ": " else: " "
+    gInputText = before & completed & suffix
+  else:
+    # Tab-complete mode: replace last partial word
+    let lastSpace = gInputText.rfind(' ')
+    let prefix = if lastSpace >= 0: gInputText[0 .. lastSpace] else: ""
+    let suffix = if lastSpace < 0: ": " else: " "
+    gInputText = prefix & completed & suffix
+
+  dismissCompletion()
 
 # ============================================================
 # State patch builder
@@ -1639,7 +2527,6 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
     obj["isAway"] = %s.isAway
     serversArr.add(obj)
   patch["servers"] = serversArr
-  patch["activeServerId"] = %gActiveServerId
 
   # Channels for active server
   var channelsArr = newJArray()
@@ -1654,9 +2541,10 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
       obj["unread"] = %ch.unread
       obj["mentions"] = %ch.mentions
       obj["userCount"] = %ch.userCount
+      obj["isChannel"] = %ch.isChannel
+      obj["isDm"] = %ch.isDm
       channelsArr.add(obj)
   patch["channels"] = channelsArr
-  patch["activeChannelName"] = %gActiveChannelName
 
   # Messages for active channel
   var messagesArr = newJArray()
@@ -1705,11 +2593,12 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
 
   # Scalar state (non-editable — always included)
   patch["showUserList"] = %gShowUserList
-  patch["showConnectForm"] = %gShowConnectForm
   patch["statusText"] = %gStatusText
   patch["typingText"] = %gTypingText
   patch["currentTopic"] = %gCurrentTopic
   patch["currentUserCount"] = %gCurrentUserCount
+  patch["activeChannelIsChannel"] = %(gActiveChannelName.len > 0 and gActiveChannelName[0] == '#')
+  patch["activeChannelIsDm"] = %(gActiveChannelName.len > 0 and gActiveChannelName[0] != '#' and gActiveChannelName != ServerChannel)
   patch["lastMessageId"] = %(gNextMessageId - 1)
   patch["pollActive"] = %gPollActive
 
@@ -1721,9 +2610,54 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
   patch["completionActive"] = %gCompletionActive
   patch["completionIndex"] = %gCompletionIndex
 
-  # User-editable fields — only included when the bridge explicitly modifies them
-  # (not during Poll, to avoid overwriting in-progress typing)
+  # DCC transfers
+  var dccArr = newJArray()
+  var pendingCount = 0
+  for t in gDccTransfers:
+    var obj = newJObject()
+    obj["id"] = %t.id
+    obj["nick"] = %t.nick
+    obj["filename"] = %t.filename
+    let sizeStr = if t.filesize <= 0:
+                    "Unknown size"
+                  elif t.filesize > 1024 * 1024:
+                    $(t.filesize div (1024 * 1024)) & " MB"
+                  elif t.filesize > 1024:
+                    $(t.filesize div 1024) & " KB"
+                  else:
+                    $t.filesize & " B"
+    obj["sizeText"] = %sizeStr
+    obj["status"] = %(case t.state
+      of dccPending: "pending"
+      of dccActive: "active"
+      of dccDone: "done"
+      of dccDeclined: "declined"
+      of dccFailed: "failed")
+    obj["progress"] = %t.progress
+    obj["bytesReceived"] = %t.bytesReceived
+    obj["errorText"] = %t.errorText
+    obj["outputPath"] = %t.outputPath
+    dccArr.add(obj)
+    if t.state == dccPending: inc pendingCount
+  patch["dccTransfers"] = dccArr
+  patch["pendingTransferCount"] = %pendingCount
+
+  # WHOIS
+  patch["whoisNick"] = %gWhoisNick
+  patch["whoisInfo"] = %gWhoisInfo
+  patch["selectedUserNick"] = %gSelectedUserNick
+
+  # Action param fields
+  patch["actionServerId"] = %gActionServerId
+  patch["actionNick"] = %gActionNick
+  patch["actionTransferId"] = %gActionTransferId
+
+  # Fields only included when the bridge explicitly modifies them
+  # (not during Poll, to avoid overwriting in-progress typing, sheet state,
+  # or active channel/server selection which flickers on stale poll patches)
   if includeEditableFields:
+    patch["activeServerId"] = %gActiveServerId
+    patch["activeChannelName"] = %gActiveChannelName
     patch["inputText"] = %gInputText
     patch["connectHost"] = %gConnectHost
     patch["connectPort"] = %gConnectPort
@@ -1732,6 +2666,8 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
     patch["connectPassword"] = %gConnectPassword
     patch["connectSaslUser"] = %gConnectSaslUser
     patch["connectSaslPass"] = %gConnectSaslPass
+    patch["showConnectForm"] = %gShowConnectForm
+    patch["showTransfers"] = %gShowTransfers
 
   toBytes($patch)
 
@@ -1753,6 +2689,11 @@ proc syncFromSnapshot(payload: ptr uint8, payloadLen: uint32) =
     gConnectPassword = jsonString(node, "connectPassword", gConnectPassword)
     gConnectSaslUser = jsonString(node, "connectSaslUser", gConnectSaslUser)
     gConnectSaslPass = jsonString(node, "connectSaslPass", gConnectSaslPass)
+    gActionServerId = jsonInt(node, "actionServerId", gActionServerId)
+    gActionNick = jsonString(node, "actionNick", gActionNick)
+    gActionTransferId = jsonInt(node, "actionTransferId", gActionTransferId)
+    gJoinChannelText = jsonString(node, "joinChannelText", gJoinChannelText)
+    gCompletionSelectIndex = jsonInt(node, "completionSelectIndex", gCompletionSelectIndex)
 
     # Sync activeServerId and activeChannelName if provided
     let snapServerId = jsonInt(node, "activeServerId", gActiveServerId)
@@ -1777,11 +2718,33 @@ proc ensureInit() =
 # Update active channel context
 # ============================================================
 
+proc updateTypingText() =
+  ## Build typing indicator text from tracked users, expiring old entries.
+  let ck = channelKey(gActiveServerId, gActiveChannelName)
+  if ck notin gTypingUsers or gTypingUsers[ck].len == 0:
+    gTypingText = ""
+    return
+  let now = epochTime()
+  const typingTimeout = 6.0  # seconds
+  # Remove expired entries
+  for i in countdown(gTypingUsers[ck].len - 1, 0):
+    if now - gTypingUsers[ck][i].time > typingTimeout:
+      gTypingUsers[ck].delete(i)
+  if gTypingUsers[ck].len == 0:
+    gTypingText = ""
+  elif gTypingUsers[ck].len == 1:
+    gTypingText = gTypingUsers[ck][0].nick & " is typing..."
+  elif gTypingUsers[ck].len == 2:
+    gTypingText = gTypingUsers[ck][0].nick & " and " & gTypingUsers[ck][1].nick & " are typing..."
+  else:
+    gTypingText = gTypingUsers[ck][0].nick & " and " & $(gTypingUsers[ck].len - 1) & " others are typing..."
+
 proc syncActiveChannelContext() =
   ## Update current topic and user count from active channel state.
   if gActiveServerId < 0 or gActiveChannelName.len == 0:
     gCurrentTopic = ""
     gCurrentUserCount = 0
+    gTypingText = ""
     return
   let sk = serverKey(gActiveServerId)
   if sk in gChannels:
@@ -1789,9 +2752,11 @@ proc syncActiveChannelContext() =
       if ch.name == gActiveChannelName:
         gCurrentTopic = ch.topic
         gCurrentUserCount = ch.userCount
+        updateTypingText()
         return
   gCurrentTopic = ""
   gCurrentUserCount = 0
+  gTypingText = ""
 
 # ============================================================
 # Action names (for diagnostics)
@@ -1819,6 +2784,26 @@ proc actionName(tag: uint32): string =
   of tagSaveServer: "SaveServer"
   of tagRemoveServer: "RemoveServer"
   of tagLoadConfig: "LoadConfig"
+  of tagDisconnectServer: "DisconnectServer"
+  of tagReconnectServer: "ReconnectServer"
+  of tagConnectServer: "ConnectServer"
+  of tagRemoveServerById: "RemoveServerById"
+  of tagWhoisUser: "WhoisUser"
+  of tagStartDm: "StartDm"
+  of tagIgnoreUser: "IgnoreUser"
+  of tagHighlightUser: "HighlightUser"
+  of tagShowTransfers: "ShowTransfers"
+  of tagHideTransfers: "HideTransfers"
+  of tagAcceptTransfer: "AcceptTransfer"
+  of tagDeclineTransfer: "DeclineTransfer"
+  of tagShowJoinChannel: "ShowJoinChannel"
+  of tagHideJoinChannel: "HideJoinChannel"
+  of tagSubmitJoinChannel: "SubmitJoinChannel"
+  of tagSelectUser: "SelectUser"
+  of tagRequestWhois: "RequestWhois"
+  of tagHideWhois: "HideWhois"
+  of tagInputChanged: "InputChanged"
+  of tagCompletionSelect: "CompletionSelect"
   else: "Unknown"
 
 # ============================================================
@@ -1899,23 +2884,32 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
 
   of tagDisconnect:
     if gActiveServerId >= 0:
+      if gActiveServerId notin gIntentionalDisconnects:
+        gIntentionalDisconnects.add(gActiveServerId)
+      let si = findServerIdx(gActiveServerId)
+      if si >= 0:
+        gServers[si].connected = false
+        gServers[si].connecting = false
+        addSystemMessage(gActiveServerId, ServerChannel,
+          "Disconnected from " & gServers[si].host)
+      ensureEventLoop()
       withLock gLock:
         gCommandQueue.add(BridgeCommand(kind: cmdDisconnect,
           serverId: gActiveServerId))
-      gStatusText = "Disconnecting..."
+      gStatusText = "Disconnected"
 
   of tagSwitchServer:
     # Server ID passed via snapshot's activeServerId
-    syncActiveChannelContext()
     let si = findServerIdx(gActiveServerId)
     if si >= 0:
       gStatusText = gServers[si].name
-      # Select first channel of the server
+      # Select first channel of the new server
       let sk = serverKey(gActiveServerId)
       if sk in gChannels and gChannels[sk].len > 0:
         gActiveChannelName = gChannels[sk][0].name
       else:
         gActiveChannelName = ServerChannel
+    syncActiveChannelContext()
 
   of tagReconnect:
     if gActiveServerId >= 0:
@@ -1931,6 +2925,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
   of tagSwitchChannel:
     # Channel name is in snapshot
     syncActiveChannelContext()
+    gSelectedUserNick = ""
     # Clear unread
     if gActiveServerId >= 0 and gActiveChannelName.len > 0:
       let sk = serverKey(gActiveServerId)
@@ -1967,6 +2962,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
       withLock gLock:
         gCommandQueue.add(BridgeCommand(kind: cmdPartChannel,
           serverId: gActiveServerId, text: gActiveChannelName))
+      syncAutoJoinChannels(gActiveServerId)
 
   of tagCloseChannel:
     if gActiveServerId >= 0 and gActiveChannelName.len > 0 and
@@ -1988,6 +2984,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
         gActiveChannelName = gChannels[sk][0].name
       else:
         gActiveChannelName = ServerChannel
+      syncAutoJoinChannels(gActiveServerId)
       syncActiveChannelContext()
 
   of tagSendMessage:
@@ -2002,21 +2999,22 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
               gCommandQueue.add(BridgeCommand(kind: cmdSendMessage,
                 serverId: gActiveServerId, text: text,
                 text2: gActiveChannelName))
-            let si = findServerIdx(gActiveServerId)
-            let myNick = if si >= 0: gServers[si].nick else: "me"
-            addMessage(gActiveServerId, gActiveChannelName, "normal",
-                       myNick, text, false, true)
+            # Only add local message if echo-message is not active
+            # (with echo-message, server echoes our message back)
+            if gActiveServerId notin gEchoMessageServers:
+              let si = findServerIdx(gActiveServerId)
+              let myNick = if si >= 0: gServers[si].nick else: "me"
+              addMessage(gActiveServerId, gActiveChannelName, "normal",
+                         myNick, text, false, true)
           else:
             addErrorMessage(gActiveServerId, ServerChannel,
               "Cannot send messages to server window. Use /msg or switch to a channel.")
         gInputText = ""
-      gCompletionActive = false
-      gCompletionSuggestions = @[]
+      dismissCompletion()
 
   of tagUpdateInput:
-    # Input text already synced from snapshot
-    gCompletionActive = false
-    gCompletionSuggestions = @[]
+    # Input text already synced from snapshot — check for @-mention
+    computeMentionCompletions()
 
   of tagToggleUserList:
     gShowUserList = not gShowUserList
@@ -2028,24 +3026,29 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
     gShowConnectForm = false
 
   of tagTabComplete:
-    computeCompletions()
+    if gCompletionActive:
+      # If @-mention popup is showing, Tab accepts the selection
+      acceptCompletion()
+    else:
+      computeCompletions()
 
   of tagAcceptCompletion:
     acceptCompletion()
 
+  of tagInputChanged:
+    computeMentionCompletions()
+
+  of tagCompletionSelect:
+    if gCompletionActive and gCompletionSelectIndex >= 0 and
+       gCompletionSelectIndex < gCompletionSuggestions.len:
+      gCompletionIndex = gCompletionSelectIndex
+      acceptCompletion()
+
   of tagSaveServer:
-    # Update active server's autoJoinChannels from current channel list, then save
     if gActiveServerId >= 0:
-      let si = findServerIdx(gActiveServerId)
-      if si >= 0:
-        let sk = serverKey(gActiveServerId)
-        var chans: seq[string] = @[]
-        if sk in gChannels:
-          for ch in gChannels[sk]:
-            if ch.name != ServerChannel and ch.name.len > 0 and ch.name[0] == '#':
-              chans.add(ch.name)
-        gServers[si].autoJoinChannels = chans
-    saveConfig()
+      syncAutoJoinChannels(gActiveServerId)
+    else:
+      saveConfig()
     gStatusText = "Server saved"
 
   of tagRemoveServer:
@@ -2096,10 +3099,243 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
         gConnectNick = "cpsuser_" & $((epochTime().int) mod 10000)
       gStatusText = "Welcome! Connect to an IRC server to get started."
     else:
-      # Auto-select first server
+      # Auto-select first server and auto-connect all saved servers
       if gActiveServerId < 0:
         gActiveServerId = gServers[0].id
-      gStatusText = "Config loaded (" & $gServers.len & " servers)"
+        gActiveChannelName = ServerChannel
+      ensureEventLoop()
+      for s in gServers:
+        if not s.connected and not s.connecting:
+          let si = findServerIdx(s.id)
+          if si >= 0:
+            gServers[si].connecting = true
+            ensureChannel(s.id, ServerChannel)
+            addSystemMessage(s.id, ServerChannel,
+              "Connecting to " & s.host & ":" & $s.port & "...")
+            withLock gLock:
+              gCommandQueue.add(BridgeCommand(kind: cmdConnect,
+                serverId: s.id,
+                text: s.host,
+                intParam: s.port,
+                text2: s.nick,
+                boolParam: s.useTls,
+                text3: s.password,
+                text4: s.saslUser,
+                text5: s.saslPass))
+      gStatusText = "Connecting to " & $gServers.len & " server(s)..."
+
+  of tagDisconnectServer:
+    let sid = gActionServerId
+    if sid >= 0:
+      if sid notin gIntentionalDisconnects:
+        gIntentionalDisconnects.add(sid)
+      let si = findServerIdx(sid)
+      if si >= 0:
+        gServers[si].connected = false
+        gServers[si].connecting = false
+        addSystemMessage(sid, ServerChannel,
+          "Disconnected from " & gServers[si].host)
+        gStatusText = "Disconnected from " & gServers[si].host
+      ensureEventLoop()
+      withLock gLock:
+        gCommandQueue.add(BridgeCommand(kind: cmdDisconnect, serverId: sid))
+
+  of tagReconnectServer:
+    let sid = gActionServerId
+    if sid >= 0:
+      ensureEventLoop()
+      withLock gLock:
+        gCommandQueue.add(BridgeCommand(kind: cmdReconnect, serverId: sid))
+      let si = findServerIdx(sid)
+      if si >= 0:
+        gServers[si].connecting = true
+        gStatusText = "Reconnecting to " & gServers[si].host & "..."
+
+  of tagConnectServer:
+    let sid = gActionServerId
+    if sid >= 0:
+      let si = findServerIdx(sid)
+      if si >= 0 and not gServers[si].connected and not gServers[si].connecting:
+        ensureEventLoop()
+        gServers[si].connecting = true
+        withLock gLock:
+          gCommandQueue.add(BridgeCommand(kind: cmdConnect,
+            serverId: sid, text: gServers[si].host, text2: gServers[si].nick,
+            text3: gServers[si].password, text4: gServers[si].saslUser,
+            text5: gServers[si].saslPass,
+            intParam: gServers[si].port, boolParam: gServers[si].useTls))
+        gActiveServerId = sid
+        gActiveChannelName = ServerChannel
+        ensureChannel(sid, ServerChannel)
+        addSystemMessage(sid, ServerChannel,
+          "Connecting to " & gServers[si].host & ":" & $gServers[si].port & "...")
+        gStatusText = "Connecting to " & gServers[si].host & "..."
+
+  of tagRemoveServerById:
+    let sid = gActionServerId
+    if sid >= 0:
+      let si = findServerIdx(sid)
+      if si >= 0:
+        let name = gServers[si].name
+        if gServers[si].connected:
+          withLock gLock:
+            gCommandQueue.add(BridgeCommand(kind: cmdDisconnect, serverId: sid))
+        gServers.delete(si)
+        let sk = serverKey(sid)
+        if sk in gChannels:
+          for ch in gChannels[sk]:
+            let ck = channelKey(sid, ch.name)
+            gMessages.del(ck)
+            gUsers.del(ck)
+          gChannels.del(sk)
+        if gActiveServerId == sid:
+          if gServers.len > 0:
+            gActiveServerId = gServers[0].id
+            let newSk = serverKey(gActiveServerId)
+            if newSk in gChannels and gChannels[newSk].len > 0:
+              gActiveChannelName = gChannels[newSk][0].name
+            else:
+              gActiveChannelName = ""
+          else:
+            gActiveServerId = -1
+            gActiveChannelName = ""
+        saveConfig()
+        gStatusText = "Removed server: " & name
+
+  of tagWhoisUser:
+    let nick = gActionNick
+    if nick.len > 0 and gActiveServerId >= 0:
+      ensureEventLoop()
+      withLock gLock:
+        gCommandQueue.add(BridgeCommand(kind: cmdSendRaw,
+          serverId: gActiveServerId, text: "WHOIS " & nick))
+
+  of tagStartDm:
+    let nick = gActionNick
+    if nick.len > 0 and gActiveServerId >= 0:
+      ensureChannel(gActiveServerId, nick)
+      ensureDmUsers(gActiveServerId, nick, nick)
+      gActiveChannelName = nick
+      syncActiveChannelContext()
+
+  of tagIgnoreUser:
+    let nick = gActionNick
+    if nick.len > 0 and gActiveServerId >= 0:
+      let nickLower = nick.toLowerAscii
+      if nickLower in gIgnoreList:
+        let idx = gIgnoreList.find(nickLower)
+        if idx >= 0:
+          gIgnoreList.delete(idx)
+          saveConfig()
+          addSystemMessage(gActiveServerId, gActiveChannelName, "Unignored: " & nick)
+      else:
+        gIgnoreList.add(nickLower)
+        saveConfig()
+        addSystemMessage(gActiveServerId, gActiveChannelName, "Ignoring: " & nick)
+
+  of tagHighlightUser:
+    let nick = gActionNick
+    if nick.len > 0 and gActiveServerId >= 0:
+      let nickLower = nick.toLowerAscii
+      if nickLower in gHighlightWords:
+        let idx = gHighlightWords.find(nickLower)
+        if idx >= 0:
+          gHighlightWords.delete(idx)
+          saveConfig()
+          addSystemMessage(gActiveServerId, gActiveChannelName, "Unhighlighted: " & nick)
+      else:
+        gHighlightWords.add(nickLower)
+        saveConfig()
+        addSystemMessage(gActiveServerId, gActiveChannelName, "Highlighting: " & nick)
+
+  of tagShowTransfers:
+    gShowTransfers = true
+
+  of tagHideTransfers:
+    gShowTransfers = false
+
+  of tagAcceptTransfer:
+    let tid = gActionTransferId
+    if tid >= 0:
+      for i in 0 ..< gDccTransfers.len:
+        if gDccTransfers[i].id == tid and gDccTransfers[i].state == dccPending:
+          gDccTransfers[i].state = dccActive
+          addSystemMessage(gActiveServerId,
+            if gActiveChannelName.len > 0: gActiveChannelName else: ServerChannel,
+            "Accepted DCC transfer: " & gDccTransfers[i].filename & " from " & gDccTransfers[i].nick)
+          # Send command to event loop to actually start the download
+          ensureEventLoop()
+          withLock gLock:
+            gCommandQueue.add(BridgeCommand(kind: cmdAcceptDcc,
+              serverId: gDccTransfers[i].serverId,
+              intParam: tid,
+              text: gDccTransfers[i].filename))
+          break
+
+  of tagDeclineTransfer:
+    let tid = gActionTransferId
+    if tid >= 0:
+      for i in 0 ..< gDccTransfers.len:
+        if gDccTransfers[i].id == tid and gDccTransfers[i].state == dccPending:
+          gDccTransfers[i].state = dccDeclined
+          addSystemMessage(gActiveServerId,
+            if gActiveChannelName.len > 0: gActiveChannelName else: ServerChannel,
+            "Declined DCC transfer: " & gDccTransfers[i].filename & " from " & gDccTransfers[i].nick)
+          break
+
+  of tagRetryTransfer:
+    let tid = gActionTransferId
+    if tid >= 0:
+      for i in 0 ..< gDccTransfers.len:
+        if gDccTransfers[i].id == tid and gDccTransfers[i].state == dccFailed:
+          gDccTransfers[i].state = dccActive
+          gDccTransfers[i].progress = 0.0
+          gDccTransfers[i].bytesReceived = 0
+          gDccTransfers[i].errorText = ""
+          addSystemMessage(gActiveServerId,
+            if gActiveChannelName.len > 0: gActiveChannelName else: ServerChannel,
+            "Retrying DCC transfer: " & gDccTransfers[i].filename & " from " & gDccTransfers[i].nick)
+          ensureEventLoop()
+          withLock gLock:
+            gCommandQueue.add(BridgeCommand(kind: cmdRetryDcc,
+              serverId: gDccTransfers[i].serverId,
+              intParam: tid,
+              text: gDccTransfers[i].filename))
+          break
+
+  of tagSubmitJoinChannel:
+    if gActiveServerId >= 0 and gJoinChannelText.len > 0:
+      var channel = gJoinChannelText.strip()
+      if channel.len > 0:
+        if channel[0] != '#':
+          channel = "#" & channel
+        ensureEventLoop()
+        withLock gLock:
+          gCommandQueue.add(BridgeCommand(kind: cmdJoinChannel,
+            serverId: gActiveServerId, text: channel))
+        gActiveChannelName = channel
+        ensureChannel(gActiveServerId, channel)
+        addSystemMessage(gActiveServerId, channel,
+          "Joining " & channel & "...")
+        gStatusText = "Joining " & channel & "..."
+    gJoinChannelText = ""
+
+  of tagRequestWhois:
+    let nick = gActionNick
+    if nick.len > 0 and gActiveServerId >= 0:
+      gWhoisNick = nick
+      gWhoisInfo = ""
+      gWhoisActive = true
+      ensureEventLoop()
+      withLock gLock:
+        gCommandQueue.add(BridgeCommand(kind: cmdSendRaw,
+          serverId: gActiveServerId, text: "WHOIS " & nick))
+
+  of tagSelectUser:
+    gSelectedUserNick = gActionNick
+
+  of tagShowJoinChannel, tagHideJoinChannel, tagHideWhois:
+    discard  # Handled by Swift reducer
 
   else:
     gStatusText = "Unknown action (" & $actionTag & ")"
@@ -2120,9 +3356,10 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
       elif gServers[si].connecting:
         gStatusText = "Connecting to " & gServers[si].host & "..."
 
-  # During Poll, don't include user-editable text fields in the patch
-  # to avoid overwriting in-progress typing (race condition with 100ms timer)
-  let includeEditable = actionTag != tagPoll and actionTag != tagStartPoll
+  # During Poll / InputChanged, don't include user-editable text fields in the
+  # patch to avoid overwriting in-progress typing (race condition with 100ms timer)
+  let includeEditable = actionTag != tagPoll and actionTag != tagStartPoll and
+                        actionTag != tagInputChanged
   let patchBlob = buildPatch(includeEditable)
   let diagBlob = toBytes("nim.irc action=" & actionName(actionTag))
 

@@ -1,0 +1,85 @@
+component WhoisPanel(isDark: Bool) {
+  let fg = isDark ? Color(red: 0.93, green: 0.93, blue: 0.95) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.56, green: 0.56, blue: 0.60) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
+  let cardBg = isDark ? Color(red: 0.13, green: 0.13, blue: 0.14) : Color(red: 0.96, green: 0.96, blue: 0.97)
+  let cardBorder = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.06)
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 20) {
+    HStack {
+      HStack(spacing: 8) {
+        Image(systemName: "person.text.rectangle")
+          .font(.system(size: 14))
+          .foregroundColor(token.color.accent)
+
+        Text(whoisNick)
+          .font(.system(size: 17, weight: Font.Weight.semibold))
+          .foregroundColor(fg)
+      }
+
+      Spacer()
+
+      Button(action: HideWhois) {
+        Image(systemName: "xmark")
+          .font(.system(size: 10, weight: Font.Weight.medium))
+          .foregroundColor(fgSecondary)
+          .frame(width: 22, height: 22)
+          .background(
+            Circle()
+              .fill(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04))
+          )
+      }
+      .buttonStyle(BorderlessButtonStyle())
+    }
+
+    if whoisInfo == "" {
+      HStack(spacing: 8) {
+        ProgressView()
+          .controlSize(ControlSize.small)
+
+        Text("Loading WHOIS info...")
+          .font(.system(size: 12))
+          .foregroundColor(fgTertiary)
+      }
+      .padding(vertical: 16)
+    } else {
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        Text(whoisInfo)
+          .font(.system(size: 12))
+          .foregroundColor(fg)
+          .textSelection(.enabled)
+          .lineSpacing(4)
+      }
+      .padding(12)
+      .frame(maxWidth: Double.infinity, alignment: Alignment.leading)
+      .background(
+        RoundedRectangle(cornerRadius: 8)
+          .fill(cardBg)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 8)
+          .stroke(cardBorder, lineWidth: 0.5)
+      )
+    }
+
+    HStack {
+      Button(action: StartDm(nick: whoisNick)) {
+        Label("Message", systemImage: "bubble.left")
+          .font(.system(size: 12, weight: Font.Weight.medium))
+      }
+      .buttonStyle(BorderlessButtonStyle())
+
+      Spacer()
+
+      Button(action: HideWhois) {
+        Text("Close")
+          .font(.system(size: 12))
+          .foregroundColor(fgSecondary)
+      }
+      .buttonStyle(BorderlessButtonStyle())
+      .keyboardShortcut(KeyEquivalent.escape, modifiers: EventModifiers())
+    }
+  }
+  .padding(24)
+  .frame(width: 420)
+}

@@ -87,6 +87,41 @@ block testTryExceptFinally:
     "Unexpected try/except/finally exception log: " & $errLog
   echo "PASS: try/except/finally executes in CPS"
 
+block testBreakInNonSplitForInsideTryFinally:
+  ## Regression test: break inside a non-split for loop (no await) that's
+  ## wrapped in try/finally (e.g. from withLock) inside a CPS-split while
+  ## loop must NOT skip the finally clause. Previously, CPS rewrite()
+  ## transformed the inner break to `env.fn = outerBreakTarget; return env`,
+  ## bypassing the finally block.
+  var finallyCount = 0
+
+  proc main(): CpsFuture[int] {.cps.} =
+    var found = 0
+    var iterations = 0
+    while true:
+      inc iterations
+      if iterations > 3:
+        break  # This break IS the CPS-split while loop's break
+
+      let items = @[10, 20, 30, 40, 50]
+      try:
+        for item in items:
+          if item == 30:
+            found = item
+            break  # This break should exit the for loop, NOT the while loop
+        # The finally clause MUST run after break exits the for loop
+      finally:
+        finallyCount += 1
+
+      await cpsYield()
+
+    return found
+
+  let result = runCps(main())
+  assert result == 30, "Break should find item 30, got: " & $result
+  assert finallyCount == 3, "Finally should run 3 times (once per iteration), got: " & $finallyCount
+  echo "PASS: break in non-split for loop inside try/finally respects finally clause"
+
 static:
   let badReturnFinally = compiles:
     proc invalidReturnFinally(): CpsVoidFuture {.cps.} =

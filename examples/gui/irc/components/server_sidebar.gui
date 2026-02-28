@@ -1,28 +1,40 @@
 component ServerRow(server: IrcServer, isActive: Bool, isDark: Bool) {
-  let textPrimaryColor = isDark ? Color(red: 0.89, green: 0.92, blue: 0.98) : token.color.textPrimary
-  let textMutedColor = isDark ? Color(red: 0.67, green: 0.72, blue: 0.80) : token.color.textMuted
-  let rowSelectedColor = isDark ? Color(red: 0.15, green: 0.24, blue: 0.37) : token.color.rowSelected
+  let fg = isDark ? Color(red: 0.93, green: 0.93, blue: 0.95) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.66) : token.color.textMuted
+  let accentColor = token.color.accent
+  let warningColor = token.color.warning
+  let activeBg = isDark ? Color.white.opacity(0.07) : accentColor.opacity(0.08)
+  let activeBorder = isDark ? Color.white.opacity(0.10) : accentColor.opacity(0.15)
 
-  HStack(spacing: 8) {
-    Circle()
-      .fill(
-        server.connected
-          ? token.color.success
-          : server.connecting
-            ? token.color.warning
-            : token.color.danger
-      )
-      .frame(width: 8, height: 8)
+  HStack(spacing: 10) {
+    ZStack {
+      Circle()
+        .fill(
+          server.connected
+            ? token.color.success
+            : server.connecting
+              ? token.color.warning
+              : isDark ? Color(red: 0.35, green: 0.35, blue: 0.38) : Color(red: 0.76, green: 0.76, blue: 0.78)
+        )
+        .frame(width: 7, height: 7)
+
+      if server.connecting {
+        Circle()
+          .stroke(warningColor.opacity(0.3), lineWidth: 2)
+          .frame(width: 13, height: 13)
+      }
+    }
+    .frame(width: 14, height: 14)
 
     VStack(alignment: HorizontalAlignment.leading, spacing: 2) {
       Text(server.name)
-        .font(.headline)
-        .foregroundColor(isActive ? textPrimaryColor : textMutedColor)
+        .font(.system(size: 13, weight: isActive ? Font.Weight.semibold : Font.Weight.medium))
+        .foregroundColor(isActive ? fg : fgSecondary)
         .lineLimit(1)
 
       Text(server.nick)
-        .font(.caption2)
-        .foregroundColor(textMutedColor)
+        .font(.system(size: 10))
+        .foregroundColor(isDark ? Color(red: 0.48, green: 0.48, blue: 0.52) : token.color.textSubtle)
         .lineLimit(1)
     }
 
@@ -31,151 +43,218 @@ component ServerRow(server: IrcServer, isActive: Bool, isDark: Bool) {
     if server.connected {
       if server.lagMs >= 0 {
         Text("\(server.lagMs)ms")
-          .font(.caption2)
-          .foregroundColor(textMutedColor)
+          .font(.system(size: 9))
+          .foregroundColor(isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle)
           .monospacedDigit()
       }
     }
   }
-  .padding(vertical: 6, horizontal: 10)
+  .padding(vertical: 7, horizontal: 10)
   .contentShape(Rectangle())
-  .background(isActive ? rowSelectedColor : Color.clear)
-  .cornerRadius(6)
+  .background(
+    RoundedRectangle(cornerRadius: 7)
+      .fill(isActive ? activeBg : Color.clear)
+  )
+  .overlay(
+    RoundedRectangle(cornerRadius: 7)
+      .stroke(isActive ? activeBorder : Color.clear, lineWidth: 0.5)
+  )
+  .contextMenu {
+    if server.connected {
+      Button("Disconnect", action: DisconnectServer(serverId: server.id))
+      Button("Reconnect", action: ReconnectServer(serverId: server.id))
+    } else {
+      Button("Connect", action: ConnectServer(serverId: server.id))
+    }
+    Divider()
+    Button("Remove Server", action: RemoveServerById(serverId: server.id))
+  }
 }
 
-component ChannelRow(channel: IrcChannel, isActive: Bool, isDark: Bool) {
-  let textPrimaryColor = isDark ? Color(red: 0.89, green: 0.92, blue: 0.98) : token.color.textPrimary
-  let textMutedColor = isDark ? Color(red: 0.67, green: 0.72, blue: 0.80) : token.color.textMuted
-  let textSubtleColor = isDark ? Color(red: 0.52, green: 0.58, blue: 0.67) : token.color.textSubtle
-  let rowSelectedColor = isDark ? Color(red: 0.15, green: 0.24, blue: 0.37) : token.color.rowSelected
-  let mentionBgColor = isDark ? Color(red: 0.40, green: 0.30, blue: 0.10) : token.color.mentionBg
+component ChannelRow(channel: IrcChannel, isActive: Bool, isDark: Bool, isDm: Bool) {
+  let fg = isDark ? Color(red: 0.93, green: 0.93, blue: 0.95) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.56, green: 0.56, blue: 0.60) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
+  let accentColor = token.color.accent
+  let activeBg = isDark ? Color.white.opacity(0.07) : accentColor.opacity(0.08)
+  let activeBorder = isDark ? Color.white.opacity(0.10) : accentColor.opacity(0.15)
+  let hasActivity = channel.unread > 0 || channel.mentions > 0
 
-  HStack(spacing: 6) {
+  HStack(spacing: 7) {
+    if isDm {
+      Image(systemName: "person.fill")
+        .font(.system(size: 10))
+        .foregroundColor(
+          hasActivity ? token.color.accent : isActive ? fgSecondary : fgTertiary
+        )
+        .frame(width: 16)
+    } else {
+      Text("#")
+        .font(.system(size: 14, weight: Font.Weight.medium, design: Font.Design.rounded))
+        .foregroundColor(
+          channel.mentions > 0
+            ? token.color.danger
+            : hasActivity
+              ? token.color.accent
+              : isActive ? fgSecondary : fgTertiary
+        )
+        .frame(width: 16)
+    }
+
     Text(channel.name)
-      .font(.body)
+      .font(.system(size: 13, weight: hasActivity ? Font.Weight.semibold : Font.Weight.regular))
       .foregroundColor(
-        channel.mentions > 0
-          ? token.color.danger
-          : channel.unread > 0
-            ? textPrimaryColor
-            : isActive ? textPrimaryColor : textMutedColor
+        hasActivity ? fg : isActive ? fg : fgSecondary
       )
-      .bold(channel.unread > 0 || channel.mentions > 0)
       .lineLimit(1)
 
     Spacer()
 
     if channel.mentions > 0 {
       Text("\(channel.mentions)")
-        .font(.caption2)
-        .bold()
+        .font(.system(size: 10, weight: Font.Weight.bold))
         .foregroundColor(Color.white)
-        .padding(vertical: 2, horizontal: 6)
-        .background(token.color.danger)
-        .cornerRadius(8)
+        .padding(vertical: 1, horizontal: 5)
+        .background(
+          Capsule()
+            .fill(token.color.danger)
+        )
     } else if channel.unread > 0 {
-      Text("\(channel.unread)")
-        .font(.caption2)
-        .foregroundColor(textSubtleColor)
-        .padding(vertical: 2, horizontal: 6)
-        .background(isDark ? Color(red: 0.20, green: 0.23, blue: 0.30) : token.color.badgeBg)
-        .cornerRadius(8)
+      Circle()
+        .fill(token.color.accent)
+        .frame(width: 6, height: 6)
     }
   }
-  .padding(vertical: 5, horizontal: 10)
+  .padding(vertical: 6, horizontal: 10)
   .contentShape(Rectangle())
-  .background(isActive ? rowSelectedColor : Color.clear)
-  .cornerRadius(6)
+  .background(
+    RoundedRectangle(cornerRadius: 7)
+      .fill(isActive ? activeBg : Color.clear)
+  )
+  .overlay(
+    RoundedRectangle(cornerRadius: 7)
+      .stroke(isActive ? activeBorder : Color.clear, lineWidth: 0.5)
+  )
 }
 
 component ServerSidebar(isDark: Bool) {
-  let textSubtleColor = isDark ? Color(red: 0.52, green: 0.58, blue: 0.67) : token.color.textSubtle
-  let badgeBgColor = isDark
-    ? Color(red: 0.10, green: 0.12, blue: 0.18)
-    : token.color.badgeBg
+  let fgTertiary = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
+  let fgSecondary = isDark ? Color(red: 0.56, green: 0.56, blue: 0.60) : token.color.textMuted
+  let sidebarBg = isDark
+    ? Color(red: 0.10, green: 0.10, blue: 0.11)
+    : Color(red: 0.965, green: 0.965, blue: 0.975)
+  let dividerColor = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.06)
+  let sectionLabelColor = isDark ? Color(red: 0.38, green: 0.38, blue: 0.42) : Color(red: 0.60, green: 0.60, blue: 0.63)
 
   VStack(spacing: 0) {
-    VStack(alignment: HorizontalAlignment.leading, spacing: 2) {
-      Text("SERVERS")
-        .font(.caption2)
-        .foregroundColor(textSubtleColor)
-        .padding(vertical: 8, horizontal: 12)
+    ScrollView {
+      VStack(alignment: HorizontalAlignment.leading, spacing: 0) {
+        HStack {
+          Text("SERVERS")
+            .font(.system(size: 11, weight: Font.Weight.semibold))
+            .foregroundColor(sectionLabelColor)
+            .tracking(0.6)
 
-      if servers.count == 0 {
-        Text("No servers connected")
-          .font(.caption)
-          .foregroundColor(textSubtleColor)
-          .padding(horizontal: 12)
-      }
+          Spacer()
 
-      ForEach(items: servers, item: server) {
-        ServerRow(
-          server: server,
-          isActive: server.id == activeServerId,
-          isDark: isDark,
-          onTap: SwitchServer(serverId: server.id)
-        )
-        .padding(horizontal: 4)
-      }
-    }
-    .padding(vertical: 4)
+          Button(action: ShowConnectForm) {
+            Image(systemName: "plus")
+              .font(.system(size: 11, weight: Font.Weight.medium))
+              .foregroundColor(fgSecondary)
+          }
+          .buttonStyle(BorderlessButtonStyle())
+          .help("Add server")
+          .keyboardShortcut("n", modifiers: EventModifiers.command)
+        }
+        .padding(vertical: 10, horizontal: 14)
 
-    Divider()
-      .padding(horizontal: 12)
+        if servers.count == 0 {
+          VStack(spacing: 10) {
+            Image(systemName: "server.rack")
+              .font(.system(size: 28))
+              .foregroundColor(fgTertiary)
+              .opacity(0.4)
 
-    VStack(alignment: HorizontalAlignment.leading, spacing: 2) {
-      Text("CHANNELS")
-        .font(.caption2)
-        .foregroundColor(textSubtleColor)
-        .padding(vertical: 8, horizontal: 12)
+            Text("No servers")
+              .font(.system(size: 12))
+              .foregroundColor(fgTertiary)
 
-      if channels.count == 0 {
-        Text("No channels joined")
-          .font(.caption)
-          .foregroundColor(textSubtleColor)
-          .padding(horizontal: 12)
-      }
+            Button(action: ShowConnectForm) {
+              Text("Add Server")
+                .font(.system(size: 12, weight: Font.Weight.medium))
+                .foregroundColor(token.color.accent)
+            }
+            .buttonStyle(BorderlessButtonStyle())
+          }
+          .frame(maxWidth: Double.infinity)
+          .padding(vertical: 24)
+        }
 
-      ForEach(items: channels, item: channel) {
-        ChannelRow(
-          channel: channel,
-          isActive: channel.name == activeChannelName,
-          isDark: isDark,
-          onTap: SwitchChannel(channelName: channel.name)
-        )
-        .padding(horizontal: 4)
-        .contextMenu {
-          Button("Close Channel", action: CloseChannel)
-          Button("Part Channel", action: PartChannel)
+        ForEach(items: servers, item: server) {
+          ServerRow(
+            server: server,
+            isActive: server.id == activeServerId,
+            isDark: isDark,
+            onTap: SwitchServer(serverId: server.id)
+          )
+          .padding(horizontal: 6)
+        }
+
+        Spacer()
+          .frame(height: 16)
+
+        HStack {
+          Text("CHANNELS")
+            .font(.system(size: 11, weight: Font.Weight.semibold))
+            .foregroundColor(sectionLabelColor)
+            .tracking(0.6)
+
+          Spacer()
+
+          if activeServerId >= 0 {
+            Button(action: ShowJoinChannel) {
+              Image(systemName: "plus")
+                .font(.system(size: 11, weight: Font.Weight.medium))
+                .foregroundColor(fgSecondary)
+            }
+            .buttonStyle(BorderlessButtonStyle())
+            .help("Join channel")
+          }
+        }
+        .padding(vertical: 8, horizontal: 14)
+
+        if channels.count == 0 {
+          Text("No channels joined")
+            .font(.system(size: 12))
+            .foregroundColor(fgTertiary)
+            .padding(vertical: 16, horizontal: 14)
+        }
+
+        ForEach(items: channels, item: channel) {
+          if channel.isChannel || channel.isDm {
+            ChannelRow(
+              channel: channel,
+              isActive: channel.name == activeChannelName,
+              isDark: isDark,
+              isDm: channel.isDm,
+              onTap: SwitchChannel(channelName: channel.name)
+            )
+            .padding(horizontal: 6)
+            .contextMenu {
+              Button("Close", action: CloseChannel)
+              if channel.isChannel {
+                Button("Part Channel", action: PartChannel)
+              }
+            }
+          }
         }
       }
+      .padding(vertical: 6)
     }
-    .padding(vertical: 4)
 
     Spacer()
 
-    Divider()
-      .padding(horizontal: 12)
-
-    HStack(spacing: 8) {
-      Button(action: ShowConnectForm) {
-        Label("Connect", systemImage: "plus.circle")
-      }
-      .buttonStyle(BorderlessButtonStyle())
-      .font(.caption)
-      .foregroundColor(token.color.accent)
-
-      Spacer()
-
-      if activeServerId >= 0 {
-        Button("Disconnect", action: Disconnect)
-          .buttonStyle(BorderlessButtonStyle())
-          .font(.caption)
-          .foregroundColor(token.color.danger)
-      }
-    }
-    .padding(vertical: 8, horizontal: 12)
-
     StatusBar(isDark: isDark)
   }
+  .background(sidebarBg)
 }

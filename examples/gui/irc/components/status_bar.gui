@@ -1,18 +1,34 @@
 component StatusBar(isDark: Bool) {
-  let textSubtleColor = isDark ? Color(red: 0.52, green: 0.58, blue: 0.67) : token.color.textSubtle
-  let badgeBgColor = isDark
-    ? Color(red: 0.10, green: 0.12, blue: 0.18)
-    : token.color.badgeBg
+  let fgTertiary = isDark ? Color(red: 0.38, green: 0.38, blue: 0.42) : token.color.textSubtle
+  let barBg = isDark ? Color(red: 0.07, green: 0.07, blue: 0.08) : Color(red: 0.94, green: 0.94, blue: 0.95)
+  let dividerColor = isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.04)
+  let disconnectedDot = isDark ? Color(red: 0.35, green: 0.35, blue: 0.38) : Color(red: 0.72, green: 0.72, blue: 0.74)
 
-  HStack {
-    Text(statusText)
-      .font(.caption)
-      .foregroundColor(textSubtleColor)
-      .lineLimit(1)
+  VStack(spacing: 0) {
+    Rectangle()
+      .fill(dividerColor)
+      .frame(height: 1)
 
-    Spacer()
+    HStack(spacing: 6) {
+      Circle()
+        .fill(
+          statusText == "Disconnected"
+            ? disconnectedDot
+            : statusText == "Connected"
+              ? token.color.success
+              : token.color.warning
+        )
+        .frame(width: 5, height: 5)
+
+      Text(statusText)
+        .font(.system(size: 10))
+        .foregroundColor(fgTertiary)
+        .lineLimit(1)
+
+      Spacer()
+    }
+    .padding(vertical: 6, horizontal: 14)
+    .frame(maxWidth: Double.infinity, alignment: Alignment.leading)
+    .background(barBg)
   }
-  .padding(vertical: 6, horizontal: 12)
-  .frame(maxWidth: Double.infinity, alignment: Alignment.leading)
-  .background(badgeBgColor)
 }

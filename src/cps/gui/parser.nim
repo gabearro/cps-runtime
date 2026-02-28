@@ -11,6 +11,7 @@ type
     tokens: seq[GuiToken]
     idx: int
     diagnostics: seq[GuiDiagnostic]
+    noTrailingClosures: bool  ## Suppress trailing closure parsing (e.g., in if conditions)
 
 const
   topDeclKeywords = [
@@ -419,7 +420,8 @@ proc parsePostfix(p: var ParserState): GuiExpr =
       var callArgs = parsedArgs.args
       let callNamed = parsedArgs.named
       # Trailing closure: f(args) { ... } — only on same line as closing paren
-      if p.atKind(gtkLBrace) and p.curr.range.start.line == closeParenLine:
+      # Suppressed in if/while/for conditions to avoid consuming the body's { as a closure
+      if p.atKind(gtkLBrace) and p.curr.range.start.line == closeParenLine and not p.noTrailingClosures:
         discard p.advance() # consume '{'
         var closureParams: seq[string] = @[]
         var hasParamList = false
@@ -1290,6 +1292,8 @@ proc parseConditionalBranch(p: var ParserState): GuiUiNode =
 
   # Check for if-let binding: if let name = expr [, ...] { ... }
   if p.atIdent("let"):
+    let savedNoTrailing = p.noTrailingClosures
+    p.noTrailingClosures = true
     var clauses: seq[GuiIfLetClause] = @[]
     # Parse first let clause
     discard p.advance() # consume 'let'
@@ -1332,13 +1336,17 @@ proc parseConditionalBranch(p: var ParserState): GuiUiNode =
       ifLetClauses: clauses,
       range: ifTok.range
     )
+    p.noTrailingClosures = savedNoTrailing
     discard p.expectKind(gtkLBrace, "after if-let expression")
     while not p.atEnd and not p.atKind(gtkRBrace):
       result.children.add p.parseUiNodeOrConditional()
     discard p.expectKind(gtkRBrace, "to close if-let body")
     return
 
+  let savedNoTrailing = p.noTrailingClosures
+  p.noTrailingClosures = true
   let condition = p.parseExpression()
+  p.noTrailingClosures = savedNoTrailing
   result = GuiUiNode(
     name: "__if__",
     isConditional: true,

@@ -1,0 +1,208 @@
+component TransferRow(transfer: DccTransfer, isDark: Bool) {
+  let fg = isDark ? Color(red: 0.93, green: 0.93, blue: 0.95) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.56, green: 0.56, blue: 0.60) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
+  let dangerColor = token.color.danger
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 6) {
+    HStack(spacing: 10) {
+      Image(systemName: transfer.status == "failed" ? "exclamationmark.triangle.fill" : "doc.fill")
+        .font(.system(size: 14))
+        .foregroundColor(
+          transfer.status == "pending"
+            ? token.color.warning
+            : transfer.status == "active"
+              ? token.color.accent
+              : transfer.status == "done"
+                ? token.color.success
+                : transfer.status == "failed"
+                  ? dangerColor
+                  : fgTertiary
+        )
+
+      VStack(alignment: HorizontalAlignment.leading, spacing: 2) {
+        Text(transfer.filename)
+          .font(.system(size: 13, weight: Font.Weight.medium))
+          .foregroundColor(fg)
+          .lineLimit(1)
+
+        HStack(spacing: 4) {
+          if transfer.status == "active" && transfer.progress < 0 {
+            Text("\(transfer.bytesReceived / 1024) KB received")
+              .font(.system(size: 11))
+              .foregroundColor(fgSecondary)
+          } else {
+            Text(transfer.sizeText)
+              .font(.system(size: 11))
+              .foregroundColor(fgSecondary)
+          }
+
+          Text("from")
+            .font(.system(size: 11))
+            .foregroundColor(fgTertiary)
+
+          Text(transfer.nick)
+            .font(.system(size: 11, weight: Font.Weight.medium))
+            .foregroundColor(fgSecondary)
+        }
+      }
+
+      Spacer()
+
+      if transfer.status == "pending" {
+        HStack(spacing: 6) {
+          Button(action: AcceptTransfer(transferId: transfer.id)) {
+            Text("Accept")
+              .font(.system(size: 11, weight: Font.Weight.medium))
+              .foregroundColor(Color.white)
+              .padding(vertical: 4, horizontal: 12)
+              .background(
+                RoundedRectangle(cornerRadius: 6)
+                  .fill(token.color.success)
+              )
+          }
+          .buttonStyle(BorderlessButtonStyle())
+
+          Button(action: DeclineTransfer(transferId: transfer.id)) {
+            Text("Decline")
+              .font(.system(size: 11, weight: Font.Weight.medium))
+              .foregroundColor(dangerColor)
+              .padding(vertical: 4, horizontal: 12)
+              .background(
+                RoundedRectangle(cornerRadius: 6)
+                  .stroke(dangerColor.opacity(0.4), lineWidth: 1)
+              )
+          }
+          .buttonStyle(BorderlessButtonStyle())
+        }
+      } else if transfer.status == "active" {
+        Text("Transferring...")
+          .font(.system(size: 11))
+          .foregroundColor(token.color.accent)
+      } else if transfer.status == "done" {
+        HStack(spacing: 4) {
+          Image(systemName: "checkmark.circle.fill")
+            .font(.system(size: 14))
+            .foregroundColor(token.color.success)
+
+          if transfer.outputPath != "" {
+            Text(transfer.outputPath)
+              .font(.system(size: 10))
+              .foregroundColor(fgTertiary)
+              .lineLimit(1)
+              .truncationMode(Text.TruncationMode.middle)
+          }
+        }
+      } else if transfer.status == "failed" {
+        VStack(alignment: HorizontalAlignment.trailing, spacing: 4) {
+          Text(transfer.errorText != "" ? transfer.errorText : "Transfer failed")
+            .font(.system(size: 11))
+            .foregroundColor(dangerColor)
+            .lineLimit(2)
+            .multilineTextAlignment(TextAlignment.trailing)
+
+          Button(action: RetryTransfer(transferId: transfer.id)) {
+            Text("Retry")
+              .font(.system(size: 11, weight: Font.Weight.medium))
+              .foregroundColor(Color.white)
+              .padding(vertical: 4, horizontal: 12)
+              .background(
+                RoundedRectangle(cornerRadius: 6)
+                  .fill(token.color.accent)
+              )
+          }
+          .buttonStyle(BorderlessButtonStyle())
+        }
+      } else {
+        Text("Declined")
+          .font(.system(size: 11))
+          .foregroundColor(fgTertiary)
+      }
+    }
+
+    if transfer.status == "active" {
+      if transfer.progress >= 0 {
+        ProgressView(value: transfer.progress, total: 1.0)
+          .tint(token.color.accent)
+      } else {
+        ProgressView()
+          .tint(token.color.accent)
+      }
+    }
+  }
+  .padding(vertical: 10, horizontal: 16)
+}
+
+component TransfersPanel(isDark: Bool) {
+  let fg = isDark ? Color(red: 0.93, green: 0.93, blue: 0.95) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.56, green: 0.56, blue: 0.60) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
+  let dividerColor = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.06)
+
+  VStack(spacing: 0) {
+    HStack {
+      Text("File Transfers")
+        .font(.system(size: 15, weight: Font.Weight.semibold))
+        .foregroundColor(fg)
+
+      Spacer()
+
+      if pendingTransferCount > 0 {
+        Text("\(pendingTransferCount) pending")
+          .font(.system(size: 11, weight: Font.Weight.medium))
+          .foregroundColor(token.color.warning)
+      }
+
+      Button(action: HideTransfers) {
+        Image(systemName: "xmark")
+          .font(.system(size: 10, weight: Font.Weight.medium))
+          .foregroundColor(fgSecondary)
+          .frame(width: 22, height: 22)
+          .background(
+            Circle()
+              .fill(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04))
+          )
+      }
+      .buttonStyle(BorderlessButtonStyle())
+    }
+    .padding(vertical: 14, horizontal: 16)
+
+    Rectangle()
+      .fill(dividerColor)
+      .frame(height: 1)
+
+    if dccTransfers.count == 0 {
+      VStack(spacing: 12) {
+        Image(systemName: "arrow.down.circle")
+          .font(.system(size: 32))
+          .foregroundColor(fgTertiary)
+          .opacity(0.35)
+
+        VStack(spacing: 3) {
+          Text("No file transfers")
+            .font(.system(size: 13, weight: Font.Weight.medium))
+            .foregroundColor(fgSecondary)
+
+          Text("DCC transfers will appear here")
+            .font(.system(size: 12))
+            .foregroundColor(fgTertiary)
+        }
+      }
+      .frame(maxWidth: Double.infinity, maxHeight: Double.infinity)
+    } else {
+      ScrollView {
+        VStack(spacing: 0) {
+          ForEach(items: dccTransfers, item: transfer) {
+            TransferRow(transfer: transfer, isDark: isDark)
+
+            Rectangle()
+              .fill(dividerColor)
+              .frame(height: 1)
+              .padding(horizontal: 16)
+          }
+        }
+      }
+    }
+  }
+  .frame(minWidth: 420, minHeight: 300)
+}

@@ -362,15 +362,26 @@ proc tick*(loop: EventLoop) =
   var ioEventsThisTick = 0
   var readyRan2 = 0
 
-  # If we actually ran callbacks this tick, return immediately
-  # to give callers (runCps) a chance to check future completion
-  # before we potentially block in the selector.
+  # If we actually ran callbacks this tick, do a non-blocking I/O poll
+  # before returning. This prevents I/O starvation when the readyQueue
+  # is perpetually busy (e.g., async file writes, cpsYield loops).
+  # Without this, processIo is never reached and socket events (IRC,
+  # TCP connects) starve indefinitely.
   if hadReady or firedTimers > 0:
+    if not loop.selector.isEmpty:
+      try:
+        ioEventsThisTick = loop.processIo(0)  # non-blocking poll
+      except IOSelectorsException:
+        loop.selector = newSelector[IoCallback]()
+        ioEventsThisTick = 0
+      if loop.mtActive:
+        loop.drainCrossThreadQueue()
     if loop.readyQueue.len > 0:
       readyRan2 = loop.processReady()
     loop.stats.tickCount += 1
     loop.stats.totalCallbacksRun += int64(readyRan1 + readyRan2)
     loop.stats.totalTimersFired += int64(firedTimers)
+    loop.stats.totalIoEvents += int64(ioEventsThisTick)
     when defined(cpsTrace):
       let tickEnd = getMonoTime()
       let durationUs = (tickEnd - tickStart).inMicroseconds

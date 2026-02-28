@@ -1,12 +1,13 @@
-component UserRow(user: IrcUser, isDark: Bool) {
-  let textPrimaryColor = isDark ? Color(red: 0.89, green: 0.92, blue: 0.98) : token.color.textPrimary
-  let textMutedColor = isDark ? Color(red: 0.67, green: 0.72, blue: 0.80) : token.color.textMuted
+component UserRow(user: IrcUser, isSelected: Bool, isDark: Bool) {
+  let fg = isDark ? Color(red: 0.88, green: 0.88, blue: 0.90) : token.color.textPrimary
+  let fgAway = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
+  let accentColor = token.color.accent
+  let selectedBg = isDark ? Color.white.opacity(0.06) : accentColor.opacity(0.08)
 
-  HStack(spacing: 4) {
+  HStack(spacing: 5) {
     if user.prefix != "" {
       Text(user.prefix)
-        .font(.caption)
-        .bold()
+        .font(.system(size: 11, weight: Font.Weight.bold, design: Font.Design.monospaced))
         .foregroundColor(
           user.prefix == "@" || user.prefix == "~" || user.prefix == "&"
             ? token.color.opPrefix
@@ -14,56 +15,86 @@ component UserRow(user: IrcUser, isDark: Bool) {
               ? token.color.voicePrefix
               : token.color.halfopPrefix
         )
-        .frame(width: 14, alignment: Alignment.trailing)
+        .frame(width: 12, alignment: Alignment.center)
     } else {
       Spacer()
-        .frame(width: 14)
+        .frame(width: 12)
     }
 
     Text(user.nick)
-      .font(.callout)
-      .foregroundColor(user.isAway ? textMutedColor : textPrimaryColor)
-      .opacity(user.isAway ? 0.6 : 1.0)
+      .font(.system(size: 12))
+      .foregroundColor(user.isAway ? fgAway : fg)
       .lineLimit(1)
 
     Spacer()
+
+    if user.isAway {
+      Circle()
+        .fill(isDark ? Color(red: 0.30, green: 0.30, blue: 0.33) : Color(red: 0.80, green: 0.80, blue: 0.82))
+        .frame(width: 4, height: 4)
+    }
   }
-  .padding(vertical: 3, horizontal: 8)
+  .padding(vertical: 3, horizontal: 10)
+  .contentShape(Rectangle())
+  .background(
+    RoundedRectangle(cornerRadius: 5)
+      .fill(isSelected ? selectedBg : Color.clear)
+  )
+  .contextMenu {
+    Button("Send Message", action: StartDm(nick: user.nick))
+    Button("Whois", action: RequestWhois(nick: user.nick))
+    Divider()
+    Button("Ignore", action: IgnoreUser(nick: user.nick))
+    Button("Highlight", action: HighlightUser(nick: user.nick))
+  }
 }
 
 component UserListSidebar(isDark: Bool) {
-  let textSubtleColor = isDark ? Color(red: 0.52, green: 0.58, blue: 0.67) : token.color.textSubtle
-  let surfaceColor = isDark ? Color(red: 0.11, green: 0.14, blue: 0.20) : token.color.surface
+  let fgTertiary = isDark ? Color(red: 0.38, green: 0.38, blue: 0.42) : token.color.textSubtle
+  let sectionLabelColor = isDark ? Color(red: 0.38, green: 0.38, blue: 0.42) : Color(red: 0.60, green: 0.60, blue: 0.63)
+  let panelBg = isDark ? Color(red: 0.10, green: 0.10, blue: 0.11) : Color(red: 0.965, green: 0.965, blue: 0.975)
 
   VStack(spacing: 0) {
     HStack {
       Text("USERS")
-        .font(.caption2)
-        .foregroundColor(textSubtleColor)
+        .font(.system(size: 11, weight: Font.Weight.semibold))
+        .foregroundColor(sectionLabelColor)
+        .tracking(0.6)
 
       Spacer()
 
       Text("\(currentUserCount)")
-        .font(.caption2)
-        .foregroundColor(textSubtleColor)
+        .font(.system(size: 11, weight: Font.Weight.medium))
         .monospacedDigit()
+        .foregroundColor(sectionLabelColor)
     }
-    .padding(vertical: 8, horizontal: 12)
-
-    Divider()
-      .padding(horizontal: 8)
+    .padding(vertical: 10, horizontal: 14)
 
     if users.count == 0 {
-      Text("No users")
-        .font(.caption)
-        .foregroundColor(textSubtleColor)
-        .padding(12)
+      VStack(spacing: 8) {
+        Image(systemName: "person.slash")
+          .font(.system(size: 22))
+          .foregroundColor(fgTertiary)
+          .opacity(0.35)
+
+        Text("No users")
+          .font(.system(size: 12))
+          .foregroundColor(fgTertiary)
+      }
+      .frame(maxWidth: Double.infinity, maxHeight: Double.infinity)
+      .padding(vertical: 24)
     } else {
       List {
         ForEach(items: users, item: user) {
-          UserRow(user: user, isDark: isDark)
+          UserRow(
+            user: user,
+            isSelected: user.nick == selectedUserNick,
+            isDark: isDark,
+            onTap: SelectUser(nick: user.nick),
+            onDoubleTap: RequestWhois(nick: user.nick)
+          )
             .listRowSeparator(Visibility.hidden)
-            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            .listRowInsets(EdgeInsets(top: 0, leading: 4, bottom: 0, trailing: 4))
             .listRowBackground(Color.clear)
         }
       }
@@ -71,5 +102,6 @@ component UserListSidebar(isDark: Bool) {
       .scrollContentBackground(Visibility.hidden)
     }
   }
-  .background(surfaceColor)
+  .frame(maxHeight: Double.infinity)
+  .background(panelBg)
 }

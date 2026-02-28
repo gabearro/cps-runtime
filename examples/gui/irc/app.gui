@@ -14,29 +14,35 @@ app CpsIrc {
   }
 
   tokens {
-    color.accent = "#3b82f6"
-    color.success = "#22c55e"
-    color.warning = "#f59e0b"
-    color.danger = "#ef4444"
+    color.accent = "#0A84FF"
+    color.accentSubtle = "#0A84FF22"
+    color.success = "#30D158"
+    color.warning = "#FFD60A"
+    color.danger = "#FF453A"
 
-    color.textPrimary = "#1e293b"
-    color.textMuted = "#64748b"
-    color.textSubtle = "#94a3b8"
+    color.textPrimary = "#1D1D1F"
+    color.textSecondary = "#48484A"
+    color.textMuted = "#8E8E93"
+    color.textSubtle = "#AEAEB2"
 
-    color.surface = "#ffffff"
-    color.border = "#e2e8f0"
-    color.badgeBg = "#f1f5f9"
-    color.rowSelected = "#eff6ff"
-    color.mentionBg = "#fef3c7"
+    color.surface = "#FFFFFF"
+    color.surfaceSecondary = "#F5F5F7"
+    color.border = "#D2D2D7"
+    color.borderSubtle = "#E5E5EA"
+    color.badgeBg = "#F2F2F7"
+    color.rowHover = "#F5F5F7"
+    color.rowSelected = "#E8F0FE"
+    color.mentionBg = "#FFF9E6"
 
-    color.opPrefix = "#dc2626"
-    color.voicePrefix = "#16a34a"
-    color.halfopPrefix = "#2563eb"
+    color.opPrefix = "#FF3B30"
+    color.voicePrefix = "#34C759"
+    color.halfopPrefix = "#5856D6"
 
     spacing.xs = 4
-    spacing.sm = 8
-    spacing.md = 12
-    spacing.lg = 20
+    spacing.sm = 6
+    spacing.md = 10
+    spacing.lg = 16
+    spacing.xl = 24
   }
 
   model IrcServer {
@@ -60,6 +66,8 @@ app CpsIrc {
     unread: Int
     mentions: Int
     userCount: Int
+    isChannel: Bool
+    isDm: Bool
   }
 
   model IrcMessage {
@@ -77,6 +85,18 @@ app CpsIrc {
     nick: String
     prefix: String
     isAway: Bool
+  }
+
+  model DccTransfer {
+    id: Int
+    nick: String
+    filename: String
+    sizeText: String
+    status: String
+    progress: Double
+    bytesReceived: Int
+    errorText: String
+    outputPath: String
   }
 
   state {
@@ -106,6 +126,7 @@ app CpsIrc {
     completionSuggestions: String[] = []
     completionActive: Bool = false
     completionIndex: Int = -1
+    completionSelectIndex: Int = -1
 
     statusText: String = "Disconnected"
     pollActive: Bool = false
@@ -115,6 +136,26 @@ app CpsIrc {
 
     typingText: String = ""
     lastMessageId: Int = 0
+
+    actionServerId: Int = -1
+    actionNick: String = ""
+
+    activeChannelIsChannel: Bool = false
+    activeChannelIsDm: Bool = false
+
+    dccTransfers: DccTransfer[] = []
+    showTransfers: Bool = false
+    pendingTransferCount: Int = 0
+    actionTransferId: Int = -1
+
+    showJoinChannel: Bool = false
+    joinChannelText: String = ""
+
+    selectedUserNick: String = ""
+
+    showWhois: Bool = false
+    whoisNick: String = ""
+    whoisInfo: String = ""
 
     computed hasActiveServer: Bool = activeServerId >= 0
     computed hasActiveChannel: Bool = activeChannelName != ""
@@ -141,6 +182,28 @@ app CpsIrc {
   action RemoveServer(serverId: Int) owner nim
   action LoadConfig owner nim
 
+  action DisconnectServer(serverId: Int) owner both
+  action ReconnectServer(serverId: Int) owner both
+  action ConnectServer(serverId: Int) owner both
+  action RemoveServerById(serverId: Int) owner both
+  action WhoisUser(nick: String) owner both
+  action StartDm(nick: String) owner both
+  action IgnoreUser(nick: String) owner both
+  action HighlightUser(nick: String) owner both
+  action ShowTransfers owner both
+  action HideTransfers owner both
+  action AcceptTransfer(transferId: Int) owner both
+  action DeclineTransfer(transferId: Int) owner both
+  action ShowJoinChannel owner swift
+  action HideJoinChannel owner swift
+  action SubmitJoinChannel owner both
+  action SelectUser(nick: String) owner both
+  action RequestWhois(nick: String) owner both
+  action HideWhois owner swift
+  action RetryTransfer(transferId: Int) owner both
+  action InputChanged owner nim
+  action CompletionSelect(index: Int) owner nim
+
   reducer {
     on StartPoll {
       set pollActive = true
@@ -149,6 +212,7 @@ app CpsIrc {
 
     on SwitchServer(serverId) {
       set activeServerId = serverId
+      set activeChannelName = ""
     }
 
     on SwitchChannel(channelName) {
@@ -165,6 +229,92 @@ app CpsIrc {
 
     on HideConnectForm {
       set showConnectForm = false
+    }
+
+    on DisconnectServer(serverId) {
+      set actionServerId = serverId
+    }
+
+    on ReconnectServer(serverId) {
+      set actionServerId = serverId
+    }
+
+    on ConnectServer(serverId) {
+      set actionServerId = serverId
+    }
+
+    on RemoveServerById(serverId) {
+      set actionServerId = serverId
+    }
+
+    on WhoisUser(nick) {
+      set actionNick = nick
+    }
+
+    on StartDm(nick) {
+      set actionNick = nick
+      set showWhois = false
+    }
+
+    on IgnoreUser(nick) {
+      set actionNick = nick
+    }
+
+    on HighlightUser(nick) {
+      set actionNick = nick
+    }
+
+    on ShowTransfers {
+      set showTransfers = true
+    }
+
+    on HideTransfers {
+      set showTransfers = false
+    }
+
+    on AcceptTransfer(transferId) {
+      set actionTransferId = transferId
+    }
+
+    on DeclineTransfer(transferId) {
+      set actionTransferId = transferId
+    }
+
+    on ShowJoinChannel {
+      set showJoinChannel = true
+      set joinChannelText = "#"
+    }
+
+    on HideJoinChannel {
+      set showJoinChannel = false
+      set joinChannelText = ""
+    }
+
+    on SubmitJoinChannel {
+      set showJoinChannel = false
+    }
+
+    on SelectUser(nick) {
+      set actionNick = nick
+    }
+
+    on RequestWhois(nick) {
+      set actionNick = nick
+      set whoisNick = nick
+      set whoisInfo = ""
+      set showWhois = true
+    }
+
+    on HideWhois {
+      set showWhois = false
+    }
+
+    on RetryTransfer(transferId) {
+      set actionTransferId = transferId
+    }
+
+    on CompletionSelect(index) {
+      set completionSelectIndex = index
     }
   }
 

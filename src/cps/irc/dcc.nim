@@ -4,13 +4,15 @@
 ## Supports both direct connections and proxied connections.
 ## Provides progress callbacks and resumption support.
 
-import std/[strutils, os]
+import std/[strutils, os, times]
 import ../runtime
 import ../transform
 import ../eventloop
 import ../io/streams
 import ../io/tcp
+import ../io/files
 import ../io/proxy
+import ../io/timeouts
 import ./protocol
 
 type
@@ -35,6 +37,7 @@ type
     resumePosition*: int64    ## Resume offset (0 = start from beginning)
     error*: string
     proxies*: seq[ProxyConfig] ## Proxy chain for DCC connections
+    connectTimeoutMs*: int    ## Connection timeout in ms (0 = no timeout)
     progressCb: DccProgressCallback
     stream: AsyncStream
 
@@ -51,7 +54,7 @@ type
 # DccManager
 # ============================================================
 
-proc newDccManager*(downloadDir: string = "downloads",
+proc newDccManager*(downloadDir: string = getHomeDir() / "Downloads",
                     maxConcurrent: int = 5): DccManager =
   DccManager(
     defaultDownloadDir: downloadDir,
@@ -112,7 +115,8 @@ proc writeDccAck(stream: AsyncStream, bytesReceived: int64): CpsVoidFuture =
 proc receiveDcc*(transfer: DccTransfer): CpsVoidFuture {.cps.} =
   ## Accept and download a DCC SEND offer.
   ## Connects to the sender (directly or through proxies), receives the file,
-  ## and saves it to transfer.outputPath.
+  ## and saves it to transfer.outputPath. All I/O uses the CPS async runtime
+  ## to avoid blocking the event loop.
   if transfer.state != dtsIdle:
     raise newException(AsyncIoError, "Transfer already started or completed")
 
@@ -130,49 +134,72 @@ proc receiveDcc*(transfer: DccTransfer): CpsVoidFuture {.cps.} =
   try:
     var stream: AsyncStream
     if transfer.proxies.len > 0:
-      let ps = await proxyChainConnect(transfer.proxies, ip, port)
-      stream = ps.AsyncStream
+      if transfer.connectTimeoutMs > 0:
+        let ps: ProxyStream = await withTimeout(proxyChainConnect(transfer.proxies, ip, port), transfer.connectTimeoutMs)
+        stream = ps.AsyncStream
+      else:
+        let ps = await proxyChainConnect(transfer.proxies, ip, port)
+        stream = ps.AsyncStream
     else:
-      let tcp = await tcpConnect(ip, port)
-      stream = tcp.AsyncStream
+      if transfer.connectTimeoutMs > 0:
+        let tcp: TcpStream = await withTimeout(tcpConnect(ip, port), transfer.connectTimeoutMs)
+        stream = tcp.AsyncStream
+      else:
+        let tcp = await tcpConnect(ip, port)
+        stream = tcp.AsyncStream
 
     transfer.stream = stream
     transfer.state = dtsTransferring
 
-    # Open output file (append if resuming)
-    var f: File
+    # Open output file via async FileStream (yields to event loop on writes)
     let fileMode = if transfer.resumePosition > 0: fmAppend else: fmWrite
-    if not open(f, transfer.outputPath, fileMode):
+    var fileStream: files.FileStream
+    try:
+      fileStream = files.newFileStream(transfer.outputPath, fileMode)
+    except CatchableError as e:
       stream.close()
       transfer.state = dtsFailed
-      transfer.error = "Failed to open output file: " & transfer.outputPath
+      transfer.error = "Failed to open output file: " & transfer.outputPath & " (" & e.msg & ")"
       return
 
     # Receive loop — start counting from resume position
     transfer.bytesReceived = transfer.resumePosition
     let chunkSize = 16384  # 16KB chunks
+    var lastProgressTime = epochTime()
+    var chunkCount = 0
 
     while true:
       # Check if we've received everything
       if transfer.totalBytes > 0 and transfer.bytesReceived >= transfer.totalBytes:
         break
 
+      # Yield to the event loop so other tasks (IRC, timers, UI) can run.
+      # TCP read and DCC ack both have fast paths that return pre-completed
+      # futures (inline, no yield), so without this explicit yield the loop
+      # can starve the event loop when data arrives faster than we process it.
+      await cpsYield()
+
       let data = await stream.read(chunkSize)
       if data.len == 0:
         break  # EOF
 
-      # Write to file
-      f.write(data)
+      # Write to file asynchronously (scheduleCallback → yields to event loop)
+      await fileStream.write(data)
       transfer.bytesReceived += data.len
+      inc chunkCount
 
-      # Send DCC acknowledgment
+      # Send DCC acknowledgment (4 bytes — TCP fast path, usually inline)
       await writeDccAck(stream, transfer.bytesReceived)
 
-      # Progress callback
+      # Throttled progress callback — at most every 250ms
       if transfer.progressCb != nil:
-        transfer.progressCb(transfer.bytesReceived, transfer.totalBytes)
+        let now = epochTime()
+        if now - lastProgressTime >= 0.25 or
+            (transfer.totalBytes > 0 and transfer.bytesReceived >= transfer.totalBytes):
+          lastProgressTime = now
+          transfer.progressCb(transfer.bytesReceived, transfer.totalBytes)
 
-    f.close()
+    fileStream.close()
     stream.close()
     transfer.stream = nil
 

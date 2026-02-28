@@ -1,66 +1,81 @@
 component ConnectForm(isDark: Bool) {
-  let textPrimaryColor = isDark ? Color(red: 0.89, green: 0.92, blue: 0.98) : token.color.textPrimary
-  let textMutedColor = isDark ? Color(red: 0.67, green: 0.72, blue: 0.80) : token.color.textMuted
+  let fg = isDark ? Color(red: 0.93, green: 0.93, blue: 0.95) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.56, green: 0.56, blue: 0.60) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
 
-  VStack(spacing: 16) {
+  VStack(spacing: 24) {
     HStack {
-      Text("Connect to Server")
-        .font(.title2)
-        .bold()
-        .foregroundColor(textPrimaryColor)
+      VStack(alignment: HorizontalAlignment.leading, spacing: 3) {
+        Text("New Connection")
+          .font(.system(size: 17, weight: Font.Weight.semibold))
+          .foregroundColor(fg)
+
+        Text("Connect to an IRC server")
+          .font(.system(size: 12))
+          .foregroundColor(fgTertiary)
+      }
 
       Spacer()
 
       Button(action: HideConnectForm) {
-        Image(systemName: "xmark.circle.fill")
+        Image(systemName: "xmark")
+          .font(.system(size: 10, weight: Font.Weight.medium))
+          .foregroundColor(fgSecondary)
+          .frame(width: 22, height: 22)
+          .background(
+            Circle()
+              .fill(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04))
+          )
       }
       .buttonStyle(BorderlessButtonStyle())
-      .foregroundColor(textMutedColor)
     }
 
     Form {
       Section("Server") {
-        TextField("Hostname", text: connectHost)
+        TextField("irc.libera.chat", text: connectHost)
           .textFieldStyle(RoundedBorderTextFieldStyle())
 
-        TextField("Port", text: connectPort)
-          .textFieldStyle(RoundedBorderTextFieldStyle())
+        HStack(spacing: 12) {
+          TextField("6667", text: connectPort)
+            .textFieldStyle(RoundedBorderTextFieldStyle())
+            .frame(width: 80)
 
-        Toggle("Use TLS", isOn: connectUseTls)
+          Toggle("TLS", isOn: connectUseTls)
+        }
       }
 
       Section("Identity") {
         TextField("Nickname", text: connectNick)
           .textFieldStyle(RoundedBorderTextFieldStyle())
 
-        SecureField("Server Password (optional)", text: connectPassword)
+        SecureField("Server password (optional)", text: connectPassword)
           .textFieldStyle(RoundedBorderTextFieldStyle())
       }
 
-      Section("SASL Authentication (optional)") {
-        TextField("SASL Username", text: connectSaslUser)
+      Section("SASL (optional)") {
+        TextField("Username", text: connectSaslUser)
           .textFieldStyle(RoundedBorderTextFieldStyle())
 
-        SecureField("SASL Password", text: connectSaslPass)
+        SecureField("Password", text: connectSaslPass)
           .textFieldStyle(RoundedBorderTextFieldStyle())
       }
     }
     .formStyle(GroupedFormStyle())
 
-    HStack(spacing: 12) {
+    HStack(spacing: 10) {
       Spacer()
 
       Button("Cancel", action: HideConnectForm)
         .buttonStyle(BorderedButtonStyle())
         .controlSize(.large)
+        .keyboardShortcut(KeyEquivalent.escape)
 
       Button("Connect", action: Connect)
         .buttonStyle(BorderedProminentButtonStyle())
         .controlSize(.large)
         .keyboardShortcut(KeyEquivalent.return, modifiers: EventModifiers.command)
     }
-    .padding(top: 8)
   }
   .padding(24)
-  .frame(minWidth: 420, idealWidth: 480, minHeight: 400)
+  .frame(minWidth: 440, idealWidth: 480, minHeight: 420)
 }

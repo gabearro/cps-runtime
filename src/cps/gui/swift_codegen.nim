@@ -507,13 +507,29 @@ proc emitModifierCall(
         return indent(level) & "." & modName & " { store.send(" & sendExpr & ") }"
 
   # focused modifier: .focused($focusVar) — needs binding
+  # Optional autoFocus param: .focused(myVar, autoFocus: true) → emits .onAppear { myVar = true }
   if modName == "focused":
     var argsText: seq[string] = @[]
+    var autoFocus = false
+    var focusVarName = ""
     for arg in modDecl.args:
-      argsText.add emitBindingExpr(ctx, arg)
+      let bindExpr = emitBindingExpr(ctx, arg)
+      argsText.add bindExpr
+      # Extract the variable name (strip leading $)
+      if arg.kind == geIdent:
+        focusVarName = swiftIdent(arg.ident)
     for arg in modDecl.namedArgs:
-      argsText.add swiftIdent(arg.name) & ": " & emitBindingExpr(ctx, arg.value)
-    return indent(level) & ".focused(" & argsText.join(", ") & ")"
+      let key = swiftIdent(arg.name)
+      if key == "autoFocus":
+        # Don't pass autoFocus to Swift — it's our DSL extension
+        if arg.value.kind == geBoolLit and arg.value.boolVal:
+          autoFocus = true
+      else:
+        argsText.add key & ": " & emitBindingExpr(ctx, arg.value)
+    var focusedLine = indent(level) & ".focused(" & argsText.join(", ") & ")"
+    if autoFocus and focusVarName.len > 0:
+      focusedLine.add "\n" & indent(level) & ".onAppear { " & focusVarName & " = true }"
+    return focusedLine
 
   # searchable modifier: .searchable(text: $binding, ...) — needs binding for text
   if modName == "searchable":
@@ -726,6 +742,12 @@ proc emitNode(
       let sendExpr = emitActionSendExpr(ctx, arg.value)
       if sendExpr.len > 0:
         postModifiers.add ".onTapGesture { store.send(" & sendExpr & ") }"
+      else:
+        retainedNamed.add arg
+    elif arg.name == "onDoubleTap":
+      let sendExpr = emitActionSendExpr(ctx, arg.value)
+      if sendExpr.len > 0:
+        postModifiers.add ".onTapGesture(count: 2) { store.send(" & sendExpr & ") }"
       else:
         retainedNamed.add arg
     else:
@@ -1528,11 +1550,14 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
         of gpwNamespace: "@Namespace"  # unreachable, handled above
       let isPrivate = ls.wrapper in {gpwState, gpwFocusState, gpwGestureState, gpwStateObject, gpwAccessibilityFocusState}
       let privMod = if isPrivate: " private" else: ""
-      if ls.defaultValue != nil and ls.defaultValue.kind != geNullLit:
+      # @FocusState and @AccessibilityFocusState don't accept initializer values in Swift
+      if ls.wrapper in {gpwFocusState, gpwAccessibilityFocusState}:
+        outLines.add "  " & wrapper & privMod & " var " & fName & ": " & fType
+      elif ls.defaultValue != nil and ls.defaultValue.kind != geNullLit:
         let defaultExpr = emitExpr(EmitContext(), ls.defaultValue, uiContext = false)
         outLines.add "  " & wrapper & privMod & " var " & fName & ": " & fType & " = " & defaultExpr
       else:
-        if ls.wrapper in {gpwFocusState, gpwGestureState, gpwObservedObject, gpwEnvironmentObject, gpwAccessibilityFocusState}:
+        if ls.wrapper in {gpwGestureState, gpwObservedObject, gpwEnvironmentObject}:
           # These wrappers typically have no default
           outLines.add "  " & wrapper & privMod & " var " & fName & ": " & fType
         else:
