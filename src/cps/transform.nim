@@ -1854,6 +1854,29 @@ macro cps*(prc: untyped): untyped =
           `envId`.fn = `continueTarget`
           return `envId`
       return n
+    of nnkForStmt:
+      # Non-split for loop (no await inside — still in the same step function).
+      # Clear break/continue targets so that break/continue inside this loop
+      # remain normal Nim break/continue instead of being rewritten as CPS
+      # step transitions. Without this, `break` inside a non-split for loop
+      # that's nested in a CPS-split while loop gets rewritten to
+      # `env.fn = outerBreakTarget; return env`, which bypasses any
+      # enclosing try/finally blocks (e.g. withLock's release).
+      result = n.copyNimNode()
+      for i, child in n.pairs:
+        if i == n.len - 1:
+          # Loop body: clear break/continue targets
+          result.add rewrite(child, knownNames, nil, nil, inTryScope)
+        else:
+          result.add rewrite(child, knownNames, breakTarget, continueTarget, inTryScope)
+    of nnkWhileStmt:
+      # Same as nnkForStmt: non-split while loops should use normal
+      # break/continue, not CPS step transitions.
+      result = n.copyNimNode()
+      # Condition
+      result.add rewrite(n[0], knownNames, breakTarget, continueTarget, inTryScope)
+      # Body: clear break/continue targets
+      result.add rewrite(n[1], knownNames, nil, nil, inTryScope)
     of nnkExprColonExpr, nnkExprEqExpr:
       # Object constructor field or keyword arg: don't rewrite the field name (first child)
       result = n.copyNimNode()
