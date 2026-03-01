@@ -180,6 +180,7 @@ type
     nick: string
     text: string
     timestamp: string
+    timestampFull: string
     isMention: bool
     isOwn: bool
     spans: string
@@ -995,7 +996,7 @@ proc serverKey(serverId: int): string =
   $serverId
 
 proc channelKey(serverId: int, channelName: string): string =
-  $serverId & ":" & channelName
+  $serverId & ":" & channelName.toLowerAscii
 
 proc serverLabel(host: string): string =
   ## Derive a short label from a hostname (e.g. "irc.libera.chat" → "libera")
@@ -1029,26 +1030,28 @@ proc ensureChannel(serverId: int, channelName: string) =
   let sk = serverKey(serverId)
   if sk notin gChannels:
     gChannels[sk] = @[]
-  var found = false
-  for ch in gChannels[sk]:
-    if ch.name == channelName:
-      found = true
-      break
-  if not found:
-    let isCh = channelName.len > 0 and channelName[0] == '#'
-    let isDm = not isCh and channelName != ServerChannel
-    gChannels[sk].add(ChannelState(
-      id: gNextChannelId,
-      serverId: serverId,
-      name: channelName,
-      topic: "",
-      unread: 0,
-      mentions: 0,
-      userCount: 0,
-      isChannel: isCh,
-      isDm: isDm,
-    ))
-    inc gNextChannelId
+  # Case-insensitive lookup (IRC nicks and channels are case-insensitive)
+  let nameLower = channelName.toLowerAscii
+  for i in 0 ..< gChannels[sk].len:
+    if gChannels[sk][i].name.toLowerAscii == nameLower:
+      # Update display name to latest casing (e.g. "chanserv" → "ChanServ")
+      if gChannels[sk][i].name != channelName and channelName != channelName.toLowerAscii:
+        gChannels[sk][i].name = channelName
+      return
+  let isCh = channelName.len > 0 and channelName[0] == '#'
+  let isDm = not isCh and channelName != ServerChannel
+  gChannels[sk].add(ChannelState(
+    id: gNextChannelId,
+    serverId: serverId,
+    name: channelName,
+    topic: "",
+    unread: 0,
+    mentions: 0,
+    userCount: 0,
+    isChannel: isCh,
+    isDm: isDm,
+  ))
+  inc gNextChannelId
 
 proc ensureDmUsers(serverId: int, channelName: string, otherNick: string) =
   ## Populate gUsers for a DM channel with both participants.
@@ -1070,7 +1073,7 @@ proc ensureDmUsers(serverId: int, channelName: string, otherNick: string) =
   let sk = serverKey(serverId)
   if sk in gChannels:
     for i in 0 ..< gChannels[sk].len:
-      if gChannels[sk][i].name == channelName:
+      if gChannels[sk][i].name.toLowerAscii == channelName.toLowerAscii:
         gChannels[sk][i].userCount = gUsers[ck].len
         break
 
@@ -1104,13 +1107,16 @@ proc addMessage(serverId: int, channelName: string, kind: string,
   let safeText = sanitizeUtf8(text)
   let safeNick = sanitizeUtf8(nick)
   let spans = parseSpans(safeText)
-  let ts = now().format("HH:mm")
+  let t = now()
+  let ts = t.format("HH:mm")
+  let tsFull = t.format("yyyy-MM-dd HH:mm:ss")
   gMessages[ck].add(MessageState(
     id: gNextMessageId,
     kind: kind,
     nick: safeNick,
     text: safeText,
     timestamp: ts,
+    timestampFull: tsFull,
     isMention: isMention,
     isOwn: isOwn,
     spans: spansToJson(spans),
@@ -1122,11 +1128,11 @@ proc addMessage(serverId: int, channelName: string, kind: string,
     gMessages[ck].delete(0)
 
   # Update unread/mention counts if not active channel
-  if serverId != gActiveServerId or channelName != gActiveChannelName:
+  if serverId != gActiveServerId or channelName.toLowerAscii != gActiveChannelName.toLowerAscii:
     let sk = serverKey(serverId)
     if sk in gChannels:
       for i in 0 ..< gChannels[sk].len:
-        if gChannels[sk][i].name == channelName:
+        if gChannels[sk][i].name.toLowerAscii == channelName.toLowerAscii:
           inc gChannels[sk][i].unread
           if isMention:
             inc gChannels[sk][i].mentions
@@ -1224,8 +1230,10 @@ proc handleSlashCommand(serverId: int, text: string): bool =
       withLock gLock:
         gCommandQueue.add(BridgeCommand(kind: cmdSendMessage,
           serverId: serverId, text: msg, text2: target))
-      addMessage(serverId, target, "normal",
-        gServers[findServerIdx(serverId)].nick, msg, false, true)
+      # Only add local message if echo-message is not active
+      if serverId notin gEchoMessageServers:
+        addMessage(serverId, target, "normal",
+          gServers[findServerIdx(serverId)].nick, msg, false, true)
     else:
       addErrorMessage(serverId, gActiveChannelName,
         "Usage: /msg nick message")
@@ -1304,7 +1312,7 @@ proc handleSlashCommand(serverId: int, text: string): bool =
       let sk = serverKey(serverId)
       if sk in gChannels:
         for i in countdown(gChannels[sk].len - 1, 0):
-          if gChannels[sk][i].name == gActiveChannelName:
+          if gChannels[sk][i].name.toLowerAscii == gActiveChannelName.toLowerAscii:
             gChannels[sk].delete(i)
             break
       let ck = channelKey(serverId, gActiveChannelName)
@@ -2666,7 +2674,7 @@ proc processUiEvents(): bool =
       let sk = serverKey(evt.serverId)
       if sk in gChannels:
         for i in 0 ..< gChannels[sk].len:
-          if gChannels[sk][i].name == evt.channel:
+          if gChannels[sk][i].name.toLowerAscii == evt.channel.toLowerAscii:
             gChannels[sk][i].userCount = gUsers[ck].len
             break
       # Show join message unless suppressed by mute list or smart filter
@@ -2688,7 +2696,7 @@ proc processUiEvents(): bool =
       let sk = serverKey(evt.serverId)
       if sk in gChannels:
         for i in 0 ..< gChannels[sk].len:
-          if gChannels[sk][i].name == evt.channel:
+          if gChannels[sk][i].name.toLowerAscii == evt.channel.toLowerAscii:
             if ck in gUsers:
               gChannels[sk][i].userCount = gUsers[ck].len
             break
@@ -2742,7 +2750,7 @@ proc processUiEvents(): bool =
       let plainTopic = sanitizeUtf8(stripMircCodes(evt.text))
       if sk in gChannels:
         for i in 0 ..< gChannels[sk].len:
-          if gChannels[sk][i].name == evt.channel:
+          if gChannels[sk][i].name.toLowerAscii == evt.channel.toLowerAscii:
             gChannels[sk][i].topic = plainTopic
             break
       if evt.serverId == gActiveServerId and evt.channel == gActiveChannelName:
@@ -2785,7 +2793,7 @@ proc processUiEvents(): bool =
       let sk = serverKey(evt.serverId)
       if sk in gChannels:
         for i in 0 ..< gChannels[sk].len:
-          if gChannels[sk][i].name == evt.channel:
+          if gChannels[sk][i].name.toLowerAscii == evt.channel.toLowerAscii:
             gChannels[sk][i].userCount = gUsers[ck].len
             break
 
@@ -3243,6 +3251,7 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
       obj["nick"] = %m.nick
       obj["text"] = %m.text
       obj["timestamp"] = %m.timestamp
+      obj["timestampFull"] = %m.timestampFull
       obj["isMention"] = %m.isMention
       obj["isOwn"] = %m.isOwn
       obj["spans"] = %m.spans
@@ -3470,7 +3479,7 @@ proc syncActiveChannelContext() =
   let sk = serverKey(gActiveServerId)
   if sk in gChannels:
     for ch in gChannels[sk]:
-      if ch.name == gActiveChannelName:
+      if ch.name.toLowerAscii == gActiveChannelName.toLowerAscii:
         gCurrentTopic = ch.topic
         gCurrentUserCount = ch.userCount
         updateTypingText()
@@ -3590,7 +3599,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
         let sk = serverKey(gActiveServerId)
         if sk in gChannels:
           for i in 0 ..< gChannels[sk].len:
-            if gChannels[sk][i].name == gActiveChannelName:
+            if gChannels[sk][i].name.toLowerAscii == gActiveChannelName.toLowerAscii:
               gChannels[sk][i].unread = 0
               gChannels[sk][i].mentions = 0
               break
@@ -3715,7 +3724,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
       let sk = serverKey(gActiveServerId)
       if sk in gChannels:
         for i in 0 ..< gChannels[sk].len:
-          if gChannels[sk][i].name == gActiveChannelName:
+          if gChannels[sk][i].name.toLowerAscii == gActiveChannelName.toLowerAscii:
             gChannels[sk][i].unread = 0
             gChannels[sk][i].mentions = 0
             break
@@ -3758,7 +3767,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
       let sk = serverKey(gActiveServerId)
       if sk in gChannels:
         for i in countdown(gChannels[sk].len - 1, 0):
-          if gChannels[sk][i].name == gActiveChannelName:
+          if gChannels[sk][i].name.toLowerAscii == gActiveChannelName.toLowerAscii:
             gChannels[sk].delete(i)
             break
       let ck = channelKey(gActiveServerId, gActiveChannelName)
@@ -4235,7 +4244,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
             gLastChannelPerServer[gActiveServerId] = gActiveChannelName
           syncActiveChannelContext()
           for i in 0 ..< gChannels[sk].len:
-            if gChannels[sk][i].name == gActiveChannelName:
+            if gChannels[sk][i].name.toLowerAscii == gActiveChannelName.toLowerAscii:
               gChannels[sk][i].unread = 0
               gChannels[sk][i].mentions = 0
               break
@@ -4258,7 +4267,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
             gLastChannelPerServer[gActiveServerId] = gActiveChannelName
           syncActiveChannelContext()
           for i in 0 ..< gChannels[sk].len:
-            if gChannels[sk][i].name == gActiveChannelName:
+            if gChannels[sk][i].name.toLowerAscii == gActiveChannelName.toLowerAscii:
               gChannels[sk][i].unread = 0
               gChannels[sk][i].mentions = 0
               break
@@ -4281,7 +4290,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
             gLastChannelPerServer[gActiveServerId] = gActiveChannelName
           syncActiveChannelContext()
           for i in 0 ..< gChannels[sk].len:
-            if gChannels[sk][i].name == gActiveChannelName:
+            if gChannels[sk][i].name.toLowerAscii == gActiveChannelName.toLowerAscii:
               gChannels[sk][i].unread = 0
               gChannels[sk][i].mentions = 0
               break
@@ -4298,7 +4307,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
           let curIdx = block:
             var found = -1
             for i, ch in visibleChannels:
-              if ch.name == gActiveChannelName:
+              if ch.name.toLowerAscii == gActiveChannelName.toLowerAscii:
                 found = i
                 break
             found
@@ -4310,7 +4319,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
                 gLastChannelPerServer[gActiveServerId] = gActiveChannelName
               syncActiveChannelContext()
               for i in 0 ..< gChannels[sk].len:
-                if gChannels[sk][i].name == gActiveChannelName:
+                if gChannels[sk][i].name.toLowerAscii == gActiveChannelName.toLowerAscii:
                   gChannels[sk][i].unread = 0
                   gChannels[sk][i].mentions = 0
                   break
@@ -4338,7 +4347,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
                 gLastChannelPerServer[gActiveServerId] = gActiveChannelName
               syncActiveChannelContext()
               for i in 0 ..< gChannels[sk].len:
-                if gChannels[sk][i].name == gActiveChannelName:
+                if gChannels[sk][i].name.toLowerAscii == gActiveChannelName.toLowerAscii:
                   gChannels[sk][i].unread = 0
                   gChannels[sk][i].mentions = 0
                   break
@@ -4430,7 +4439,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
           let curIdx = block:
             var found = -1
             for i, ch in visibleChannels:
-              if ch.name == gActiveChannelName:
+              if ch.name.toLowerAscii == gActiveChannelName.toLowerAscii:
                 found = i
                 break
             found
@@ -4443,7 +4452,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
                 gLastChannelPerServer[gActiveServerId] = gActiveChannelName
               syncActiveChannelContext()
               for i in 0 ..< gChannels[sk].len:
-                if gChannels[sk][i].name == gActiveChannelName:
+                if gChannels[sk][i].name.toLowerAscii == gActiveChannelName.toLowerAscii:
                   gChannels[sk][i].unread = 0
                   gChannels[sk][i].mentions = 0
                   break
@@ -4453,29 +4462,22 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
     # id stored in actionNick, key|modifiers stored in actionColor
     let kbId = gActionNick
     let combined = gActionColor
-    stderr.writeLine "[BRIDGE] UpdateKeybind: id=" & kbId & " combined=" & combined
     let pipePos = combined.find('|')
     if kbId.len > 0 and pipePos > 0:
       let kbKey = combined[0 ..< pipePos]
       let kbMods = combined[pipePos + 1 .. ^1]
-      stderr.writeLine "[BRIDGE] UpdateKeybind: key=" & kbKey & " mods=" & kbMods
       for i in 0 ..< gKeybinds.len:
         if gKeybinds[i].id == kbId:
           gKeybinds[i].key = kbKey
           gKeybinds[i].modifiers = kbMods
-          stderr.writeLine "[BRIDGE] UpdateKeybind: updated keybind " & kbId
           break
       saveConfig()
-    else:
-      stderr.writeLine "[BRIDGE] UpdateKeybind: SKIPPED - kbId empty or no pipe found (pipePos=" & $pipePos & ")"
 
   of tagResetKeybinds:
-    stderr.writeLine "[BRIDGE] ResetKeybinds: resetting " & $gKeybinds.len & " keybinds"
     gKeybinds.setLen(0)
     for kb in defaultKeybinds:
       gKeybinds.add(kb)
     saveConfig()
-    stderr.writeLine "[BRIDGE] ResetKeybinds: done, " & $gKeybinds.len & " default keybinds restored"
 
   of tagShowKeybindSheet, tagHideKeybindSheet:
     discard  # handled by Swift reducer

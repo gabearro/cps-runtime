@@ -10,12 +10,13 @@ component MessageRow(message: IrcMessage, isDark: Bool, nickColorOverrides: Stri
   let tsSize = Double(fontSize - 3)
   let sysSize = Double(fontSize - 1)
   let rowVPad = messageDensity == "compact" ? 1.0 : messageDensity == "cozy" ? 6.0 : 3.0
-  let tsFrameW = Double(fontSize) * 3.2
+  let displayTs = timestampFormat == "full" ? message.timestampFull : message.timestamp
+  let tsFrameW = timestampFormat == "full" ? Double(fontSize) * 8.5 : Double(fontSize) * 3.2
 
   if message.kind == "system" {
     HStack(alignment: VerticalAlignment.center, spacing: 8) {
       if timestampFormat != "hidden" {
-        Text(message.timestamp)
+        Text(displayTs)
           .font(.system(size: tsSize))
           .foregroundColor(fgTimestamp)
           .monospacedDigit()
@@ -34,7 +35,7 @@ component MessageRow(message: IrcMessage, isDark: Bool, nickColorOverrides: Stri
   } else if message.kind == "error" {
     HStack(alignment: VerticalAlignment.top, spacing: 8) {
       if timestampFormat != "hidden" {
-        Text(message.timestamp)
+        Text(displayTs)
           .font(.system(size: tsSize))
           .foregroundColor(fgTimestamp)
           .monospacedDigit()
@@ -57,7 +58,7 @@ component MessageRow(message: IrcMessage, isDark: Bool, nickColorOverrides: Stri
   } else if message.kind == "action" {
     HStack(alignment: VerticalAlignment.top, spacing: 8) {
       if timestampFormat != "hidden" {
-        Text(message.timestamp)
+        Text(displayTs)
           .font(.system(size: tsSize))
           .foregroundColor(fgTimestamp)
           .monospacedDigit()
@@ -83,7 +84,7 @@ component MessageRow(message: IrcMessage, isDark: Bool, nickColorOverrides: Stri
   } else {
     HStack(alignment: VerticalAlignment.firstTextBaseline, spacing: 0) {
       if timestampFormat != "hidden" {
-        Text(message.timestamp)
+        Text(displayTs)
           .font(.system(size: tsSize))
           .foregroundColor(fgTimestamp)
           .monospacedDigit()

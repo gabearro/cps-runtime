@@ -364,6 +364,7 @@ component KeybindSheetPanel(isDark: Bool) {
           .foregroundColor(token.color.accent)
       }
       .buttonStyle(BorderlessButtonStyle())
+      .focusEffectDisabled(true)
 
       Button(action: HideKeybindSheet) {
         Image(systemName: "xmark")
