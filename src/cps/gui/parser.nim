@@ -412,6 +412,18 @@ proc parsePostfix(p: var ParserState): GuiExpr =
         left: base,
         ident: memberTok.lexeme
       )
+      # Eagerly resolve token reference sugar: token.<group>.<name>
+      # so that chained calls like token.color.accent.opacity(0.12)
+      # become geTokenRef("color","accent").opacity(0.12) instead of
+      # leaving `token` as an unresolved ident.
+      let tpath = memberPath(base)
+      if tpath.len == 3 and tpath[0] == "token":
+        base = GuiExpr(
+          kind: geTokenRef,
+          range: base.range,
+          tokenGroup: tpath[1],
+          tokenName: tpath[2]
+        )
       continue
 
     if p.matchKind(gtkLParen):
@@ -1050,6 +1062,18 @@ proc parseWindowDecl(p: var ParserState): GuiWindowDecl =
           keyTok,
           "window.showTitleBar expects a bool literal",
           "GUI_PARSE_WINDOW_TITLE_BAR"
+        )
+
+    of "suppressDefaultMenus":
+      let valueExpr = p.parseExpression()
+      if valueExpr.kind == geBoolLit:
+        result.suppressDefaultMenus = valueExpr.boolVal
+        result.hasSuppressDefaultMenus = true
+      else:
+        p.addDiagTok(
+          keyTok,
+          "window.suppressDefaultMenus expects a bool literal",
+          "GUI_PARSE_WINDOW_SUPPRESS_MENUS"
         )
 
     of "width", "height", "minWidth", "minHeight", "maxWidth", "maxHeight":
@@ -1928,6 +1952,12 @@ proc parseDeclBody(
         "duplicate window.showTitleBar declaration",
         "GUI_PARSE_WINDOW_DUP"
       )
+    if prog.window.hasSuppressDefaultMenus and parsedWindow.hasSuppressDefaultMenus:
+      p.addDiag(
+        parsedWindow.range,
+        "duplicate window.suppressDefaultMenus declaration",
+        "GUI_PARSE_WINDOW_DUP"
+      )
 
     if parsedWindow.hasWidth:
       prog.window.width = parsedWindow.width
@@ -1956,6 +1986,9 @@ proc parseDeclBody(
     if parsedWindow.hasShowTitleBar:
       prog.window.showTitleBar = parsedWindow.showTitleBar
       prog.window.hasShowTitleBar = true
+    if parsedWindow.hasSuppressDefaultMenus:
+      prog.window.suppressDefaultMenus = parsedWindow.suppressDefaultMenus
+      prog.window.hasSuppressDefaultMenus = true
     prog.window.range = parsedWindow.range
     return
 
@@ -1990,14 +2023,47 @@ proc hasGlobChars(path: string): bool {.inline.} =
       return true
   false
 
+proc matchesSimpleGlob(filename, pattern: string): bool =
+  ## Matches a filename against a simple glob pattern (supports only `*`).
+  ## Used instead of walkPattern which relies on C-level glob() unavailable
+  ## at Nim compile time.
+  if pattern == "*":
+    return true
+  if '*' notin pattern:
+    return filename == pattern
+  # Split on '*' and check prefix/suffix
+  let parts = pattern.split('*')
+  if parts.len == 2:
+    # "prefix*suffix" pattern (e.g. "*.gui", "test_*")
+    let prefix = parts[0]
+    let suffix = parts[1]
+    return filename.startsWith(prefix) and filename.endsWith(suffix) and
+           filename.len >= prefix.len + suffix.len
+  # Fallback: just check if it contains all literal parts in order
+  var pos = 0
+  for part in parts:
+    if part.len == 0: continue
+    let idx = filename.find(part, pos)
+    if idx < 0: return false
+    pos = idx + part.len
+  true
+
 proc resolveIncludePaths(baseFile: string, pattern: string): seq[string] =
   let baseDir = baseFile.parentDir()
   let joined = if pattern.isAbsolute: pattern else: baseDir / pattern
 
   if hasGlobChars(joined):
-    for p in walkPattern(joined):
-      if p.fileExists and p.toLowerAscii().endsWith(".gui"):
-        result.add normalizedPath(p)
+    # Use walkDir + manual matching instead of walkPattern (which uses C glob()
+    # and fails at Nim compile time).
+    let dir = joined.parentDir()
+    let filePattern = joined.extractFilename()
+    if dir.dirExists:
+      for kind, path in walkDir(dir):
+        if kind in {pcFile, pcLinkToFile}:
+          let fname = path.extractFilename()
+          if matchesSimpleGlob(fname, filePattern) and
+             fname.toLowerAscii().endsWith(".gui"):
+            result.add normalizedPath(path)
   else:
     let normalized = normalizedPath(joined)
     if normalized.fileExists:
@@ -2072,7 +2138,7 @@ proc extractSwiftViewNames(swiftContent: string): seq[string] =
       let whereIdx = proto.find("where")
       if whereIdx >= 0:
         proto = proto[0 ..< whereIdx].strip()
-      if proto == "View":
+      if proto in ["View", "NSViewRepresentable", "UIViewRepresentable"]:
         result.add structName
         break
 

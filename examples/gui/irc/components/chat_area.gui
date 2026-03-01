@@ -1,100 +1,113 @@
-component MessageRow(message: IrcMessage, isDark: Bool) {
-  let fgTertiary = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
-  let fgTimestamp = isDark ? Color(red: 0.34, green: 0.34, blue: 0.38) : Color(red: 0.72, green: 0.72, blue: 0.74)
+component MessageRow(message: IrcMessage, isDark: Bool, nickColorOverrides: String) {
+  let fgTertiary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.65) : token.color.textSubtle
+  let fgTimestamp = isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : Color(red: 0.68, green: 0.68, blue: 0.70)
   let mentionBg = isDark
-    ? Color(red: 1.0, green: 0.84, blue: 0.04, opacity: 0.04)
+    ? Color(red: 1.0, green: 0.84, blue: 0.04, opacity: 0.06)
     : Color(red: 1.0, green: 0.97, blue: 0.90)
   let warningColor = token.color.warning
-  let mentionStripe = isDark ? warningColor.opacity(0.6) : warningColor
+  let mentionStripe = isDark ? warningColor.opacity(0.7) : warningColor
+  let msgSize = Double(fontSize)
+  let tsSize = Double(fontSize - 3)
+  let sysSize = Double(fontSize - 1)
+  let rowVPad = messageDensity == "compact" ? 1.0 : messageDensity == "cozy" ? 6.0 : 3.0
+  let tsFrameW = Double(fontSize) * 3.2
 
   if message.kind == "system" {
     HStack(alignment: VerticalAlignment.center, spacing: 8) {
-      Text(message.timestamp)
-        .font(.system(size: 10))
-        .foregroundColor(fgTimestamp)
-        .monospacedDigit()
-        .frame(width: 42, alignment: Alignment.trailing)
+      if timestampFormat != "hidden" {
+        Text(message.timestamp)
+          .font(.system(size: tsSize))
+          .foregroundColor(fgTimestamp)
+          .monospacedDigit()
+          .frame(width: tsFrameW, alignment: Alignment.trailing)
+      }
 
       RichMessageText(spansJson: message.spans)
-        .font(.system(size: 12))
+        .font(.system(size: sysSize))
         .foregroundColor(fgTertiary)
         .textSelection(.enabled)
 
       Spacer()
     }
     .padding(vertical: 1, horizontal: 16)
-    .opacity(0.7)
+    .opacity(0.8)
   } else if message.kind == "error" {
     HStack(alignment: VerticalAlignment.top, spacing: 8) {
-      Text(message.timestamp)
-        .font(.system(size: 10))
-        .foregroundColor(fgTimestamp)
-        .monospacedDigit()
-        .frame(width: 42, alignment: Alignment.trailing)
-        .padding(top: 2)
+      if timestampFormat != "hidden" {
+        Text(message.timestamp)
+          .font(.system(size: tsSize))
+          .foregroundColor(fgTimestamp)
+          .monospacedDigit()
+          .frame(width: tsFrameW, alignment: Alignment.trailing)
+          .padding(top: 2)
+      }
 
       Image(systemName: "exclamationmark.triangle.fill")
-        .font(.system(size: 10))
+        .font(.system(size: tsSize))
         .foregroundColor(token.color.danger)
         .padding(top: 3)
 
       RichMessageText(spansJson: message.spans)
-        .font(.system(size: 13))
+        .font(.system(size: msgSize))
         .textSelection(.enabled)
 
       Spacer()
     }
-    .padding(vertical: 3, horizontal: 16)
+    .padding(vertical: rowVPad, horizontal: 16)
   } else if message.kind == "action" {
     HStack(alignment: VerticalAlignment.top, spacing: 8) {
-      Text(message.timestamp)
-        .font(.system(size: 10))
-        .foregroundColor(fgTimestamp)
-        .monospacedDigit()
-        .frame(width: 42, alignment: Alignment.trailing)
-        .padding(top: 2)
+      if timestampFormat != "hidden" {
+        Text(message.timestamp)
+          .font(.system(size: tsSize))
+          .foregroundColor(fgTimestamp)
+          .monospacedDigit()
+          .frame(width: tsFrameW, alignment: Alignment.trailing)
+          .padding(top: 2)
+      }
 
       HStack(spacing: 0) {
         Text("* \(message.nick) ")
-          .font(.system(size: 13, weight: Font.Weight.medium))
-          .foregroundColor(NickColor.forNick(message.nick))
+          .font(.system(size: msgSize, weight: Font.Weight.medium))
+          .foregroundColor(NickColor.forNick(message.nick, overrides: nickColorOverrides))
           .textSelection(.enabled)
 
         RichMessageText(spansJson: message.spans)
-          .font(.system(size: 13))
+          .font(.system(size: msgSize))
           .italic()
           .textSelection(.enabled)
       }
 
       Spacer()
     }
-    .padding(vertical: 3, horizontal: 16)
+    .padding(vertical: rowVPad, horizontal: 16)
   } else {
     HStack(alignment: VerticalAlignment.firstTextBaseline, spacing: 0) {
-      Text(message.timestamp)
-        .font(.system(size: 10))
-        .foregroundColor(fgTimestamp)
-        .monospacedDigit()
-        .frame(width: 42, alignment: Alignment.trailing)
+      if timestampFormat != "hidden" {
+        Text(message.timestamp)
+          .font(.system(size: tsSize))
+          .foregroundColor(fgTimestamp)
+          .monospacedDigit()
+          .frame(width: tsFrameW, alignment: Alignment.trailing)
+      }
 
       Text(message.nick)
-        .font(.system(size: 13, weight: Font.Weight.semibold))
-        .foregroundColor(message.isOwn ? token.color.accent : NickColor.forNick(message.nick))
+        .font(.system(size: msgSize, weight: Font.Weight.semibold))
+        .foregroundColor(message.isOwn ? token.color.accent : NickColor.forNick(message.nick, overrides: nickColorOverrides))
         .frame(minWidth: 64, alignment: Alignment.trailing)
         .lineLimit(1)
         .textSelection(.enabled)
         .padding(leading: 8)
 
       Text(" ")
-        .font(.system(size: 13))
+        .font(.system(size: msgSize))
 
       RichMessageText(spansJson: message.spans)
-        .font(.system(size: 13))
+        .font(.system(size: msgSize))
         .textSelection(.enabled)
 
       Spacer()
     }
-    .padding(vertical: 3, horizontal: 16)
+    .padding(vertical: rowVPad, horizontal: 16)
     .background(
       message.isMention
         ? mentionBg
@@ -111,17 +124,20 @@ component MessageRow(message: IrcMessage, isDark: Bool) {
 }
 
 component ChatArea(isDark: Bool) {
-  let fg = isDark ? Color(red: 0.93, green: 0.93, blue: 0.95) : token.color.textPrimary
-  let fgSecondary = isDark ? Color(red: 0.56, green: 0.56, blue: 0.60) : token.color.textMuted
-  let fgTertiary = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
-  let chatBg = isDark ? Color(red: 0.08, green: 0.08, blue: 0.09) : Color(red: 0.99, green: 0.99, blue: 1.0)
-  let inputBg = isDark ? Color.white.opacity(0.05) : Color(red: 0.94, green: 0.94, blue: 0.95)
-  let inputStroke = isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.08)
-  let dividerColor = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.06)
-  let headerBg = isDark ? Color(red: 0.10, green: 0.10, blue: 0.11, opacity: 0.96) : Color.white.opacity(0.96)
-  let inputBarBg = isDark ? Color(red: 0.10, green: 0.10, blue: 0.11) : Color.white
-  let completionBg = isDark ? Color(red: 0.15, green: 0.15, blue: 0.17) : Color.white
-  let completionBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.10)
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.65) : token.color.textSubtle
+  let chatBg = isDark ? Color(red: 0.14, green: 0.14, blue: 0.15) : Color(red: 0.99, green: 0.99, blue: 1.0)
+  let inputBg = isDark ? Color.white.opacity(0.08) : Color(red: 0.94, green: 0.94, blue: 0.95)
+  let inputStroke = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.08)
+  let dividerColor = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
+  let headerBg = isDark ? Color(red: 0.17, green: 0.17, blue: 0.18, opacity: 0.96) : Color.white.opacity(0.96)
+  let inputBarBg = isDark ? Color(red: 0.17, green: 0.17, blue: 0.18) : Color.white
+  let completionBg = isDark ? Color(red: 0.21, green: 0.21, blue: 0.22) : Color.white
+  let completionBorder = isDark ? Color.white.opacity(0.14) : Color.black.opacity(0.10)
+  let searchBg = isDark ? Color.white.opacity(0.06) : Color(red: 0.94, green: 0.94, blue: 0.95)
+  let searchStroke = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
+  let inputFontSize = Double(fontSize)
 
   VStack(spacing: 0) {
     if activeChannelName != "" {
@@ -145,7 +161,7 @@ component ChatArea(isDark: Bool) {
         if currentTopic != "" {
           Rectangle()
             .fill(dividerColor)
-            .frame(width: 1, height: 12)
+            .frame(width: 1, height: 14)
 
           Text(currentTopic)
             .font(.system(size: 11))
@@ -156,22 +172,53 @@ component ChatArea(isDark: Bool) {
 
         Spacer()
 
-        Button(action: ToggleUserList) {
-          HStack(spacing: 4) {
-            Image(systemName: "person.2")
+        HStack(spacing: 6) {
+          Button(action: ToggleSearch) {
+            Image(systemName: searchActive ? "xmark" : "magnifyingglass")
               .font(.system(size: 11, weight: Font.Weight.medium))
-            Text("\(currentUserCount)")
-              .font(.system(size: 11, weight: Font.Weight.medium))
-              .monospacedDigit()
+              .foregroundColor(searchActive ? token.color.accent : fgSecondary)
+              .frame(width: 26, height: 26)
+              .background(
+                RoundedRectangle(cornerRadius: 5)
+                  .fill(searchActive ? token.color.accent.opacity(0.12) : isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
+              )
           }
-          .foregroundColor(fgSecondary)
-          .padding(vertical: 4, horizontal: 8)
-          .background(
-            RoundedRectangle(cornerRadius: 5)
-              .fill(isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
-          )
+          .buttonStyle(BorderlessButtonStyle())
+          .help("Search messages")
+          .keyboardShortcut("f", modifiers: EventModifiers.command)
+
+          if activeChannelIsChannel {
+            Button(action: ShowChannelInfo) {
+              Image(systemName: "info.circle")
+                .font(.system(size: 11, weight: Font.Weight.medium))
+                .foregroundColor(fgSecondary)
+                .frame(width: 26, height: 26)
+                .background(
+                  RoundedRectangle(cornerRadius: 5)
+                    .fill(isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
+                )
+            }
+            .buttonStyle(BorderlessButtonStyle())
+            .help("Channel info")
+          }
+
+          Button(action: ToggleUserList) {
+            HStack(spacing: 4) {
+              Image(systemName: "person.2")
+                .font(.system(size: 11, weight: Font.Weight.medium))
+              Text("\(currentUserCount)")
+                .font(.system(size: 11, weight: Font.Weight.medium))
+                .monospacedDigit()
+            }
+            .foregroundColor(showUserList ? token.color.accent : fgSecondary)
+            .padding(vertical: 4, horizontal: 8)
+            .background(
+              RoundedRectangle(cornerRadius: 5)
+                .fill(showUserList ? token.color.accent.opacity(0.12) : isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
+            )
+          }
+          .buttonStyle(BorderlessButtonStyle())
         }
-        .buttonStyle(BorderlessButtonStyle())
       }
       .padding(vertical: 10, horizontal: 16)
       .background(headerBg)
@@ -179,39 +226,105 @@ component ChatArea(isDark: Bool) {
       Rectangle()
         .fill(dividerColor)
         .frame(height: 1)
+
+      if searchActive {
+        HStack(spacing: 8) {
+          Image(systemName: "magnifyingglass")
+            .font(.system(size: 11))
+            .foregroundColor(fgTertiary)
+
+          TextField("Search messages...", text: searchText)
+            .textFieldStyle(PlainTextFieldStyle())
+            .font(.system(size: 12))
+            .onChange(of: searchText, perform: UpdateSearch)
+
+          if searchText != "" {
+            Button(action: ClearSearch) {
+              Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 11))
+                .foregroundColor(fgTertiary)
+            }
+            .buttonStyle(BorderlessButtonStyle())
+          }
+        }
+        .padding(vertical: 6, horizontal: 14)
+        .background(
+          searchBg
+        )
+
+        Rectangle()
+          .fill(dividerColor)
+          .frame(height: 1)
+      }
     }
 
     if activeChannelName == "" {
-      VStack(spacing: 14) {
+      VStack(spacing: 16) {
         Image(systemName: "bubble.left.and.bubble.right")
-          .font(.system(size: 40))
+          .font(.system(size: 44))
           .foregroundColor(fgTertiary)
-          .opacity(0.3)
+          .opacity(0.4)
 
-        VStack(spacing: 4) {
-          Text("No channel selected")
-            .font(.system(size: 15, weight: Font.Weight.medium))
-            .foregroundColor(fgSecondary)
+        VStack(spacing: 6) {
+          Text("Welcome to CPS IRC")
+            .font(.system(size: 16, weight: Font.Weight.semibold))
+            .foregroundColor(fg)
 
           Text("Connect to a server and join a channel to start chatting")
-            .font(.system(size: 12))
+            .font(.system(size: 13))
             .foregroundColor(fgTertiary)
+        }
+
+        if servers.count == 0 {
+          VStack(spacing: 10) {
+            Text("Quick Connect")
+              .font(.system(size: 11, weight: Font.Weight.semibold))
+              .foregroundColor(fgSecondary)
+
+            HStack(spacing: 8) {
+              Button(action: SelectNetwork(host: "irc.libera.chat", port: "6697", useTls: true)) {
+                Text("Libera Chat")
+                  .font(.system(size: 12, weight: Font.Weight.medium))
+                  .foregroundColor(token.color.accent)
+                  .padding(vertical: 6, horizontal: 14)
+                  .background(
+                    RoundedRectangle(cornerRadius: 7)
+                      .stroke(token.color.accent.opacity(0.3), lineWidth: 1)
+                  )
+              }
+              .buttonStyle(BorderlessButtonStyle())
+
+              Button(action: SelectNetwork(host: "irc.oftc.net", port: "6697", useTls: true)) {
+                Text("OFTC")
+                  .font(.system(size: 12, weight: Font.Weight.medium))
+                  .foregroundColor(token.color.accent)
+                  .padding(vertical: 6, horizontal: 14)
+                  .background(
+                    RoundedRectangle(cornerRadius: 7)
+                      .stroke(token.color.accent.opacity(0.3), lineWidth: 1)
+                  )
+              }
+              .buttonStyle(BorderlessButtonStyle())
+
+              Button(action: ShowConnectForm) {
+                Text("Custom...")
+                  .font(.system(size: 12, weight: Font.Weight.medium))
+                  .foregroundColor(fgSecondary)
+                  .padding(vertical: 6, horizontal: 14)
+                  .background(
+                    RoundedRectangle(cornerRadius: 7)
+                      .stroke(isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.10), lineWidth: 1)
+                  )
+              }
+              .buttonStyle(BorderlessButtonStyle())
+            }
+          }
+          .padding(top: 8)
         }
       }
       .frame(maxWidth: Double.infinity, maxHeight: Double.infinity)
     } else {
-      List {
-        ForEach(items: messages, item: msg) {
-          MessageRow(message: msg, isDark: isDark)
-            .listRowSeparator(Visibility.hidden)
-            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-            .listRowBackground(Color.clear)
-            .id(msg.id)
-        }
-      }
-      .listStyle(PlainListStyle())
-      .scrollContentBackground(Visibility.hidden)
-      .defaultScrollAnchor(UnitPoint.bottom)
+      ChatMessageList(store: store, isDark: isDark)
 
       if typingText != "" {
         HStack(spacing: 6) {
@@ -231,7 +344,7 @@ component ChatArea(isDark: Bool) {
             HStack(spacing: 6) {
               Text("@")
                 .font(.system(size: 12, weight: Font.Weight.medium))
-                .foregroundColor(idx == completionIndex ? Color.white.opacity(0.6) : fgTertiary)
+                .foregroundColor(idx == completionIndex ? Color.white.opacity(0.7) : fgTertiary)
               Text(suggestion)
                 .font(.system(size: 13))
                 .foregroundColor(idx == completionIndex ? Color.white : fg)
@@ -250,7 +363,7 @@ component ChatArea(isDark: Bool) {
         .background(
           RoundedRectangle(cornerRadius: 8)
             .fill(completionBg)
-            .shadow(color: Color.black.opacity(0.20), radius: 8, y: -2)
+            .shadow(color: Color.black.opacity(0.25), radius: 10, y: -2)
         )
         .overlay(
           RoundedRectangle(cornerRadius: 8)
@@ -265,31 +378,18 @@ component ChatArea(isDark: Bool) {
         .frame(height: 1)
 
       HStack(spacing: 8) {
-        TextField("Message \(activeChannelName)...", text: inputText)
-          .textFieldStyle(PlainTextFieldStyle())
-          .font(.system(size: 13))
-          .padding(vertical: 7, horizontal: 12)
-          .background(
-            RoundedRectangle(cornerRadius: 8)
-              .fill(inputBg)
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: 8)
-              .stroke(inputStroke, lineWidth: 0.5)
-          )
-          .onSubmit(perform: SendMessage)
-          .onChange(of: inputText, perform: InputChanged)
+        KeyInterceptingTextField(store: store, isDark: isDark)
 
         Button(action: SendMessage) {
           Image(systemName: "arrow.up.circle.fill")
-            .font(.system(size: 22))
+            .font(.system(size: 24))
             .foregroundColor(inputText == "" ? fgTertiary : token.color.accent)
         }
         .buttonStyle(BorderlessButtonStyle())
         .disabled(inputText == "")
         .keyboardShortcut(KeyEquivalent.return, modifiers: EventModifiers.command)
       }
-      .padding(vertical: 8, horizontal: 14)
+      .padding(vertical: 10, horizontal: 14)
       .background(inputBarBg)
     }
   }
@@ -297,24 +397,33 @@ component ChatArea(isDark: Bool) {
   .background(chatBg)
   .toolbar {
     ToolbarItem(placement: ToolbarItemPlacement.primaryAction) {
-      Button(action: ShowTransfers) {
-        ZStack {
-          Image(systemName: "arrow.down.circle")
-            .font(.system(size: 14))
-          if pendingTransferCount > 0 {
-            Text("\(pendingTransferCount)")
-              .font(.system(size: 9, weight: Font.Weight.bold))
-              .foregroundColor(Color.white)
-              .padding(vertical: 1, horizontal: 4)
-              .background(
-                Capsule()
-                  .fill(token.color.danger)
-              )
-              .offset(x: 8, y: -8)
+      HStack(spacing: 10) {
+        Button(action: ShowSettings) {
+          Image(systemName: "gearshape")
+            .font(.system(size: 13))
+        }
+        .help("Settings")
+        .keyboardShortcut(",", modifiers: EventModifiers.command)
+
+        Button(action: ShowTransfers) {
+          ZStack {
+            Image(systemName: "arrow.down.circle")
+              .font(.system(size: 14))
+            if pendingTransferCount > 0 {
+              Text("\(pendingTransferCount)")
+                .font(.system(size: 9, weight: Font.Weight.bold))
+                .foregroundColor(Color.white)
+                .padding(vertical: 1, horizontal: 4)
+                .background(
+                  Capsule()
+                    .fill(token.color.danger)
+                )
+                .offset(x: 8, y: -8)
+            }
           }
         }
+        .help("File Transfers")
       }
-      .help("File Transfers")
     }
   }
 }

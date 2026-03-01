@@ -1,7 +1,7 @@
 component TransferRow(transfer: DccTransfer, isDark: Bool) {
-  let fg = isDark ? Color(red: 0.93, green: 0.93, blue: 0.95) : token.color.textPrimary
-  let fgSecondary = isDark ? Color(red: 0.56, green: 0.56, blue: 0.60) : token.color.textMuted
-  let fgTertiary = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.65) : token.color.textSubtle
   let dangerColor = token.color.danger
 
   VStack(alignment: HorizontalAlignment.leading, spacing: 6) {
@@ -134,10 +134,10 @@ component TransferRow(transfer: DccTransfer, isDark: Bool) {
 }
 
 component TransfersPanel(isDark: Bool) {
-  let fg = isDark ? Color(red: 0.93, green: 0.93, blue: 0.95) : token.color.textPrimary
-  let fgSecondary = isDark ? Color(red: 0.56, green: 0.56, blue: 0.60) : token.color.textMuted
-  let fgTertiary = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
-  let dividerColor = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.06)
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.65) : token.color.textSubtle
+  let dividerColor = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
 
   VStack(spacing: 0) {
     HStack {
@@ -157,10 +157,10 @@ component TransfersPanel(isDark: Bool) {
         Image(systemName: "xmark")
           .font(.system(size: 10, weight: Font.Weight.medium))
           .foregroundColor(fgSecondary)
-          .frame(width: 22, height: 22)
+          .frame(width: 24, height: 24)
           .background(
             Circle()
-              .fill(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04))
+              .fill(isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.04))
           )
       }
       .buttonStyle(BorderlessButtonStyle())
@@ -176,7 +176,7 @@ component TransfersPanel(isDark: Bool) {
         Image(systemName: "arrow.down.circle")
           .font(.system(size: 32))
           .foregroundColor(fgTertiary)
-          .opacity(0.35)
+          .opacity(0.45)
 
         VStack(spacing: 3) {
           Text("No file transfers")
@@ -204,5 +204,5 @@ component TransfersPanel(isDark: Bool) {
       }
     }
   }
-  .frame(minWidth: 420, minHeight: 300)
+  .frame(minWidth: 440, minHeight: 300)
 }

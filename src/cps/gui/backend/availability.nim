@@ -242,7 +242,16 @@ proc typedSwiftUiSymbols*(): seq[GuiApiSymbol] =
     GuiApiSymbol(name: "tabItem", kind: "modifier", supportsMacOS: true, supportsIOS: true, minMacOS: "13.0", minIOS: "17.0", typed: true),
     GuiApiSymbol(name: "inspector", kind: "modifier", supportsMacOS: true, supportsIOS: false, minMacOS: "14.0", minIOS: "n/a", typed: true),
     GuiApiSymbol(name: "headerProminence", kind: "modifier", supportsMacOS: true, supportsIOS: true, minMacOS: "13.0", minIOS: "17.0", typed: true),
-    GuiApiSymbol(name: "listSectionSeparator", kind: "modifier", supportsMacOS: true, supportsIOS: true, minMacOS: "13.0", minIOS: "17.0", typed: true)
+    GuiApiSymbol(name: "listSectionSeparator", kind: "modifier", supportsMacOS: true, supportsIOS: true, minMacOS: "13.0", minIOS: "17.0", typed: true),
+    # Shape modifiers
+    GuiApiSymbol(name: "fill", kind: "modifier", supportsMacOS: true, supportsIOS: true, minMacOS: "13.0", minIOS: "17.0", typed: true),
+    # Text modifiers
+    GuiApiSymbol(name: "tracking", kind: "modifier", supportsMacOS: true, supportsIOS: true, minMacOS: "13.0", minIOS: "17.0", typed: true),
+    GuiApiSymbol(name: "truncationMode", kind: "modifier", supportsMacOS: true, supportsIOS: true, minMacOS: "13.0", minIOS: "17.0", typed: true),
+    # Focus
+    GuiApiSymbol(name: "focusEffectDisabled", kind: "modifier", supportsMacOS: true, supportsIOS: false, minMacOS: "13.0", minIOS: "n/a", typed: true),
+    # Scroll
+    GuiApiSymbol(name: "defaultScrollAnchor", kind: "modifier", supportsMacOS: true, supportsIOS: true, minMacOS: "14.0", minIOS: "17.0", typed: true)
   ]
 
 proc coverageReportForSwiftUi*(opts: GuiCoverageOptions): GuiCoverageReport =
@@ -257,12 +266,12 @@ proc coverageReportForSwiftUi*(opts: GuiCoverageOptions): GuiCoverageReport =
       inc result.typedModifierCount
 
 proc symbolLookup*(kind: string, name: string): tuple[known: bool, symbol: GuiApiSymbol] =
-  var map: Table[string, GuiApiSymbol]
+  ## Linear search — avoids building a Table per call (the original approach),
+  ## which explodes the Nim VM loop counter when called from a compile-time macro.
+  let kindLower = kind.toLowerAscii()
   for symbol in typedSwiftUiSymbols():
-    map[toKey(symbol.kind, symbol.name)] = symbol
-  let key = toKey(kind, name)
-  if key in map:
-    return (true, map[key])
+    if symbol.kind.toLowerAscii() == kindLower and symbol.name == name:
+      return (true, symbol)
   (false, GuiApiSymbol())
 
 proc supportsTarget*(symbol: GuiApiSymbol, target: GuiTargetPlatform): bool =

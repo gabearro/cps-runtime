@@ -1,11 +1,11 @@
 component IrcApp {
   @Environment(.colorScheme) colorScheme: ColorScheme
   let isDark = colorScheme == ColorScheme.dark
-  let dividerColor = isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.08)
+  let dividerColor = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.08)
 
   NavigationSplitView {
     ServerSidebar(isDark: isDark)
-      .frame(minWidth: 220, idealWidth: 250, maxWidth: 300)
+      .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
     HStack(spacing: 0) {
       ChatArea(isDark: isDark)
       if showUserList {
@@ -13,7 +13,7 @@ component IrcApp {
           .fill(dividerColor)
           .frame(width: 1)
         UserListSidebar(isDark: isDark)
-          .frame(width: 200)
+          .frame(width: 210)
       }
     }
   }
@@ -30,8 +30,20 @@ component IrcApp {
   .sheet(isPresented: showWhois) {
     WhoisPanel(isDark: isDark)
   }
+  .sheet(isPresented: showSettings) {
+    SettingsPanel(isDark: isDark)
+  }
+  .sheet(isPresented: showChannelInfo) {
+    ChannelInfoPanel(isDark: isDark)
+  }
+  .sheet(isPresented: showChannelSwitcher) {
+    ChannelSwitcherPanel(isDark: isDark)
+  }
   .focusEffectDisabled()
   .focusable(false)
   .onAppear(perform: LoadConfig)
   .onAppear(perform: StartPoll)
+  .sheet(isPresented: showKeybindSheet) {
+    KeybindSheetPanel(isDark: isDark)
+  }
 }

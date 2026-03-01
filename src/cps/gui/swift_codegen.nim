@@ -1234,7 +1234,8 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
   let shouldCloseOnLastWindow = windowDecl.hasClosePolicy and windowDecl.closeAppOnLastWindowClose
   let hasTitleBarPreference = windowDecl.hasShowTitleBar
   let showTitleBar = if hasTitleBarPreference: windowDecl.showTitleBar else: true
-  let needsAppKit = hasWindowTitle or hasWindowDefaultSize or hasWindowConstraints or shouldCloseOnLastWindow or hasTitleBarPreference
+  let hasShortcutMonitor = windowDecl.hasSuppressDefaultMenus and windowDecl.suppressDefaultMenus
+  let needsAppKit = hasWindowTitle or hasWindowDefaultSize or hasWindowConstraints or shouldCloseOnLastWindow or hasTitleBarPreference or hasShortcutMonitor
 
   outLines.add "import Foundation"
   outLines.add "import SwiftUI"
@@ -1442,6 +1443,10 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
   outLines.add "final class GUIStore: ObservableObject {"
   outLines.add "  @Published var state: GUIState"
   outLines.add "  private lazy var runtime = GUIRuntime(store: self)"
+  if windowDecl.hasSuppressDefaultMenus and windowDecl.suppressDefaultMenus:
+    outLines.add "#if os(macOS)"
+    outLines.add "  let shortcutMonitor = KeyboardShortcutMonitor()"
+    outLines.add "#endif"
   outLines.add ""
   outLines.add "  init(initial: GUIState = GUIState()) {"
   outLines.add "    self.state = initial"
@@ -1720,14 +1725,41 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
         outLines.add "            window.toolbar?.showsBaselineSeparator = false"
       outLines.add "          }"
       outLines.add "#endif"
+    if hasShortcutMonitor:
+      outLines.add "#if os(macOS)"
+      outLines.add "          store.shortcutMonitor.start(store: store)"
+      outLines.add "#endif"
     outLines.add "        }"
   outLines.add "        .onDisappear {"
   outLines.add "          store.shutdown()"
+  if hasShortcutMonitor:
+    outLines.add "#if os(macOS)"
+    outLines.add "          store.shortcutMonitor.stop()"
+    outLines.add "#endif"
   outLines.add "        }"
+  if hasShortcutMonitor:
+    outLines.add "#if os(macOS)"
+    outLines.add "        .onChange(of: store.state.keybinds) { newValue in"
+    outLines.add "          store.shortcutMonitor.reloadBindings(from: newValue)"
+    outLines.add "        }"
+    outLines.add "#endif"
   outLines.add "    }"
   if hasWindowDefaultSize:
     outLines.add "    .defaultSize(width: " & formatSwiftDouble(windowDecl.width) &
       ", height: " & formatSwiftDouble(windowDecl.height) & ")"
+  # Suppress default macOS menu items that steal keyboard shortcuts
+  if windowDecl.hasSuppressDefaultMenus and windowDecl.suppressDefaultMenus:
+    outLines.add "#if os(macOS)"
+    outLines.add "    .commands {"
+    outLines.add "        CommandGroup(replacing: .newItem) { }"
+    outLines.add "        CommandGroup(replacing: .printItem) { }"
+    outLines.add "        CommandGroup(replacing: .help) {"
+    outLines.add "            Button(\"Keyboard Shortcuts...\") {"
+    outLines.add "                store.send(.showKeybindSheet)"
+    outLines.add "            }"
+    outLines.add "        }"
+    outLines.add "    }"
+    outLines.add "#endif"
   # Settings scene (macOS)
   if ir.settingsComponent.len > 0:
     outLines.add "#if os(macOS)"
@@ -1882,12 +1914,17 @@ final class GUIRuntime {
   private var websocketTasks: [String: URLSessionWebSocketTask] = [:]
   private let bridgeRuntime = GUIBridgeRuntime()
   private var bridgeTimeoutMs = 250
+  private var notifySource: DispatchSourceRead?
+  private var notifyStarted = false
 
   init(store: GUIStore) {
     self.store = store
   }
 
   func shutdown() {
+    notifySource?.cancel()
+    notifySource = nil
+
     for (_, task) in timerTasks {
       task.cancel()
     }
@@ -1904,6 +1941,25 @@ final class GUIRuntime {
     websocketTasks.removeAll()
 
     bridgeRuntime.unload()
+  }
+
+  private func startBridgeNotifySource() {
+    guard !notifyStarted else { return }
+    let fd = bridgeRuntime.getNotifyFd()
+    guard fd >= 0 else { return }
+    notifyStarted = true
+
+    let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
+    source.setEventHandler { [weak self] in
+      // Drain all bytes from the pipe
+      var buf = [UInt8](repeating: 0, count: 64)
+      while Darwin.read(fd, &buf, buf.count) > 0 {}
+      Task { @MainActor in
+        self?.store.send(.poll)
+      }
+    }
+    notifySource = source
+    source.resume()
   }
 
   func enqueue(_ commands: [GUIEffectCommand]) {
@@ -2150,6 +2206,7 @@ final class GUIRuntime {
         if !self.bridgeRuntime.load(path: bridgePath) {
           self.logBridge("error", "failed to load bridge function table", code: "GUI_BRIDGE_ABI_MISMATCH")
         }
+        self.startBridgeNotifySource()
       }
 
       let result = await MainActor.run { self.bridgeRuntime.dispatch(payload: payload) }
@@ -2583,6 +2640,7 @@ final class GUIBridgeRuntime {
   func unload() {}
   func maybeReload(path: String) {}
   func dispatch(payload: Data) -> GUIBridgeDispatchResult { .empty }
+  func getNotifyFd() -> Int32 { -1 }
 }
 """.strip() & "\n"
 

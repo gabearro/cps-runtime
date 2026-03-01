@@ -221,6 +221,8 @@ type
     hasClosePolicy*: bool
     showTitleBar*: bool
     hasShowTitleBar*: bool
+    suppressDefaultMenus*: bool
+    hasSuppressDefaultMenus*: bool
     range*: GuiSourceRange
 
   GuiPropertyWrapper* = enum

@@ -1,0 +1,145 @@
+component ChannelInfoPanel(isDark: Bool) {
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.65) : token.color.textSubtle
+  let cardBg = isDark ? Color(red: 0.19, green: 0.19, blue: 0.20) : Color(red: 0.96, green: 0.96, blue: 0.97)
+  let cardBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+  let dividerColor = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 20) {
+    HStack {
+      HStack(spacing: 8) {
+        Text("#")
+          .font(.system(size: 18, weight: Font.Weight.semibold, design: Font.Design.rounded))
+          .foregroundColor(token.color.accent)
+
+        Text(activeChannelName)
+          .font(.system(size: 17, weight: Font.Weight.semibold))
+          .foregroundColor(fg)
+      }
+
+      Spacer()
+
+      Button(action: HideChannelInfo) {
+        Image(systemName: "xmark")
+          .font(.system(size: 10, weight: Font.Weight.medium))
+          .foregroundColor(fgSecondary)
+          .frame(width: 24, height: 24)
+          .background(
+            Circle()
+              .fill(isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.04))
+          )
+      }
+      .buttonStyle(BorderlessButtonStyle())
+    }
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 0) {
+      HStack(alignment: VerticalAlignment.top) {
+        Text("Topic")
+          .font(.system(size: 11, weight: Font.Weight.semibold))
+          .foregroundColor(fgTertiary)
+          .frame(width: 60, alignment: Alignment.leading)
+
+        if currentTopic != "" {
+          Text(currentTopic)
+            .font(.system(size: 12))
+            .foregroundColor(fg)
+            .textSelection(.enabled)
+            .lineSpacing(3)
+        } else {
+          Text("No topic set")
+            .font(.system(size: 12))
+            .foregroundColor(fgTertiary)
+            .italic()
+        }
+      }
+      .padding(vertical: 10, horizontal: 12)
+
+      Rectangle()
+        .fill(dividerColor)
+        .frame(height: 1)
+        .padding(horizontal: 12)
+
+      HStack {
+        Text("Users")
+          .font(.system(size: 11, weight: Font.Weight.semibold))
+          .foregroundColor(fgTertiary)
+          .frame(width: 60, alignment: Alignment.leading)
+
+        Text("\(currentUserCount)")
+          .font(.system(size: 12))
+          .foregroundColor(fg)
+          .monospacedDigit()
+      }
+      .padding(vertical: 10, horizontal: 12)
+
+      if channelModes != "" {
+        Rectangle()
+          .fill(dividerColor)
+          .frame(height: 1)
+          .padding(horizontal: 12)
+
+        HStack {
+          Text("Modes")
+            .font(.system(size: 11, weight: Font.Weight.semibold))
+            .foregroundColor(fgTertiary)
+            .frame(width: 60, alignment: Alignment.leading)
+
+          Text(channelModes)
+            .font(.system(size: 12, design: Font.Design.monospaced))
+            .foregroundColor(fg)
+            .textSelection(.enabled)
+        }
+        .padding(vertical: 10, horizontal: 12)
+      }
+
+      if channelCreated != "" {
+        Rectangle()
+          .fill(dividerColor)
+          .frame(height: 1)
+          .padding(horizontal: 12)
+
+        HStack {
+          Text("Created")
+            .font(.system(size: 11, weight: Font.Weight.semibold))
+            .foregroundColor(fgTertiary)
+            .frame(width: 60, alignment: Alignment.leading)
+
+          Text(channelCreated)
+            .font(.system(size: 12))
+            .foregroundColor(fg)
+        }
+        .padding(vertical: 10, horizontal: 12)
+      }
+    }
+    .background(
+      RoundedRectangle(cornerRadius: 10)
+        .fill(cardBg)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 10)
+        .stroke(cardBorder, lineWidth: 0.5)
+    )
+
+    HStack(spacing: 12) {
+      Button(action: PartChannel) {
+        Label("Leave Channel", systemImage: "arrow.left.circle")
+          .font(.system(size: 12, weight: Font.Weight.medium))
+          .foregroundColor(token.color.danger)
+      }
+      .buttonStyle(BorderlessButtonStyle())
+
+      Spacer()
+
+      Button(action: HideChannelInfo) {
+        Text("Close")
+          .font(.system(size: 12))
+          .foregroundColor(fgSecondary)
+      }
+      .buttonStyle(BorderlessButtonStyle())
+      .keyboardShortcut(KeyEquivalent.escape, modifiers: EventModifiers())
+    }
+  }
+  .padding(24)
+  .frame(width: 440)
+}

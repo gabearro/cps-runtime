@@ -11,6 +11,7 @@ app CpsIrc {
     maxHeight: 1600
     showTitleBar: true
     closeAppOnLastWindowClose: true
+    suppressDefaultMenus: true
   }
 
   tokens {
@@ -20,14 +21,14 @@ app CpsIrc {
     color.warning = "#FFD60A"
     color.danger = "#FF453A"
 
-    color.textPrimary = "#1D1D1F"
-    color.textSecondary = "#48484A"
-    color.textMuted = "#8E8E93"
-    color.textSubtle = "#AEAEB2"
+    color.textPrimary = "#1C1C1E"
+    color.textSecondary = "#3C3C43"
+    color.textMuted = "#6C6C70"
+    color.textSubtle = "#8E8E93"
 
     color.surface = "#FFFFFF"
-    color.surfaceSecondary = "#F5F5F7"
-    color.border = "#D2D2D7"
+    color.surfaceSecondary = "#F2F2F7"
+    color.border = "#C6C6C8"
     color.borderSubtle = "#E5E5EA"
     color.badgeBg = "#F2F2F7"
     color.rowHover = "#F5F5F7"
@@ -139,6 +140,9 @@ app CpsIrc {
 
     actionServerId: Int = -1
     actionNick: String = ""
+    actionColor: String = ""
+
+    nickColors: String = "{}"
 
     activeChannelIsChannel: Bool = false
     activeChannelIsDm: Bool = false
@@ -156,6 +160,29 @@ app CpsIrc {
     showWhois: Bool = false
     whoisNick: String = ""
     whoisInfo: String = ""
+
+    showSettings: Bool = false
+    fontSize: Int = 13
+    messageDensity: String = "comfortable"
+    timestampFormat: String = "short"
+
+    sidebarFilter: String = ""
+
+    showChannelInfo: Bool = false
+    channelModes: String = ""
+    channelCreated: String = ""
+
+    searchText: String = ""
+    searchActive: Bool = false
+
+    smartFilterEnabled: Bool = true
+    smartFilterTimeout: Int = 1800
+
+    showChannelSwitcher: Bool = false
+    channelSwitcherText: String = ""
+
+    keybinds: String = "{}"
+    showKeybindSheet: Bool = false
 
     computed hasActiveServer: Bool = activeServerId >= 0
     computed hasActiveChannel: Bool = activeChannelName != ""
@@ -204,19 +231,57 @@ app CpsIrc {
   action InputChanged owner nim
   action CompletionSelect(index: Int) owner nim
 
+  action ShowSettings owner swift
+  action HideSettings owner swift
+  action SetFontSize(size: Int) owner both
+  action SetMessageDensity(density: String) owner both
+  action SetTimestampFormat(format: String) owner both
+  action UpdateSidebarFilter owner both
+  action ToggleAway owner nim
+  action ShowChannelInfo owner swift
+  action HideChannelInfo owner swift
+  action ToggleSearch owner swift
+  action ClearSearch owner swift
+  action UpdateSearch owner both
+  action SelectNetwork(host: String, port: String, useTls: Bool) owner swift
+  action HistoryUp owner nim
+  action HistoryDown owner nim
+  action MuteJoinPart(nick: String) owner both
+  action SetSmartFilter(enabled: Bool) owner both
+  action SetSmartFilterTimeout(timeout: Int) owner both
+  action SwitchChannelByIndex(index: Int) owner both
+  action PrevChannel owner both
+  action NextChannel owner both
+  action NextUnreadChannel owner both
+  action ClearScrollback owner both
+  action ShowChannelSwitcher owner swift
+  action HideChannelSwitcher owner swift
+  action SwitchChannelFromSwitcher owner both
+  action SetNickColor(nick: String, color: String) owner both
+  action PrevServer owner both
+  action NextServer owner both
+  action PrevUnreadChannel owner both
+  action ShowKeybindSheet owner swift
+  action HideKeybindSheet owner swift
+  action UpdateKeybind(id: String, key: String, modifiers: String) owner both
+  action ResetKeybinds owner both
+
   reducer {
     on StartPoll {
       set pollActive = true
-      emit timer.interval(id: "poll", ms: 100, action: Poll)
+      emit timer.once(id: "poll_init", ms: 0, action: Poll)
+      emit timer.interval(id: "poll", ms: 2000, action: Poll)
     }
 
     on SwitchServer(serverId) {
+      set activeChannelName = activeServerId == serverId ? "*server*" : ""
       set activeServerId = serverId
-      set activeChannelName = ""
     }
 
     on SwitchChannel(channelName) {
       set activeChannelName = channelName
+      set showChannelSwitcher = false
+      set channelSwitcherText = ""
     }
 
     on ToggleUserList {
@@ -316,9 +381,111 @@ app CpsIrc {
     on CompletionSelect(index) {
       set completionSelectIndex = index
     }
+
+    on ShowSettings {
+      set showSettings = true
+    }
+
+    on HideSettings {
+      set showSettings = false
+    }
+
+    on SetFontSize(size) {
+      set fontSize = size
+    }
+
+    on SetMessageDensity(density) {
+      set messageDensity = density
+    }
+
+    on SetTimestampFormat(format) {
+      set timestampFormat = format
+    }
+
+    on ShowChannelInfo {
+      set showChannelInfo = true
+    }
+
+    on HideChannelInfo {
+      set showChannelInfo = false
+    }
+
+    on ToggleSearch {
+      set searchActive = !searchActive
+      set searchText = ""
+    }
+
+    on ClearSearch {
+      set searchActive = false
+      set searchText = ""
+    }
+
+    on SelectNetwork(host, port, useTls) {
+      set connectHost = host
+      set connectPort = port
+      set connectUseTls = useTls
+      set showConnectForm = true
+    }
+
+    on MuteJoinPart(nick) {
+      set actionNick = nick
+    }
+
+    on SetSmartFilter(enabled) {
+      set smartFilterEnabled = enabled
+    }
+
+    on SetSmartFilterTimeout(timeout) {
+      set smartFilterTimeout = timeout
+    }
+
+    on ShowChannelSwitcher {
+      set showChannelSwitcher = true
+      set channelSwitcherText = ""
+    }
+
+    on HideChannelSwitcher {
+      set showChannelSwitcher = false
+      set channelSwitcherText = ""
+    }
+
+    on SwitchChannelByIndex(index) {
+      set actionServerId = index
+    }
+
+    on SwitchChannelFromSwitcher {
+      set showChannelSwitcher = false
+    }
+
+    on SetNickColor(nick, color) {
+      set actionNick = nick
+      set actionColor = color
+    }
+
+    on ShowKeybindSheet {
+      set showKeybindSheet = true
+    }
+
+    on HideKeybindSheet {
+      set showKeybindSheet = false
+    }
+
+    on UpdateKeybind(id, key, modifiers) {
+      set actionNick = id
+      set actionColor = key + "|" + modifiers
+    }
+
+    on ResetKeybinds {
+      set actionNick = ""
+      set actionColor = ""
+    }
   }
 
   escape swiftFile "swift/RichMessageText.swift"
+  escape swiftFile "swift/ChatMessageList.swift"
+  escape swiftFile "swift/KeyInterceptingTextField.swift"
+  escape swiftFile "swift/KeyboardShortcutMonitor.swift"
+  escape swiftFile "swift/KeybindSheetView.swift"
 
   bridge {
     nimEntry: "bridge.nim"

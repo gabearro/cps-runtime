@@ -1,7 +1,42 @@
+component NetworkPresetButton(label: String, host: String, port: String, useTls: Bool, isDark: Bool) {
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let presetBg = isDark ? Color.white.opacity(0.05) : Color.black.opacity(0.03)
+  let presetBorder = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.08)
+
+  Button(action: SelectNetwork(host: host, port: port, useTls: useTls)) {
+    VStack(spacing: 3) {
+      Text(label)
+        .font(.system(size: 12, weight: Font.Weight.medium))
+        .foregroundColor(token.color.accent)
+
+      HStack(spacing: 3) {
+        if useTls {
+          Image(systemName: "lock.fill")
+            .font(.system(size: 7))
+            .foregroundColor(token.color.success)
+        }
+        Text(port)
+          .font(.system(size: 9))
+          .foregroundColor(fgSecondary)
+      }
+    }
+    .padding(vertical: 8, horizontal: 14)
+    .background(
+      RoundedRectangle(cornerRadius: 8)
+        .fill(presetBg)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 8)
+        .stroke(presetBorder, lineWidth: 0.5)
+    )
+  }
+  .buttonStyle(BorderlessButtonStyle())
+}
+
 component ConnectForm(isDark: Bool) {
-  let fg = isDark ? Color(red: 0.93, green: 0.93, blue: 0.95) : token.color.textPrimary
-  let fgSecondary = isDark ? Color(red: 0.56, green: 0.56, blue: 0.60) : token.color.textMuted
-  let fgTertiary = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.65) : token.color.textSubtle
 
   VStack(spacing: 24) {
     HStack {
@@ -21,13 +56,54 @@ component ConnectForm(isDark: Bool) {
         Image(systemName: "xmark")
           .font(.system(size: 10, weight: Font.Weight.medium))
           .foregroundColor(fgSecondary)
-          .frame(width: 22, height: 22)
+          .frame(width: 24, height: 24)
           .background(
             Circle()
-              .fill(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04))
+              .fill(isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.04))
           )
       }
       .buttonStyle(BorderlessButtonStyle())
+    }
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+      Text("Quick Connect")
+        .font(.system(size: 11, weight: Font.Weight.semibold))
+        .foregroundColor(fgTertiary)
+        .tracking(0.3)
+
+      HStack(spacing: 8) {
+        NetworkPresetButton(
+          label: "Libera Chat",
+          host: "irc.libera.chat",
+          port: "6697",
+          useTls: true,
+          isDark: isDark
+        )
+
+        NetworkPresetButton(
+          label: "OFTC",
+          host: "irc.oftc.net",
+          port: "6697",
+          useTls: true,
+          isDark: isDark
+        )
+
+        NetworkPresetButton(
+          label: "Rizon",
+          host: "irc.rizon.net",
+          port: "6697",
+          useTls: true,
+          isDark: isDark
+        )
+
+        NetworkPresetButton(
+          label: "EFnet",
+          host: "irc.efnet.org",
+          port: "6667",
+          useTls: false,
+          isDark: isDark
+        )
+      }
     }
 
     Form {
@@ -77,5 +153,5 @@ component ConnectForm(isDark: Bool) {
     }
   }
   .padding(24)
-  .frame(minWidth: 440, idealWidth: 480, minHeight: 420)
+  .frame(minWidth: 500, idealWidth: 540, minHeight: 520)
 }

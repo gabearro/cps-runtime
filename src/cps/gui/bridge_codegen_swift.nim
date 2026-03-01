@@ -4,7 +4,7 @@ import std/strutils
 import ./ir
 
 const
-  guiBridgeAbiVersion* = 2'u32
+  guiBridgeAbiVersion* = 3'u32
 
 proc swiftEscape(value: string): string =
   value
@@ -75,12 +75,14 @@ proc emitBridgeHeader*(irProgram: GuiIrProgram): string =
   lines.add "typedef void* (*GUIBridgeAllocFn)(size_t size);"
   lines.add "typedef void (*GUIBridgeFreeFn)(void* ptr);"
   lines.add "typedef int32_t (*GUIBridgeDispatchFn)(const uint8_t* payload, uint32_t payloadLen, GUIBridgeDispatchOutput* out);"
+  lines.add "typedef int32_t (*GUIBridgeGetNotifyFdFn)(void);"
   lines.add ""
   lines.add "typedef struct GUIBridgeFunctionTable {"
   lines.add "  uint32_t abiVersion;"
   lines.add "  GUIBridgeAllocFn alloc;"
   lines.add "  GUIBridgeFreeFn free;"
   lines.add "  GUIBridgeDispatchFn dispatch;"
+  lines.add "  GUIBridgeGetNotifyFdFn getNotifyFd;"
   lines.add "} GUIBridgeFunctionTable;"
   lines.add ""
   lines.add "const GUIBridgeFunctionTable* gui_bridge_get_table(void);"
@@ -134,6 +136,7 @@ proc emitBridgeSwiftWrapper*(irProgram: GuiIrProgram): string =
   lines.add "  var alloc: (@convention(c) (Int) -> UnsafeMutableRawPointer?)?"
   lines.add "  var free: (@convention(c) (UnsafeMutableRawPointer?) -> Void)?"
   lines.add "  var dispatch: (@convention(c) (UnsafePointer<UInt8>?, UInt32, UnsafeMutableRawPointer?) -> Int32)?"
+  lines.add "  var getNotifyFd: (@convention(c) () -> Int32)?"
   lines.add "}"
   lines.add ""
   lines.add "private typealias GUIBridgeGetTableFn = @convention(c) () -> UnsafeRawPointer?"
@@ -206,6 +209,11 @@ proc emitBridgeSwiftWrapper*(irProgram: GuiIrProgram): string =
   lines.add "    }"
   lines.add ""
   lines.add "    return GUIBridgeDispatchResult(status: status, statePatch: bufferToData(out.statePatch), effects: bufferToData(out.effects), emittedActions: bufferToData(out.emittedActions), diagnostics: bufferToData(out.diagnostics))"
+  lines.add "  }"
+  lines.add ""
+  lines.add "  func getNotifyFd() -> Int32 {"
+  lines.add "    guard let t = table, let fn = t.getNotifyFd else { return -1 }"
+  lines.add "    return fn()"
   lines.add "  }"
   lines.add ""
   lines.add "  func maybeReload(path: String) {"

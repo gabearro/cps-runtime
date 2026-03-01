@@ -1,0 +1,389 @@
+component FontSizeButton(label: String, size: Int, isActive: Bool, isDark: Bool) {
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let activeBg = token.color.accent.opacity(0.12)
+  let inactiveBg = isDark ? Color.white.opacity(0.05) : Color.black.opacity(0.03)
+  let activeBorder = token.color.accent.opacity(0.3)
+  let inactiveBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+
+  Button(action: SetFontSize(size: size)) {
+    Text(label)
+      .font(.system(size: 12, weight: isActive ? Font.Weight.semibold : Font.Weight.regular))
+      .foregroundColor(isActive ? token.color.accent : fgSecondary)
+      .padding(vertical: 5, horizontal: 12)
+      .background(
+        RoundedRectangle(cornerRadius: 6)
+          .fill(isActive ? activeBg : inactiveBg)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 6)
+          .stroke(isActive ? activeBorder : inactiveBorder, lineWidth: 0.5)
+      )
+  }
+  .buttonStyle(BorderlessButtonStyle())
+}
+
+component DensityButton(label: String, density: String, isActive: Bool, isDark: Bool) {
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let activeBg = token.color.accent.opacity(0.12)
+  let inactiveBg = isDark ? Color.white.opacity(0.05) : Color.black.opacity(0.03)
+  let activeBorder = token.color.accent.opacity(0.3)
+  let inactiveBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+
+  Button(action: SetMessageDensity(density: density)) {
+    Text(label)
+      .font(.system(size: 12, weight: isActive ? Font.Weight.semibold : Font.Weight.regular))
+      .foregroundColor(isActive ? token.color.accent : fgSecondary)
+      .padding(vertical: 5, horizontal: 12)
+      .background(
+        RoundedRectangle(cornerRadius: 6)
+          .fill(isActive ? activeBg : inactiveBg)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 6)
+          .stroke(isActive ? activeBorder : inactiveBorder, lineWidth: 0.5)
+      )
+  }
+  .buttonStyle(BorderlessButtonStyle())
+}
+
+component TimestampButton(label: String, format: String, isActive: Bool, isDark: Bool) {
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let activeBg = token.color.accent.opacity(0.12)
+  let inactiveBg = isDark ? Color.white.opacity(0.05) : Color.black.opacity(0.03)
+  let activeBorder = token.color.accent.opacity(0.3)
+  let inactiveBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+
+  Button(action: SetTimestampFormat(format: format)) {
+    Text(label)
+      .font(.system(size: 12, weight: isActive ? Font.Weight.semibold : Font.Weight.regular))
+      .foregroundColor(isActive ? token.color.accent : fgSecondary)
+      .padding(vertical: 5, horizontal: 12)
+      .background(
+        RoundedRectangle(cornerRadius: 6)
+          .fill(isActive ? activeBg : inactiveBg)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 6)
+          .stroke(isActive ? activeBorder : inactiveBorder, lineWidth: 0.5)
+      )
+  }
+  .buttonStyle(BorderlessButtonStyle())
+}
+
+component SmartFilterTimeoutButton(label: String, timeout: Int, isActive: Bool, isDark: Bool) {
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let activeBg = token.color.accent.opacity(0.12)
+  let inactiveBg = isDark ? Color.white.opacity(0.05) : Color.black.opacity(0.03)
+  let activeBorder = token.color.accent.opacity(0.3)
+  let inactiveBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+
+  Button(action: SetSmartFilterTimeout(timeout: timeout)) {
+    Text(label)
+      .font(.system(size: 12, weight: isActive ? Font.Weight.semibold : Font.Weight.regular))
+      .foregroundColor(isActive ? token.color.accent : fgSecondary)
+      .padding(vertical: 5, horizontal: 12)
+      .background(
+        RoundedRectangle(cornerRadius: 6)
+          .fill(isActive ? activeBg : inactiveBg)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 6)
+          .stroke(isActive ? activeBorder : inactiveBorder, lineWidth: 0.5)
+      )
+  }
+  .buttonStyle(BorderlessButtonStyle())
+}
+
+component SettingsAppearanceSection(isDark: Bool) {
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgTertiary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.65) : token.color.textSubtle
+  let sectionLabelColor = isDark ? Color(red: 0.58, green: 0.58, blue: 0.61) : Color(red: 0.60, green: 0.60, blue: 0.63)
+  let dividerColor = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
+  let cardBg = isDark ? Color(red: 0.19, green: 0.19, blue: 0.20) : Color(red: 0.96, green: 0.96, blue: 0.97)
+  let cardBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 12) {
+    Text("APPEARANCE")
+      .font(.system(size: 11, weight: Font.Weight.semibold))
+      .foregroundColor(sectionLabelColor)
+      .tracking(0.6)
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 16) {
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        Text("Font Size")
+          .font(.system(size: 13, weight: Font.Weight.medium))
+          .foregroundColor(fg)
+
+        HStack(spacing: 6) {
+          FontSizeButton(label: "Small", size: 11, isActive: fontSize == 11, isDark: isDark)
+          FontSizeButton(label: "Default", size: 13, isActive: fontSize == 13, isDark: isDark)
+          FontSizeButton(label: "Large", size: 15, isActive: fontSize == 15, isDark: isDark)
+          FontSizeButton(label: "XL", size: 17, isActive: fontSize == 17, isDark: isDark)
+        }
+      }
+
+      Rectangle()
+        .fill(dividerColor)
+        .frame(height: 1)
+
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        Text("Message Density")
+          .font(.system(size: 13, weight: Font.Weight.medium))
+          .foregroundColor(fg)
+
+        HStack(spacing: 6) {
+          DensityButton(label: "Compact", density: "compact", isActive: messageDensity == "compact", isDark: isDark)
+          DensityButton(label: "Comfortable", density: "comfortable", isActive: messageDensity == "comfortable", isDark: isDark)
+          DensityButton(label: "Cozy", density: "cozy", isActive: messageDensity == "cozy", isDark: isDark)
+        }
+
+        Text(
+          messageDensity == "compact"
+            ? "Minimal spacing between messages"
+            : messageDensity == "comfortable"
+              ? "Balanced spacing for readability"
+              : "Extra spacing for a relaxed view"
+        )
+          .font(.system(size: 11))
+          .foregroundColor(fgTertiary)
+      }
+
+      Rectangle()
+        .fill(dividerColor)
+        .frame(height: 1)
+
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        Text("Timestamps")
+          .font(.system(size: 13, weight: Font.Weight.medium))
+          .foregroundColor(fg)
+
+        HStack(spacing: 6) {
+          TimestampButton(label: "Short", format: "short", isActive: timestampFormat == "short", isDark: isDark)
+          TimestampButton(label: "Full", format: "full", isActive: timestampFormat == "full", isDark: isDark)
+          TimestampButton(label: "Hidden", format: "hidden", isActive: timestampFormat == "hidden", isDark: isDark)
+        }
+
+        Text(
+          timestampFormat == "short"
+            ? "Show time only (e.g. 14:30)"
+            : timestampFormat == "full"
+              ? "Show date and time"
+              : "Hide timestamps"
+        )
+          .font(.system(size: 11))
+          .foregroundColor(fgTertiary)
+      }
+    }
+    .padding(16)
+    .background(
+      RoundedRectangle(cornerRadius: 10)
+        .fill(cardBg)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 10)
+        .stroke(cardBorder, lineWidth: 0.5)
+    )
+  }
+}
+
+component SettingsNotificationsSection(isDark: Bool) {
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.65) : token.color.textSubtle
+  let sectionLabelColor = isDark ? Color(red: 0.58, green: 0.58, blue: 0.61) : Color(red: 0.60, green: 0.60, blue: 0.63)
+  let dividerColor = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
+  let cardBg = isDark ? Color(red: 0.19, green: 0.19, blue: 0.20) : Color(red: 0.96, green: 0.96, blue: 0.97)
+  let cardBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+  let activeBg = token.color.accent.opacity(0.12)
+  let inactiveBg = isDark ? Color.white.opacity(0.05) : Color.black.opacity(0.03)
+  let activeBorder = token.color.accent.opacity(0.3)
+  let inactiveBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 12) {
+    Text("NOTIFICATIONS")
+      .font(.system(size: 11, weight: Font.Weight.semibold))
+      .foregroundColor(sectionLabelColor)
+      .tracking(0.6)
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 16) {
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        HStack {
+          Text("Smart Join/Part Filter")
+            .font(.system(size: 13, weight: Font.Weight.medium))
+            .foregroundColor(fg)
+
+          Spacer()
+
+          HStack(spacing: 6) {
+            Button(action: SetSmartFilter(enabled: true)) {
+              Text("On")
+                .font(.system(size: 12, weight: smartFilterEnabled ? Font.Weight.semibold : Font.Weight.regular))
+                .foregroundColor(smartFilterEnabled ? token.color.accent : fgSecondary)
+                .padding(vertical: 5, horizontal: 12)
+                .background(
+                  RoundedRectangle(cornerRadius: 6)
+                    .fill(smartFilterEnabled ? activeBg : inactiveBg)
+                )
+                .overlay(
+                  RoundedRectangle(cornerRadius: 6)
+                    .stroke(smartFilterEnabled ? activeBorder : inactiveBorder, lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(BorderlessButtonStyle())
+
+            Button(action: SetSmartFilter(enabled: false)) {
+              Text("Off")
+                .font(.system(size: 12, weight: !smartFilterEnabled ? Font.Weight.semibold : Font.Weight.regular))
+                .foregroundColor(!smartFilterEnabled ? token.color.accent : fgSecondary)
+                .padding(vertical: 5, horizontal: 12)
+                .background(
+                  RoundedRectangle(cornerRadius: 6)
+                    .fill(!smartFilterEnabled ? activeBg : inactiveBg)
+                )
+                .overlay(
+                  RoundedRectangle(cornerRadius: 6)
+                    .stroke(!smartFilterEnabled ? activeBorder : inactiveBorder, lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(BorderlessButtonStyle())
+          }
+        }
+
+        Text("Auto-hide join/part/quit messages from users who haven't spoken recently")
+          .font(.system(size: 11))
+          .foregroundColor(fgTertiary)
+      }
+
+      if smartFilterEnabled {
+        Rectangle()
+          .fill(dividerColor)
+          .frame(height: 1)
+
+        VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+          Text("Inactivity Timeout")
+            .font(.system(size: 13, weight: Font.Weight.medium))
+            .foregroundColor(fg)
+
+          HStack(spacing: 6) {
+            SmartFilterTimeoutButton(label: "5m", timeout: 300, isActive: smartFilterTimeout == 300, isDark: isDark)
+            SmartFilterTimeoutButton(label: "15m", timeout: 900, isActive: smartFilterTimeout == 900, isDark: isDark)
+            SmartFilterTimeoutButton(label: "30m", timeout: 1800, isActive: smartFilterTimeout == 1800, isDark: isDark)
+            SmartFilterTimeoutButton(label: "1h", timeout: 3600, isActive: smartFilterTimeout == 3600, isDark: isDark)
+            SmartFilterTimeoutButton(label: "2h", timeout: 7200, isActive: smartFilterTimeout == 7200, isDark: isDark)
+          }
+
+          Text("Show join/part/quit only for users who spoke within this time")
+            .font(.system(size: 11))
+            .foregroundColor(fgTertiary)
+        }
+      }
+    }
+    .padding(16)
+    .background(
+      RoundedRectangle(cornerRadius: 10)
+        .fill(cardBg)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 10)
+        .stroke(cardBorder, lineWidth: 0.5)
+    )
+  }
+}
+
+component SettingsPanel(isDark: Bool) {
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let dividerColor = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
+
+  VStack(spacing: 0) {
+    HStack {
+      HStack(spacing: 8) {
+        Image(systemName: "gearshape")
+          .font(.system(size: 14))
+          .foregroundColor(token.color.accent)
+
+        Text("Settings")
+          .font(.system(size: 17, weight: Font.Weight.semibold))
+          .foregroundColor(fg)
+      }
+
+      Spacer()
+
+      Button(action: HideSettings) {
+        Image(systemName: "xmark")
+          .font(.system(size: 10, weight: Font.Weight.medium))
+          .foregroundColor(fgSecondary)
+          .frame(width: 24, height: 24)
+          .background(
+            Circle()
+              .fill(isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.04))
+          )
+      }
+      .buttonStyle(BorderlessButtonStyle())
+    }
+    .padding(vertical: 16, horizontal: 24)
+
+    Rectangle()
+      .fill(dividerColor)
+      .frame(height: 1)
+
+    ScrollView {
+      VStack(alignment: HorizontalAlignment.leading, spacing: 24) {
+        SettingsAppearanceSection(isDark: isDark)
+        SettingsNotificationsSection(isDark: isDark)
+      }
+      .padding(24)
+    }
+  }
+  .frame(minWidth: 480, idealWidth: 520, minHeight: 500)
+}
+
+component KeybindSheetPanel(isDark: Bool) {
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let dividerColor = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
+
+  VStack(spacing: 0) {
+    HStack {
+      HStack(spacing: 8) {
+        Image(systemName: "keyboard")
+          .font(.system(size: 14))
+          .foregroundColor(token.color.accent)
+
+        Text("Keyboard Shortcuts")
+          .font(.system(size: 17, weight: Font.Weight.semibold))
+          .foregroundColor(fg)
+      }
+
+      Spacer()
+
+      Button(action: ResetKeybinds) {
+        Text("Reset to Defaults")
+          .font(.system(size: 12))
+          .foregroundColor(token.color.accent)
+      }
+      .buttonStyle(BorderlessButtonStyle())
+
+      Button(action: HideKeybindSheet) {
+        Image(systemName: "xmark")
+          .font(.system(size: 10, weight: Font.Weight.medium))
+          .foregroundColor(fgSecondary)
+          .frame(width: 24, height: 24)
+          .background(
+            Circle()
+              .fill(isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.04))
+          )
+      }
+      .buttonStyle(BorderlessButtonStyle())
+    }
+    .padding(vertical: 16, horizontal: 24)
+
+    Rectangle()
+      .fill(dividerColor)
+      .frame(height: 1)
+
+    KeybindSheetView(store: store, isDark: isDark)
+  }
+  .frame(minWidth: 480, idealWidth: 520, minHeight: 500)
+}

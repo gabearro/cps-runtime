@@ -15,7 +15,7 @@ import cps/eventloop
 import cps/ircclient
 import cps/concurrency/channels
 
-import std/[json, os, strutils, locks, tables, times, sequtils, algorithm]
+import std/[json, os, strutils, locks, tables, times, algorithm, atomics, posix]
 
 # ============================================================
 # Action tags (must match action declaration order in app.gui)
@@ -63,6 +63,40 @@ const
   tagRetryTransfer = 38'u32
   tagInputChanged = 39'u32
   tagCompletionSelect = 40'u32
+  tagShowSettings = 41'u32       # owner swift
+  tagHideSettings = 42'u32       # owner swift
+  tagSetFontSize = 43'u32
+  tagSetMessageDensity = 44'u32
+  tagSetTimestampFormat = 45'u32
+  tagUpdateSidebarFilter = 46'u32
+  tagToggleAway = 47'u32
+  tagShowChannelInfo = 48'u32    # owner swift
+  tagHideChannelInfo = 49'u32    # owner swift
+  tagToggleSearch = 50'u32       # owner swift
+  tagClearSearch = 51'u32        # owner swift
+  tagUpdateSearch = 52'u32
+  tagSelectNetwork = 53'u32      # owner swift
+  tagHistoryUp = 54'u32
+  tagHistoryDown = 55'u32
+  tagMuteJoinPart = 56'u32
+  tagSetSmartFilter = 57'u32
+  tagSetSmartFilterTimeout = 58'u32
+  tagSwitchChannelByIndex = 59'u32
+  tagPrevChannel = 60'u32
+  tagNextChannel = 61'u32
+  tagNextUnreadChannel = 62'u32
+  tagClearScrollback = 63'u32
+  tagShowChannelSwitcher = 64'u32  # owner swift
+  tagHideChannelSwitcher = 65'u32  # owner swift
+  tagSwitchChannelFromSwitcher = 66'u32
+  tagSetNickColor = 67'u32
+  tagPrevServer = 68'u32
+  tagNextServer = 69'u32
+  tagPrevUnreadChannel = 70'u32
+  tagShowKeybindSheet = 71'u32     # owner swift
+  tagHideKeybindSheet = 72'u32     # owner swift
+  tagUpdateKeybind = 73'u32
+  tagResetKeybinds = 74'u32
 
 # ============================================================
 # Bridge types
@@ -178,6 +212,7 @@ type
     free: proc(p: pointer) {.cdecl.}
     dispatch: proc(payload: ptr uint8, payloadLen: uint32,
                    outp: ptr GUIBridgeDispatchOutput): int32 {.cdecl.}
+    getNotifyFd: proc(): int32 {.cdecl.}
 
   DccTransferState = enum
     dccPending, dccActive, dccDone, dccDeclined, dccFailed
@@ -196,10 +231,41 @@ type
     ip: uint32
     port: int
 
+  KeybindDef = object
+    id: string
+    key: string
+    modifiers: string
+    label: string
+    actionTag: uint32
+
 const
-  guiBridgeAbiVersion = 2'u32
+  guiBridgeAbiVersion = 3'u32
   MaxMessagesPerChannel = 500
   ServerChannel = "*server*"
+
+  defaultKeybinds = @[
+    KeybindDef(id: "channelSwitcher",  key: "k", modifiers: "command",       label: "Channel Switcher",     actionTag: tagShowChannelSwitcher),
+    KeybindDef(id: "prevChannel",      key: "[", modifiers: "command",       label: "Previous Channel",     actionTag: tagPrevChannel),
+    KeybindDef(id: "nextChannel",      key: "]", modifiers: "command",       label: "Next Channel",         actionTag: tagNextChannel),
+    KeybindDef(id: "nextUnread",       key: "n", modifiers: "command",       label: "Next Unread Channel",  actionTag: tagNextUnreadChannel),
+    KeybindDef(id: "prevUnread",       key: "p", modifiers: "command",       label: "Prev Unread Channel",  actionTag: tagPrevUnreadChannel),
+    KeybindDef(id: "prevServer",       key: "[", modifiers: "command+shift", label: "Previous Server",      actionTag: tagPrevServer),
+    KeybindDef(id: "nextServer",       key: "]", modifiers: "command+shift", label: "Next Server",          actionTag: tagNextServer),
+    KeybindDef(id: "joinChannel",      key: "t", modifiers: "command",       label: "Join Channel",         actionTag: tagShowJoinChannel),
+    KeybindDef(id: "closeChannel",     key: "w", modifiers: "command",       label: "Close Channel",        actionTag: tagCloseChannel),
+    KeybindDef(id: "clearScrollback",  key: "l", modifiers: "command",       label: "Clear Scrollback",     actionTag: tagClearScrollback),
+    KeybindDef(id: "toggleUserList",   key: "u", modifiers: "command+shift", label: "Toggle User List",     actionTag: tagToggleUserList),
+    KeybindDef(id: "connectToServer",  key: "c", modifiers: "command+shift", label: "Connect to Server",    actionTag: tagShowConnectForm),
+    KeybindDef(id: "channel1",         key: "1", modifiers: "command",       label: "Jump to Channel 1",    actionTag: tagSwitchChannelByIndex),
+    KeybindDef(id: "channel2",         key: "2", modifiers: "command",       label: "Jump to Channel 2",    actionTag: tagSwitchChannelByIndex),
+    KeybindDef(id: "channel3",         key: "3", modifiers: "command",       label: "Jump to Channel 3",    actionTag: tagSwitchChannelByIndex),
+    KeybindDef(id: "channel4",         key: "4", modifiers: "command",       label: "Jump to Channel 4",    actionTag: tagSwitchChannelByIndex),
+    KeybindDef(id: "channel5",         key: "5", modifiers: "command",       label: "Jump to Channel 5",    actionTag: tagSwitchChannelByIndex),
+    KeybindDef(id: "channel6",         key: "6", modifiers: "command",       label: "Jump to Channel 6",    actionTag: tagSwitchChannelByIndex),
+    KeybindDef(id: "channel7",         key: "7", modifiers: "command",       label: "Jump to Channel 7",    actionTag: tagSwitchChannelByIndex),
+    KeybindDef(id: "channel8",         key: "8", modifiers: "command",       label: "Jump to Channel 8",    actionTag: tagSwitchChannelByIndex),
+    KeybindDef(id: "channel9",         key: "9", modifiers: "command",       label: "Jump to Channel 9",    actionTag: tagSwitchChannelByIndex),
+  ]
 
 # ============================================================
 # Global state
@@ -219,6 +285,7 @@ var
   gUsers: Table[string, seq[UserState]]
   gActiveServerId: int = -1
   gActiveChannelName: string = ""
+  gLastChannelPerServer: Table[int, string]  ## Remembers last active channel per server
   gNextServerId: int = 1
   gNextChannelId: int = 1
   gNextMessageId: int = 1
@@ -246,14 +313,32 @@ var
   gMentionAtPos: int = -1  # byte position of '@' trigger (-1 = tab-complete mode)
   gCompletionSelectIndex: int = -1  # for CompletionSelect action
 
+  # Input history (up/down arrow for previous messages)
+  gInputHistory: seq[string] = @[]       # sent messages, newest last
+  gHistoryIndex: int = -1                 # -1 = not browsing, 0..len-1 = position
+  gSavedInput: string = ""               # unsent input saved when starting to browse
+
   # Config persistence
   gConfigPath: string = ""
   gInitialized: bool = false
   gPollActive: bool = false
+  gDirty: bool = true  ## Set when event-loop thread pushes UI events; cleared after buildPatch
 
-  # Ignore list and highlight words
+  # Ignore list, highlight words, join/part mute list
   gIgnoreList: seq[string] = @[]
   gHighlightWords: seq[string] = @[]
+  gJoinPartMuteList: seq[string] = @[]
+
+  # Nick color overrides: nick (lowercase) → hex color string (e.g. "#FF453A")
+  gNickColors: Table[string, string]
+
+  # Smart filter: auto-hide join/part/quit for users who haven't spoken recently
+  gSmartFilterEnabled: bool = true
+  gSmartFilterTimeout: int = 1800  # seconds (default 30 min)
+  gLastSpoke: Table[string, Table[string, float]] = initTable[string, Table[string, float]]()
+
+  # Keybind config: user-remappable keyboard shortcuts
+  gKeybinds: seq[KeybindDef] = defaultKeybinds
 
   # Typing state: (serverId:channel) → seq[(nick, epochTime)]
   gTypingUsers: Table[string, seq[tuple[nick: string, time: float]]]
@@ -266,6 +351,9 @@ var
 
   # Join channel
   gJoinChannelText: string = ""
+
+  # Channel switcher
+  gChannelSwitcherText: string = ""
 
   # WHOIS
   gWhoisNick: string = ""
@@ -280,6 +368,7 @@ var
   # Action params (set by reducer before dispatch)
   gActionServerId: int = -1
   gActionNick: string = ""
+  gActionColor: string = ""
 
   # Servers that were intentionally disconnected (don't show as reconnecting)
   gIntentionalDisconnects: seq[int]
@@ -290,28 +379,170 @@ var
   # Event loop side: IRC connections (only accessed from event loop thread)
   gConnections: seq[IrcConnection]
 
+  # Notification pipe: Nim writes when state changes, Swift monitors with DispatchSource
+  gNotifyPipeRead: cint = -1
+  gNotifyPipeWrite: cint = -1
+  gNotifyPending: Atomic[bool]
+
+# ============================================================
+# Notification pipe
+# ============================================================
+
+proc notifySwift() =
+  ## Coalesced pipe write to wake Swift's DispatchSource.
+  ## Safe to call from any thread; at most one byte is in the pipe at a time.
+  if gNotifyPipeWrite < 0: return
+  if gNotifyPending.exchange(true, moAcquireRelease): return  # already signaled
+  var buf: array[1, byte] = [1'u8]
+  while true:
+    let n = posix.write(gNotifyPipeWrite, addr buf[0], 1)
+    if n == 1: return
+    if osLastError().int == EINTR: continue
+    return  # pipe full or error — already signaled
+
+# ============================================================
+# Event queue helpers
+# ============================================================
+
+proc pushEvent(evt: UiEvent) =
+  ## Push a UI event and mark state dirty. Caller must hold gLock.
+  gEventQueue.add(evt)
+  gDirty = true
+  notifySwift()
+
+# ============================================================
+# UTF-8 sanitization
+# ============================================================
+
+proc sanitizeUtf8(s: string): string =
+  ## Replace invalid UTF-8 byte sequences with the Unicode replacement character
+  ## (U+FFFD). IRC data is not guaranteed to be UTF-8, but JSON requires it.
+  var i = 0
+  while i < s.len:
+    let b0 = s[i].uint8
+    if b0 <= 0x7F:
+      # ASCII
+      result.add s[i]
+      inc i
+    elif (b0 and 0xE0'u8) == 0xC0'u8:
+      # 2-byte sequence
+      if i + 1 < s.len and (s[i+1].uint8 and 0xC0'u8) == 0x80'u8:
+        # Check overlong: must encode >= U+0080
+        let cp = ((b0.uint32 and 0x1F) shl 6) or (s[i+1].uint8.uint32 and 0x3F)
+        if cp >= 0x80:
+          result.add s[i]; result.add s[i+1]
+        else:
+          result.add "\xEF\xBF\xBD"  # replacement char
+        i += 2
+      else:
+        result.add "\xEF\xBF\xBD"
+        inc i
+    elif (b0 and 0xF0'u8) == 0xE0'u8:
+      # 3-byte sequence
+      if i + 2 < s.len and
+         (s[i+1].uint8 and 0xC0'u8) == 0x80'u8 and
+         (s[i+2].uint8 and 0xC0'u8) == 0x80'u8:
+        let cp = ((b0.uint32 and 0x0F) shl 12) or
+                 ((s[i+1].uint8.uint32 and 0x3F) shl 6) or
+                 (s[i+2].uint8.uint32 and 0x3F)
+        if cp >= 0x800 and (cp < 0xD800 or cp > 0xDFFF):
+          result.add s[i]; result.add s[i+1]; result.add s[i+2]
+        else:
+          result.add "\xEF\xBF\xBD"
+        i += 3
+      else:
+        result.add "\xEF\xBF\xBD"
+        inc i
+    elif (b0 and 0xF8'u8) == 0xF0'u8:
+      # 4-byte sequence
+      if i + 3 < s.len and
+         (s[i+1].uint8 and 0xC0'u8) == 0x80'u8 and
+         (s[i+2].uint8 and 0xC0'u8) == 0x80'u8 and
+         (s[i+3].uint8 and 0xC0'u8) == 0x80'u8:
+        let cp = ((b0.uint32 and 0x07) shl 18) or
+                 ((s[i+1].uint8.uint32 and 0x3F) shl 12) or
+                 ((s[i+2].uint8.uint32 and 0x3F) shl 6) or
+                 (s[i+3].uint8.uint32 and 0x3F)
+        if cp >= 0x10000 and cp <= 0x10FFFF:
+          result.add s[i]; result.add s[i+1]; result.add s[i+2]; result.add s[i+3]
+        else:
+          result.add "\xEF\xBF\xBD"
+        i += 4
+      else:
+        result.add "\xEF\xBF\xBD"
+        inc i
+    else:
+      # Continuation byte without leading byte, or invalid 0xFE/0xFF
+      result.add "\xEF\xBF\xBD"
+      inc i
+
 # ============================================================
 # mIRC color parsing
 # ============================================================
 
+## Dark-mode-friendly mIRC color palette.
+## Original mIRC colors were designed for white backgrounds. We brighten
+## dark colors (black, navy, maroon) so they remain legible on the dark
+## chat background (~#141415).
 const mircColorHex: array[16, string] = [
-  "#FFFFFF",  #  0 white
-  "#000000",  #  1 black
-  "#00007F",  #  2 navy
-  "#009300",  #  3 green
-  "#FF0000",  #  4 red
-  "#7F0000",  #  5 maroon
-  "#9C009C",  #  6 purple
-  "#FC7F00",  #  7 orange
-  "#FFFF00",  #  8 yellow
-  "#00FC00",  #  9 lime
-  "#009393",  # 10 teal
-  "#00FFFF",  # 11 cyan
-  "#0000FC",  # 12 blue
-  "#FF00FF",  # 13 magenta
-  "#7F7F7F",  # 14 grey
-  "#D2D2D2",  # 15 light grey
+  "#E0E0E0",  #  0 white  → off-white (pure white is too harsh)
+  "#8E8E93",  #  1 black  → medium grey (visible on dark bg)
+  "#5E8ACE",  #  2 navy   → brighter blue
+  "#32D74B",  #  3 green  → Apple green (bright, legible)
+  "#FF453A",  #  4 red    → Apple red
+  "#D4746A",  #  5 maroon → salmon (lightened)
+  "#BF5AF2",  #  6 purple → Apple purple
+  "#FF9F0A",  #  7 orange → Apple orange
+  "#FFD60A",  #  8 yellow → Apple yellow
+  "#30D158",  #  9 lime   → Apple green
+  "#64D2FF",  # 10 teal   → bright teal
+  "#5AC8FA",  # 11 cyan   → Apple cyan
+  "#0A84FF",  # 12 blue   → Apple blue
+  "#FF6EAA",  # 13 magenta → bright pink
+  "#8E8E93",  # 14 grey
+  "#C7C7CC",  # 15 light grey
 ]
+
+proc stripMircCodes*(text: string): string =
+  ## Strip mIRC color/formatting control codes, returning plain text.
+  var i = 0
+  while i < text.len:
+    let ch = text[i]
+    case ch
+    of '\x02', '\x1D', '\x1F', '\x1E', '\x16', '\x0F', '\x11':
+      inc i  # Skip formatting toggles
+    of '\x03':
+      inc i
+      # Skip fg digits
+      if i < text.len and text[i] in {'0'..'9'}:
+        inc i
+        if i < text.len and text[i] in {'0'..'9'}:
+          inc i
+      # Skip bg digits
+      if i < text.len and text[i] == ',':
+        if i + 1 < text.len and text[i + 1] in {'0'..'9'}:
+          inc i  # skip comma
+          inc i  # skip first bg digit
+          if i < text.len and text[i] in {'0'..'9'}:
+            inc i
+    of '\x04':
+      inc i
+      # Skip hex color RRGGBB
+      var hexCount = 0
+      while i < text.len and hexCount < 6 and
+            text[i] in {'0'..'9', 'A'..'F', 'a'..'f'}:
+        inc i
+        inc hexCount
+      if i < text.len and text[i] == ',':
+        inc i
+        hexCount = 0
+        while i < text.len and hexCount < 6 and
+              text[i] in {'0'..'9', 'A'..'F', 'a'..'f'}:
+          inc i
+          inc hexCount
+    else:
+      result.add(ch)
+      inc i
 
 proc parseSpans(text: string): seq[MessageSpan] =
   ## Parse mIRC color/formatting codes and URLs into spans.
@@ -614,6 +845,36 @@ proc saveConfig() =
     var hl = newJArray()
     for w in gHighlightWords: hl.add(%w)
     root["highlightWords"] = hl
+  if gJoinPartMuteList.len > 0:
+    var jpm = newJArray()
+    for n in gJoinPartMuteList: jpm.add(%n)
+    root["joinPartMuteList"] = jpm
+  root["smartFilterEnabled"] = %gSmartFilterEnabled
+  root["smartFilterTimeout"] = %gSmartFilterTimeout
+  if gNickColors.len > 0:
+    var nc = newJObject()
+    for nick, color in gNickColors:
+      nc[nick] = %color
+    root["nickColors"] = nc
+  # Only save non-default keybinds
+  var customKeybinds = newJArray()
+  for i, kb in gKeybinds:
+    if i < defaultKeybinds.len:
+      let def = defaultKeybinds[i]
+      if kb.key != def.key or kb.modifiers != def.modifiers:
+        var obj = newJObject()
+        obj["id"] = %kb.id
+        obj["key"] = %kb.key
+        obj["modifiers"] = %kb.modifiers
+        customKeybinds.add(obj)
+    else:
+      var obj = newJObject()
+      obj["id"] = %kb.id
+      obj["key"] = %kb.key
+      obj["modifiers"] = %kb.modifiers
+      customKeybinds.add(obj)
+  if customKeybinds.len > 0:
+    root["keybinds"] = customKeybinds
   try:
     writeFile(guiConfigPath(), $root)
   except CatchableError:
@@ -687,6 +948,39 @@ proc loadConfig() =
       for item in parsed["highlightWords"].items:
         if item.kind == JString and item.getStr().len > 0:
           gHighlightWords.add(item.getStr().toLowerAscii)
+    # Load join/part mute list
+    if "joinPartMuteList" in parsed and parsed["joinPartMuteList"].kind == JArray:
+      gJoinPartMuteList = @[]
+      for item in parsed["joinPartMuteList"].items:
+        if item.kind == JString and item.getStr().len > 0:
+          gJoinPartMuteList.add(item.getStr().toLowerAscii)
+    # Load smart filter settings
+    gSmartFilterEnabled = jsonBool(parsed, "smartFilterEnabled", true)
+    gSmartFilterTimeout = jsonInt(parsed, "smartFilterTimeout", 1800)
+    # Load nick color overrides
+    if "nickColors" in parsed and parsed["nickColors"].kind == JObject:
+      gNickColors = initTable[string, string]()
+      for nick, colorNode in parsed["nickColors"].pairs:
+        if colorNode.kind == JString and colorNode.getStr().len > 0:
+          gNickColors[nick.toLowerAscii] = colorNode.getStr()
+    # Load custom keybinds (override defaults)
+    gKeybinds = defaultKeybinds  # start from defaults
+    if "keybinds" in parsed and parsed["keybinds"].kind == JArray:
+      for item in parsed["keybinds"].items:
+        if item.kind != JObject:
+          continue
+        let kbId = jsonString(item, "id", "")
+        if kbId.len == 0:
+          continue
+        let kbKey = jsonString(item, "key", "")
+        let kbMods = jsonString(item, "modifiers", "")
+        if kbKey.len == 0:
+          continue
+        for i in 0 ..< gKeybinds.len:
+          if gKeybinds[i].id == kbId:
+            gKeybinds[i].key = kbKey
+            gKeybinds[i].modifiers = kbMods
+            break
   except CatchableError:
     discard
 
@@ -806,13 +1100,16 @@ proc addMessage(serverId: int, channelName: string, kind: string,
   let ck = channelKey(serverId, channelName)
   if ck notin gMessages:
     gMessages[ck] = @[]
-  let spans = parseSpans(text)
+  # Sanitize text to valid UTF-8 (IRC data may contain non-UTF-8 bytes)
+  let safeText = sanitizeUtf8(text)
+  let safeNick = sanitizeUtf8(nick)
+  let spans = parseSpans(safeText)
   let ts = now().format("HH:mm")
   gMessages[ck].add(MessageState(
     id: gNextMessageId,
     kind: kind,
-    nick: nick,
-    text: text,
+    nick: safeNick,
+    text: safeText,
     timestamp: ts,
     isMention: isMention,
     isOwn: isOwn,
@@ -840,6 +1137,24 @@ proc addSystemMessage(serverId: int, channelName: string, text: string) =
 
 proc addErrorMessage(serverId: int, channelName: string, text: string) =
   addMessage(serverId, channelName, "error", "", text, false, false)
+
+proc shouldSuppressJoinPart(nick: string, serverId: int, channelName: string): bool =
+  ## Check if a join/part/quit notification for this nick should be suppressed.
+  ## Returns true if the notification should be hidden.
+  let nickLower = nick.toLowerAscii
+  # Per-nick mute list always suppresses
+  if nickLower in gJoinPartMuteList:
+    return true
+  # Smart filter: suppress if user hasn't spoken within the timeout
+  if gSmartFilterEnabled and gSmartFilterTimeout > 0:
+    let ck = channelKey(serverId, channelName)
+    if ck in gLastSpoke and nickLower in gLastSpoke[ck]:
+      let elapsed = epochTime() - gLastSpoke[ck][nickLower]
+      if elapsed <= float(gSmartFilterTimeout):
+        return false  # spoke recently, show the notification
+    # Not spoken recently (or never spoken), suppress
+    return true
+  return false
 
 # Forward declaration
 proc ensureEventLoop()
@@ -1077,6 +1392,64 @@ proc handleSlashCommand(serverId: int, text: string): bool =
         "Usage: /unignore nick")
     return true
 
+  of "/mutejp":
+    if args.len > 0:
+      let nick = args.split(' ')[0].toLowerAscii
+      if nick notin gJoinPartMuteList:
+        gJoinPartMuteList.add(nick)
+        saveConfig()
+      addSystemMessage(serverId, gActiveChannelName, "Muted join/part for: " & nick)
+    else:
+      if gJoinPartMuteList.len > 0:
+        addSystemMessage(serverId, gActiveChannelName,
+          "Join/part mute list: " & gJoinPartMuteList.join(", "))
+      else:
+        addSystemMessage(serverId, gActiveChannelName, "Join/part mute list is empty")
+    return true
+
+  of "/unmutejp":
+    if args.len > 0:
+      let nick = args.split(' ')[0].toLowerAscii
+      let idx = gJoinPartMuteList.find(nick)
+      if idx >= 0:
+        gJoinPartMuteList.delete(idx)
+        saveConfig()
+        addSystemMessage(serverId, gActiveChannelName, "Unmuted join/part for: " & nick)
+      else:
+        addErrorMessage(serverId, gActiveChannelName, nick & " is not in join/part mute list")
+    else:
+      addErrorMessage(serverId, gActiveChannelName,
+        "Usage: /unmutejp nick")
+    return true
+
+  of "/smartfilter":
+    if args.len > 0:
+      case args.split(' ')[0].toLowerAscii
+      of "on":
+        gSmartFilterEnabled = true
+        saveConfig()
+        addSystemMessage(serverId, gActiveChannelName, "Smart join/part filter enabled")
+      of "off":
+        gSmartFilterEnabled = false
+        saveConfig()
+        addSystemMessage(serverId, gActiveChannelName, "Smart join/part filter disabled")
+      else:
+        let secs = try: parseInt(args.split(' ')[0]) * 60 except ValueError: -1
+        if secs > 0:
+          gSmartFilterTimeout = secs
+          saveConfig()
+          addSystemMessage(serverId, gActiveChannelName,
+            "Smart filter timeout: " & $gSmartFilterTimeout.div(60) & " minutes")
+        else:
+          addErrorMessage(serverId, gActiveChannelName,
+            "Usage: /smartfilter on|off|<minutes>")
+    else:
+      let status = if gSmartFilterEnabled: "enabled" else: "disabled"
+      let mins = gSmartFilterTimeout div 60
+      addSystemMessage(serverId, gActiveChannelName,
+        "Smart filter: " & status & " (timeout: " & $mins & " min)")
+    return true
+
   of "/highlight":
     if args.len > 0:
       let parts = args.split(' ', 1)
@@ -1134,10 +1507,24 @@ proc handleSlashCommand(serverId: int, text: string): bool =
           let targetId = parseInt(parts[1].strip())
           let idx = findServerIdx(targetId)
           if idx >= 0:
+            # Save current channel for old server (skip *server* pseudo-channel)
+            if gActiveServerId >= 0 and gActiveChannelName.len > 0 and
+               gActiveChannelName != ServerChannel:
+              gLastChannelPerServer[gActiveServerId] = gActiveChannelName
             gActiveServerId = targetId
+            # Restore previously viewed channel for target server
             let sk = serverKey(targetId)
-            if sk in gChannels and gChannels[sk].len > 0:
-              gActiveChannelName = gChannels[sk][0].name
+            if targetId in gLastChannelPerServer:
+              gActiveChannelName = gLastChannelPerServer[targetId]
+            elif sk in gChannels:
+              var found = false
+              for ch in gChannels[sk]:
+                if ch.name != ServerChannel:
+                  gActiveChannelName = ch.name
+                  found = true
+                  break
+              if not found:
+                gActiveChannelName = ServerChannel
             else:
               gActiveChannelName = ServerChannel
           else:
@@ -1200,6 +1587,8 @@ proc handleSlashCommand(serverId: int, text: string): bool =
     debugLines.add("Total messages in memory: " & $totalMsg)
     debugLines.add("Ignore list: " & (if gIgnoreList.len > 0: gIgnoreList.join(", ") else: "(empty)"))
     debugLines.add("Highlight words: " & (if gHighlightWords.len > 0: gHighlightWords.join(", ") else: "(empty)"))
+    debugLines.add("Join/part mute list: " & (if gJoinPartMuteList.len > 0: gJoinPartMuteList.join(", ") else: "(empty)"))
+    debugLines.add("Smart filter: " & (if gSmartFilterEnabled: "on" else: "off") & " (timeout: " & $(gSmartFilterTimeout div 60) & " min)")
     debugLines.add("Logging: " & (if gLoggingEnabled: "on" else: "off"))
     debugLines.add("DCC transfers: " & $gDccTransfers.len)
     debugLines.add("Echo-message servers: " & $gEchoMessageServers.len)
@@ -1273,13 +1662,212 @@ proc handleSlashCommand(serverId: int, text: string): bool =
           "[" & statusStr & "] " & t.filename & " (" & sizeStr & ") from " & t.nick)
     return true
 
+  of "/kick":
+    if gActiveChannelName.len > 0 and gActiveChannelName[0] == '#':
+      let parts = args.split(' ', 1)
+      if parts.len >= 1 and parts[0].len > 0:
+        let target = parts[0]
+        let reason = if parts.len >= 2: parts[1] else: ""
+        let rawCmd = if reason.len > 0:
+                       "KICK " & gActiveChannelName & " " & target & " :" & reason
+                     else:
+                       "KICK " & gActiveChannelName & " " & target
+        withLock gLock:
+          gCommandQueue.add(BridgeCommand(kind: cmdSendRaw,
+            serverId: serverId, text: rawCmd))
+      else:
+        addErrorMessage(serverId, gActiveChannelName,
+          "Usage: /kick nick [reason]")
+    else:
+      addErrorMessage(serverId, gActiveChannelName,
+        "Cannot kick outside of a channel")
+    return true
+
+  of "/ban":
+    if gActiveChannelName.len > 0 and gActiveChannelName[0] == '#':
+      if args.len > 0:
+        let target = args.split(' ')[0]
+        let mask = if '*' in target or '!' in target or '@' in target:
+                     target
+                   else:
+                     target & "!*@*"
+        withLock gLock:
+          gCommandQueue.add(BridgeCommand(kind: cmdSendRaw,
+            serverId: serverId, text: "MODE " & gActiveChannelName & " +b " & mask))
+      else:
+        withLock gLock:
+          gCommandQueue.add(BridgeCommand(kind: cmdSendRaw,
+            serverId: serverId, text: "MODE " & gActiveChannelName & " +b"))
+    else:
+      addErrorMessage(serverId, gActiveChannelName,
+        "Cannot ban outside of a channel")
+    return true
+
+  of "/ctcp":
+    let parts = args.split(' ', 1)
+    if parts.len >= 2:
+      let target = parts[0]
+      let ctcpCmd = parts[1].toUpperAscii
+      withLock gLock:
+        gCommandQueue.add(BridgeCommand(kind: cmdSendRaw,
+          serverId: serverId, text: "PRIVMSG " & target & " :\x01" & ctcpCmd & "\x01"))
+      addSystemMessage(serverId, gActiveChannelName,
+        "CTCP " & ctcpCmd & " sent to " & target)
+    else:
+      addErrorMessage(serverId, gActiveChannelName,
+        "Usage: /ctcp nick command")
+    return true
+
+  of "/list":
+    let filter = if args.len > 0: args else: ""
+    withLock gLock:
+      if filter.len > 0:
+        gCommandQueue.add(BridgeCommand(kind: cmdSendRaw,
+          serverId: serverId, text: "LIST " & filter))
+      else:
+        gCommandQueue.add(BridgeCommand(kind: cmdSendRaw,
+          serverId: serverId, text: "LIST"))
+    addSystemMessage(serverId, gActiveChannelName,
+      "Channel list requested (check server window)")
+    return true
+
+  of "/invite":
+    let parts = args.split(' ', 1)
+    if parts.len >= 1 and parts[0].len > 0:
+      let target = parts[0]
+      let channel = if parts.len >= 2 and parts[1].strip().len > 0: parts[1].strip()
+                    else: gActiveChannelName
+      if channel.len > 0 and channel[0] == '#':
+        withLock gLock:
+          gCommandQueue.add(BridgeCommand(kind: cmdSendRaw,
+            serverId: serverId, text: "INVITE " & target & " " & channel))
+        addSystemMessage(serverId, gActiveChannelName,
+          "Invited " & target & " to " & channel)
+      else:
+        addErrorMessage(serverId, gActiveChannelName,
+          "Usage: /invite nick [#channel]")
+    else:
+      addErrorMessage(serverId, gActiveChannelName,
+        "Usage: /invite nick [#channel]")
+    return true
+
+  of "/oper":
+    let parts = args.split(' ', 1)
+    if parts.len >= 2:
+      withLock gLock:
+        gCommandQueue.add(BridgeCommand(kind: cmdSendRaw,
+          serverId: serverId, text: "OPER " & parts[0] & " " & parts[1]))
+    else:
+      addErrorMessage(serverId, gActiveChannelName,
+        "Usage: /oper name password")
+    return true
+
+  of "/scrollback":
+    let num = if args.len > 0:
+                try: parseInt(args.strip())
+                except ValueError: -1
+              else: -1
+    if num > 0:
+      let ck = channelKey(serverId, gActiveChannelName)
+      if ck in gMessages and gMessages[ck].len > num:
+        gMessages[ck] = gMessages[ck][gMessages[ck].len - num .. ^1]
+        addSystemMessage(serverId, gActiveChannelName,
+          "Scrollback trimmed to " & $num & " messages")
+      else:
+        addSystemMessage(serverId, gActiveChannelName,
+          "Scrollback has " & (if ck in gMessages: $gMessages[ck].len else: "0") & " messages")
+    else:
+      let ck = channelKey(serverId, gActiveChannelName)
+      addSystemMessage(serverId, gActiveChannelName,
+        "Scrollback: " & (if ck in gMessages: $gMessages[ck].len else: "0") & " messages. Usage: /scrollback <count>")
+    return true
+
+  of "/nickcolor":
+    if args.len > 0:
+      let parts = args.split(' ', 1)
+      let nick = parts[0].toLowerAscii
+      if parts.len >= 2 and parts[1].strip().len > 0:
+        let colorArg = parts[1].strip().toLowerAscii
+        let hexColor = case colorArg
+          of "red": "#FF453A"
+          of "orange": "#FF9F0A"
+          of "yellow": "#FFD60A"
+          of "green": "#30D158"
+          of "cyan": "#5AC8FA"
+          of "blue": "#0A84FF"
+          of "purple": "#BF5AF2"
+          of "pink": "#FF6EAA"
+          of "lime": "#32D74B"
+          of "teal": "#64D2FF"
+          of "coral": "#FF6B6B"
+          of "gold": "#FFD700"
+          else:
+            let raw = if colorArg[0] == '#': colorArg else: "#" & colorArg
+            if raw.len == 7: raw else: ""
+        if hexColor.len > 0:
+          gNickColors[nick] = hexColor
+          saveConfig()
+          addSystemMessage(serverId, gActiveChannelName,
+            "Nick color for " & nick & " set to " & hexColor)
+        else:
+          addErrorMessage(serverId, gActiveChannelName,
+            "Invalid color. Use: red, orange, yellow, green, cyan, blue, purple, pink, lime, teal, coral, gold, or #RRGGBB")
+      else:
+        if nick in gNickColors:
+          addSystemMessage(serverId, gActiveChannelName,
+            "Nick color for " & nick & ": " & gNickColors[nick])
+        else:
+          addSystemMessage(serverId, gActiveChannelName,
+            "No custom color set for " & nick & " (using default hash)")
+    else:
+      if gNickColors.len > 0:
+        var lines: seq[string] = @[]
+        for nick, color in gNickColors:
+          lines.add(nick & " = " & color)
+        addSystemMessage(serverId, gActiveChannelName,
+          "Nick colors: " & lines.join(", "))
+      else:
+        addSystemMessage(serverId, gActiveChannelName,
+          "No custom nick colors set. Usage: /nickcolor nick [color]")
+    return true
+
+  of "/unnickcolor":
+    if args.len > 0:
+      let nick = args.split(' ')[0].toLowerAscii
+      if nick in gNickColors:
+        gNickColors.del(nick)
+        saveConfig()
+        addSystemMessage(serverId, gActiveChannelName,
+          "Nick color for " & nick & " cleared")
+      else:
+        addErrorMessage(serverId, gActiveChannelName,
+          nick & " has no custom color")
+    else:
+      addErrorMessage(serverId, gActiveChannelName,
+        "Usage: /unnickcolor nick")
+    return true
+
   of "/help":
-    let helpText = "Commands: /join /part /nick /msg /me /topic /quit /raw /away /back /disconnect /close /clear /whois /mode /notice /ignore /unignore /highlight /server /log /debug /monitor /accept /decline /transfers /help"
-    addSystemMessage(serverId, gActiveChannelName, helpText)
+    let helpLines = @[
+      "Chat: /msg /me /notice /ctcp /query",
+      "Channels: /join /part /close /topic /invite /list /kick /ban /mode",
+      "User: /nick /away /back /whois /ignore /unignore",
+      "Nick colors: /nickcolor /unnickcolor",
+      "Highlight: /highlight add|remove|list [word]",
+      "Filtering: /mutejp /unmutejp /smartfilter",
+      "Server: /server /disconnect /quit /raw /oper",
+      "Display: /clear /scrollback",
+      "DCC: /accept /decline /transfers",
+      "Other: /log /debug /monitor /help",
+    ]
+    for line in helpLines:
+      addSystemMessage(serverId, gActiveChannelName, line)
     return true
 
   else:
-    return false
+    addErrorMessage(serverId, gActiveChannelName,
+      "Unknown command: " & cmd)
+    return true
 
 # ============================================================
 # Event loop thread: CPS coroutines
@@ -1290,6 +1878,31 @@ proc findConnection(serverId: int): int =
     if gConnections[i].id == serverId:
       return i
   -1
+
+proc lagPinger(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
+  ## Periodically send PINGs to measure lag, independent of keepAlive.
+  ## keepAliveLoop only pings after silence; this ensures lag is always visible.
+  ## Note: client.state starts as icsDisconnected — we must keep looping and
+  ## wait for it to reach icsConnected before sending pings.
+  var disconnectedCount = 0
+  var alive = true
+  while alive:
+    await cpsSleep(5_000)  # check every 5 seconds
+    if client.state == icsConnected:
+      disconnectedCount = 0
+      try:
+        await client.sendPing("lagcheck")
+        await cpsSleep(25_000)  # total ~30s between pings
+      except CatchableError:
+        alive = false
+    elif client.state == icsDisconnected:
+      inc disconnectedCount
+      # If disconnected for 5+ checks (25s) with no reconnect, give up
+      if disconnectedCount >= 5 and not client.config.autoReconnect:
+        alive = false
+    else:
+      # Connecting or registering — keep waiting
+      disconnectedCount = 0
 
 proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
   ## Reads from client.events channel, converts to UiEvent, pushes to gEventQueue.
@@ -1310,7 +1923,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
         else:
           uiEvt.channel = event.pmSource   # incoming PM from them
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekNotice:
       uiEvt.kind = uiNewMessage
@@ -1321,14 +1934,14 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       uiEvt.text = event.pmText
       uiEvt.text2 = "notice"
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekJoin:
       uiEvt.kind = uiUserJoin
       uiEvt.channel = event.joinChannel
       uiEvt.nick = event.joinNick
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekPart:
       uiEvt.kind = uiUserPart
@@ -1336,14 +1949,14 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       uiEvt.nick = event.partNick
       uiEvt.text = event.partReason
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekQuit:
       uiEvt.kind = uiUserQuit
       uiEvt.nick = event.quitNick
       uiEvt.text = event.quitReason
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekKick:
       uiEvt.kind = uiUserPart
@@ -1351,14 +1964,14 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       uiEvt.nick = event.kickNick
       uiEvt.text = "Kicked by " & event.kickBy & ": " & event.kickReason
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekNick:
       uiEvt.kind = uiUserNick
       uiEvt.nick = event.nickNew
       uiEvt.text2 = event.nickOld
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekMode:
       uiEvt.kind = uiModeChange
@@ -1366,7 +1979,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       uiEvt.text = event.modeChanges
       uiEvt.users = event.modeParams
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekTopic:
       uiEvt.kind = uiTopicChange
@@ -1374,20 +1987,20 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       uiEvt.text = event.topicText
       uiEvt.nick = event.topicBy
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekConnected:
       uiEvt.kind = uiConnected
       # Check if echo-message is enabled
       uiEvt.boolParam = "echo-message" in client.enabledCaps
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekDisconnected:
       uiEvt.kind = uiDisconnected
       uiEvt.text = event.reason
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekNumeric:
       case event.numCode
@@ -1397,14 +2010,14 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
           uiEvt.channel = event.numParams[^2]
           uiEvt.users = event.numParams[^1].strip().split(' ')
         withLock gLock:
-          gEventQueue.add(uiEvt)
+          pushEvent(uiEvt)
       of 332:  # RPL_TOPIC
         uiEvt.kind = uiTopicChange
         if event.numParams.len >= 2:
           uiEvt.channel = event.numParams[1]
           uiEvt.text = event.numParams[^1]
         withLock gLock:
-          gEventQueue.add(uiEvt)
+          pushEvent(uiEvt)
       of 366:  # RPL_ENDOFNAMES - ignore
         discard
       of 376, 422:  # RPL_ENDOFMOTD, ERR_NOMOTD
@@ -1422,7 +2035,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
           uiEvt.text = "Nick '" & oldNick & "' in use, trying '" & newNick & "'"
           uiEvt.text2 = "system"
           withLock gLock:
-            gEventQueue.add(uiEvt)
+            pushEvent(uiEvt)
       of 311:  # RPL_WHOISUSER
         if event.numParams.len >= 5:
           let line = event.numParams[1] & " (" & event.numParams[2] & "@" & event.numParams[3] & ")\n" & event.numParams[^1]
@@ -1435,7 +2048,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
               uiEvt.nick = ""
               uiEvt.text = "[WHOIS] " & line
               uiEvt.text2 = "system"
-              gEventQueue.add(uiEvt)
+              pushEvent(uiEvt)
       of 312:  # RPL_WHOISSERVER
         if event.numParams.len >= 3:
           let line = "Server: " & event.numParams[2] & " (" & event.numParams[^1] & ")"
@@ -1448,7 +2061,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
               uiEvt.nick = ""
               uiEvt.text = "[WHOIS] " & line
               uiEvt.text2 = "system"
-              gEventQueue.add(uiEvt)
+              pushEvent(uiEvt)
       of 319:  # RPL_WHOISCHANNELS
         if event.numParams.len >= 2:
           let line = "Channels: " & event.numParams[^1]
@@ -1461,7 +2074,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
               uiEvt.nick = ""
               uiEvt.text = "[WHOIS] " & line
               uiEvt.text2 = "system"
-              gEventQueue.add(uiEvt)
+              pushEvent(uiEvt)
       of 317:  # RPL_WHOISIDLE
         if event.numParams.len >= 3:
           let secs = try: parseInt(event.numParams[2]) except: 0
@@ -1478,7 +2091,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
               uiEvt.nick = ""
               uiEvt.text = "[WHOIS] " & line
               uiEvt.text2 = "system"
-              gEventQueue.add(uiEvt)
+              pushEvent(uiEvt)
       of 330:  # RPL_WHOISACCOUNT
         if event.numParams.len >= 3:
           let line = "Account: " & event.numParams[2]
@@ -1491,7 +2104,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
               uiEvt.nick = ""
               uiEvt.text = "[WHOIS] " & line
               uiEvt.text2 = "system"
-              gEventQueue.add(uiEvt)
+              pushEvent(uiEvt)
       of 313:  # RPL_WHOISOPERATOR
         if event.numParams.len >= 2:
           let line = "IRC Operator"
@@ -1513,7 +2126,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
           uiEvt.text = "Channel mode: " & event.numParams[2 .. ^1].join(" ")
           uiEvt.text2 = "system"
           withLock gLock:
-            gEventQueue.add(uiEvt)
+            pushEvent(uiEvt)
       else:
         # Forward other numerics as system messages
         if event.numParams.len > 0:
@@ -1523,7 +2136,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
           uiEvt.text = $event.numCode & " " & event.numParams.join(" ")
           uiEvt.text2 = "numeric"
           withLock gLock:
-            gEventQueue.add(uiEvt)
+            pushEvent(uiEvt)
 
     of iekCtcp:
       if event.ctcpCommand == "ACTION":
@@ -1539,7 +2152,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
           else:
             uiEvt.channel = event.ctcpSource   # incoming action from them
         withLock gLock:
-          gEventQueue.add(uiEvt)
+          pushEvent(uiEvt)
       elif event.ctcpCommand == "TIME":
         discard spawn client.ctcpReply(event.ctcpSource, "TIME", now().format("ddd MMM dd HH:mm:ss yyyy"))
       else:
@@ -1554,28 +2167,28 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       if event.typingTarget.len > 0 and event.typingTarget[0] != '#':
         uiEvt.channel = event.typingNick  # DM typing: route to sender's nick
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekChghost:
       uiEvt.kind = uiChghost
       uiEvt.nick = event.chghostNick
       uiEvt.text = event.chghostNewUser & "@" & event.chghostNewHost
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekSetname:
       uiEvt.kind = uiSetname
       uiEvt.nick = event.setnameNick
       uiEvt.text = event.setnameRealname
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekAccount:
       uiEvt.kind = uiAccount
       uiEvt.nick = event.accountNick
       uiEvt.text = event.accountName
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekCompletedBatch:
       uiEvt.kind = uiBatchComplete
@@ -1597,7 +2210,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       if event.cbBatchParams.len > 0:
         uiEvt.channel = event.cbBatchParams[0]
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekBatch:
       discard  # Individual batch start/end; wait for iekCompletedBatch
@@ -1606,19 +2219,19 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       uiEvt.kind = uiMonOnline
       uiEvt.users = event.monOnlineTargets
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekMonOffline:
       uiEvt.kind = uiMonOffline
       uiEvt.users = event.monOfflineTargets
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekPong:
       uiEvt.kind = uiLagUpdate
       uiEvt.intParam = client.lagMs
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekAway:
       uiEvt.kind = uiAwayChange
@@ -1626,13 +2239,13 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       uiEvt.boolParam = event.awayMessage.len > 0
       uiEvt.text = event.awayMessage
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekError:
       uiEvt.kind = uiError
       uiEvt.text = event.errMsg
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekInvite:
       uiEvt.kind = uiNewMessage
@@ -1641,7 +2254,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       uiEvt.text = event.inviteNick & " invited you to " & event.inviteChannel
       uiEvt.text2 = "system"
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekDccSend:
       uiEvt.kind = uiNewMessage
@@ -1651,7 +2264,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       uiEvt.text = "DCC SEND from " & event.dccSource & ": " & event.dccInfo.filename & " (" & $sizeKb & " KB) — use /accept or /decline"
       uiEvt.text2 = "system"
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
         # Track the DCC offer with connection info
         gDccTransfers.add(DccTransfer(
           id: gNextDccId,
@@ -1673,7 +2286,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       uiEvt.text = "DCC CHAT request from " & event.dccSource & " (not supported)"
       uiEvt.text2 = "system"
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     of iekDccAccept, iekDccResume:
       uiEvt.kind = uiNewMessage
@@ -1682,7 +2295,7 @@ proc ircEventForwarder(connId: int, client: IrcClient): CpsVoidFuture {.cps.} =
       uiEvt.text = "DCC " & (if event.kind == iekDccAccept: "ACCEPT" else: "RESUME") & " from " & event.dccSource
       uiEvt.text2 = "system"
       withLock gLock:
-        gEventQueue.add(uiEvt)
+        pushEvent(uiEvt)
 
     else:
       discard
@@ -1697,7 +2310,7 @@ proc pushDccEvent(evKind: UiEventKind, sid: int, tid: int,
   evt.text = msg
   {.cast(gcsafe).}:
     withLock gLock:
-      gEventQueue.add(evt)
+      pushEvent(evt)
 
 proc makeDccProgressCb(sid: int, tid: int): DccProgressCallback =
   ## Factory that returns a progress callback for DCC transfers.
@@ -1787,9 +2400,10 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
           myNick: cmd.text2,
         ))
 
-        # Spawn client and event forwarder as concurrent tasks on event loop
+        # Spawn client, event forwarder, and lag pinger as concurrent tasks
         discard spawn client.run()
         discard spawn ircEventForwarder(connId, client)
+        discard spawn lagPinger(connId, client)
 
       of cmdDisconnect:
         let idx = findConnection(cmd.serverId)
@@ -1873,6 +2487,7 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
           ))
           discard spawn client.run()
           discard spawn ircEventForwarder(cmd.serverId, client)
+          discard spawn lagPinger(cmd.serverId, client)
 
       of cmdQuit:
         let idx = findConnection(cmd.serverId)
@@ -1931,12 +2546,16 @@ proc ensureEventLoop() =
 # Process UI events from the event loop thread
 # ============================================================
 
-proc processUiEvents() =
+proc processUiEvents(): bool =
   ## Drain gEventQueue and update main-thread state.
+  ## Returns true if any events were processed (state changed).
   var events: seq[UiEvent]
   withLock gLock:
     events = gEventQueue
     gEventQueue.setLen(0)
+    result = gDirty
+    gDirty = false
+    gNotifyPending.store(false, moRelease)
 
   for evt in events:
     let si = findServerIdx(evt.serverId)
@@ -2024,6 +2643,11 @@ proc processUiEvents() =
             if gTypingUsers[ck][i].nick == evt.nick:
               gTypingUsers[ck].delete(i)
               break
+        # Track last-spoke time for smart join/part filtering
+        if msgKind in ["normal", "action"]:
+          if ck notin gLastSpoke:
+            gLastSpoke[ck] = initTable[string, float]()
+          gLastSpoke[ck][evt.nick.toLowerAscii] = epochTime()
 
     of uiUserJoin:
       ensureChannel(evt.serverId, evt.channel)
@@ -2045,10 +2669,13 @@ proc processUiEvents() =
           if gChannels[sk][i].name == evt.channel:
             gChannels[sk][i].userCount = gUsers[ck].len
             break
-      addSystemMessage(evt.serverId, evt.channel,
-        evt.nick & " has joined " & evt.channel)
+      # Show join message unless suppressed by mute list or smart filter
+      let isOwnJoin = si >= 0 and evt.nick == gServers[si].nick
+      if isOwnJoin or not shouldSuppressJoinPart(evt.nick, evt.serverId, evt.channel):
+        addSystemMessage(evt.serverId, evt.channel,
+          evt.nick & " has joined " & evt.channel)
       # If this is our own join, save channel to auto-join list
-      if si >= 0 and evt.nick == gServers[si].nick:
+      if isOwnJoin:
         syncAutoJoinChannels(evt.serverId)
 
     of uiUserPart:
@@ -2066,30 +2693,34 @@ proc processUiEvents() =
               gChannels[sk][i].userCount = gUsers[ck].len
             break
       let reason = if evt.text.len > 0: " (" & evt.text & ")" else: ""
-      addSystemMessage(evt.serverId, evt.channel,
-        evt.nick & " has left " & evt.channel & reason)
+      if not shouldSuppressJoinPart(evt.nick, evt.serverId, evt.channel):
+        addSystemMessage(evt.serverId, evt.channel,
+          evt.nick & " has left " & evt.channel & reason)
 
     of uiUserQuit:
-      # Remove user from all channels on this server (skip DMs)
+      # Remove user from all channels on this server where they were present,
+      # and post the quit message only to those channels.
       let sk = serverKey(evt.serverId)
+      let reason = if evt.text.len > 0: " (" & evt.text & ")" else: ""
       if sk in gChannels:
         for ch in gChannels[sk]:
           if ch.isDm: continue
           let ck = channelKey(evt.serverId, ch.name)
           if ck in gUsers:
+            var wasPresent = false
             for i in countdown(gUsers[ck].len - 1, 0):
               if gUsers[ck][i].nick == evt.nick:
                 gUsers[ck].delete(i)
+                wasPresent = true
                 break
-      let reason = if evt.text.len > 0: " (" & evt.text & ")" else: ""
-      # Show quit message in active channel, but never in DMs or server window
-      if gActiveServerId == evt.serverId and gActiveChannelName.len > 0 and
-         gActiveChannelName[0] == '#':
-        addSystemMessage(evt.serverId, gActiveChannelName,
-          evt.nick & " has quit" & reason)
+            if wasPresent and ch.name != ServerChannel:
+              if not shouldSuppressJoinPart(evt.nick, evt.serverId, ch.name):
+                addSystemMessage(evt.serverId, ch.name,
+                  evt.nick & " has quit" & reason)
 
     of uiUserNick:
-      # Update nick in all channels
+      # Update nick in all channels where the user is present,
+      # and post the nick change message only to those channels.
       let sk = serverKey(evt.serverId)
       if sk in gChannels:
         for ch in gChannels[sk]:
@@ -2098,25 +2729,27 @@ proc processUiEvents() =
             for i in 0 ..< gUsers[ck].len:
               if gUsers[ck][i].nick == evt.text2:  # old nick
                 gUsers[ck][i].nick = evt.nick       # new nick
+                if ch.name != ServerChannel:
+                  addSystemMessage(evt.serverId, ch.name,
+                    evt.text2 & " is now known as " & evt.nick)
                 break
       # Check if it's our nick
       if si >= 0 and evt.text2 == gServers[si].nick:
         gServers[si].nick = evt.nick
-      addSystemMessage(evt.serverId, gActiveChannelName,
-        evt.text2 & " is now known as " & evt.nick)
 
     of uiTopicChange:
       let sk = serverKey(evt.serverId)
+      let plainTopic = sanitizeUtf8(stripMircCodes(evt.text))
       if sk in gChannels:
         for i in 0 ..< gChannels[sk].len:
           if gChannels[sk][i].name == evt.channel:
-            gChannels[sk][i].topic = evt.text
+            gChannels[sk][i].topic = plainTopic
             break
       if evt.serverId == gActiveServerId and evt.channel == gActiveChannelName:
-        gCurrentTopic = evt.text
+        gCurrentTopic = plainTopic
       if evt.nick.len > 0:
         addSystemMessage(evt.serverId, evt.channel,
-          evt.nick & " changed the topic to: " & evt.text)
+          evt.nick & " changed the topic to: " & plainTopic)
 
     of uiUserList:
       ensureChannel(evt.serverId, evt.channel)
@@ -2124,6 +2757,7 @@ proc processUiEvents() =
       if ck notin gUsers:
         gUsers[ck] = @[]
       # Parse user entries (may have @, +, %, ~, & prefixes)
+      # With userhost-in-names cap, entries are like @nick!user@host
       for raw in evt.users:
         if raw.len == 0:
           continue
@@ -2132,6 +2766,11 @@ proc processUiEvents() =
         if nick[0] in {'@', '+', '%', '~', '&'}:
           prefix = $nick[0]
           nick = nick[1..^1]
+        # Strip !user@host suffix (userhost-in-names cap)
+        let bangIdx = nick.find('!')
+        if bangIdx >= 0:
+          nick = nick[0 ..< bangIdx]
+        nick = sanitizeUtf8(nick)
         if nick.len == 0:
           continue
         var found = false
@@ -2384,14 +3023,37 @@ proc dismissCompletion() =
   gCompletionIndex = -1
   gMentionAtPos = -1
 
+const slashCommands = [
+  "/join", "/part", "/nick", "/msg", "/me", "/topic", "/quit", "/raw",
+  "/away", "/back", "/disconnect", "/close", "/clear", "/whois", "/mode",
+  "/notice", "/ignore", "/unignore", "/highlight", "/server", "/log",
+  "/debug", "/monitor", "/accept", "/decline", "/transfers", "/help",
+  "/kick", "/ban", "/ctcp", "/list", "/invite", "/oper", "/scrollback",
+  "/nickcolor", "/unnickcolor", "/query", "/mutejp", "/unmutejp",
+  "/smartfilter",
+]
+
 proc computeCompletions() =
   ## Tab-complete: match partial word at end of input.
+  ## If input starts with '/', complete slash commands instead of nicks.
   gCompletionSuggestions = @[]
   gCompletionActive = false
   gCompletionIndex = -1
   gMentionAtPos = -1
 
   if gInputText.len == 0 or gActiveServerId < 0:
+    return
+
+  # Slash command completion: when input starts with / and has no space yet
+  if gInputText[0] == '/' and gInputText.find(' ') < 0:
+    let partialLower = gInputText.toLowerAscii
+    for cmd in slashCommands:
+      if cmd.startsWith(partialLower):
+        gCompletionSuggestions.add(cmd)
+    gCompletionSuggestions.sort()
+    if gCompletionSuggestions.len > 0:
+      gCompletionActive = true
+      gCompletionIndex = 0
     return
 
   # Find the partial word being completed
@@ -2493,6 +3155,9 @@ proc acceptCompletion() =
     let before = gInputText[0 ..< gMentionAtPos]
     let suffix = if gMentionAtPos == 0: ": " else: " "
     gInputText = before & completed & suffix
+  elif completed.len > 0 and completed[0] == '/':
+    # Slash command completion: replace entire input with command + space
+    gInputText = completed & " "
   else:
     # Tab-complete mode: replace last partial word
     let lastSpace = gInputText.rfind(' ')
@@ -2506,6 +3171,27 @@ proc acceptCompletion() =
 # State patch builder
 # ============================================================
 
+proc keybindsToJson(): string =
+  ## Serialize keybinds to JSON array string for the Swift shortcut monitor.
+  var arr = newJArray()
+  for kb in gKeybinds:
+    var obj = newJObject()
+    obj["id"] = %kb.id
+    obj["key"] = %kb.key
+    obj["modifiers"] = %kb.modifiers
+    obj["label"] = %kb.label
+    # For channel-index shortcuts, use synthetic tags (1001..1009)
+    if kb.id.startsWith("channel") and kb.id.len == 8 and kb.actionTag == tagSwitchChannelByIndex:
+      let digit = kb.id[7]
+      if digit >= '1' and digit <= '9':
+        obj["actionTag"] = %(1000 + ord(digit) - ord('0'))
+      else:
+        obj["actionTag"] = %kb.actionTag.int
+    else:
+      obj["actionTag"] = %kb.actionTag.int
+    arr.add(obj)
+  $arr
+
 proc buildPatch(includeEditableFields: bool): seq[byte] =
   ## Build JSON state patch. When includeEditableFields is false (Poll),
   ## user-editable text fields are excluded to avoid overwriting in-progress typing.
@@ -2516,10 +3202,10 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
   for s in gServers:
     var obj = newJObject()
     obj["id"] = %s.id
-    obj["name"] = %s.name
-    obj["host"] = %s.host
+    obj["name"] = %sanitizeUtf8(s.name)
+    obj["host"] = %sanitizeUtf8(s.host)
     obj["port"] = %s.port
-    obj["nick"] = %s.nick
+    obj["nick"] = %sanitizeUtf8(s.nick)
     obj["useTls"] = %s.useTls
     obj["connected"] = %s.connected
     obj["connecting"] = %s.connecting
@@ -2536,8 +3222,8 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
       var obj = newJObject()
       obj["id"] = %ch.id
       obj["serverId"] = %ch.serverId
-      obj["name"] = %ch.name
-      obj["topic"] = %ch.topic
+      obj["name"] = %sanitizeUtf8(ch.name)
+      obj["topic"] = %sanitizeUtf8(ch.topic)
       obj["unread"] = %ch.unread
       obj["mentions"] = %ch.mentions
       obj["userCount"] = %ch.userCount
@@ -2585,17 +3271,17 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
     )
     for u in sortedUsers:
       var obj = newJObject()
-      obj["nick"] = %u.nick
-      obj["prefix"] = %u.prefix
+      obj["nick"] = %sanitizeUtf8(u.nick)
+      obj["prefix"] = %sanitizeUtf8(u.prefix)
       obj["isAway"] = %u.isAway
       usersArr.add(obj)
   patch["users"] = usersArr
 
   # Scalar state (non-editable — always included)
   patch["showUserList"] = %gShowUserList
-  patch["statusText"] = %gStatusText
-  patch["typingText"] = %gTypingText
-  patch["currentTopic"] = %gCurrentTopic
+  patch["statusText"] = %sanitizeUtf8(gStatusText)
+  patch["typingText"] = %sanitizeUtf8(gTypingText)
+  patch["currentTopic"] = %sanitizeUtf8(gCurrentTopic)
   patch["currentUserCount"] = %gCurrentUserCount
   patch["activeChannelIsChannel"] = %(gActiveChannelName.len > 0 and gActiveChannelName[0] == '#')
   patch["activeChannelIsDm"] = %(gActiveChannelName.len > 0 and gActiveChannelName[0] != '#' and gActiveChannelName != ServerChannel)
@@ -2616,8 +3302,8 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
   for t in gDccTransfers:
     var obj = newJObject()
     obj["id"] = %t.id
-    obj["nick"] = %t.nick
-    obj["filename"] = %t.filename
+    obj["nick"] = %sanitizeUtf8(t.nick)
+    obj["filename"] = %sanitizeUtf8(t.filename)
     let sizeStr = if t.filesize <= 0:
                     "Unknown size"
                   elif t.filesize > 1024 * 1024:
@@ -2642,15 +3328,25 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
   patch["dccTransfers"] = dccArr
   patch["pendingTransferCount"] = %pendingCount
 
-  # WHOIS
-  patch["whoisNick"] = %gWhoisNick
-  patch["whoisInfo"] = %gWhoisInfo
-  patch["selectedUserNick"] = %gSelectedUserNick
+  # WHOIS (sanitize — IRC data may not be valid UTF-8)
+  patch["whoisNick"] = %sanitizeUtf8(gWhoisNick)
+  patch["whoisInfo"] = %sanitizeUtf8(gWhoisInfo)
+  patch["selectedUserNick"] = %sanitizeUtf8(gSelectedUserNick)
 
   # Action param fields
   patch["actionServerId"] = %gActionServerId
   patch["actionNick"] = %gActionNick
+  patch["actionColor"] = %gActionColor
   patch["actionTransferId"] = %gActionTransferId
+
+  # Nick color overrides (serialized as JSON string for Swift)
+  var nickColorsObj = newJObject()
+  for nick, color in gNickColors:
+    nickColorsObj[nick] = %color
+  patch["nickColors"] = %($nickColorsObj)
+
+  # Keybinds (serialized as JSON string for Swift shortcut monitor)
+  patch["keybinds"] = %keybindsToJson()
 
   # Fields only included when the bridge explicitly modifies them
   # (not during Poll, to avoid overwriting in-progress typing, sheet state,
@@ -2668,6 +3364,8 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
     patch["connectSaslPass"] = %gConnectSaslPass
     patch["showConnectForm"] = %gShowConnectForm
     patch["showTransfers"] = %gShowTransfers
+    patch["smartFilterEnabled"] = %gSmartFilterEnabled
+    patch["smartFilterTimeout"] = %gSmartFilterTimeout
 
   toBytes($patch)
 
@@ -2691,15 +3389,27 @@ proc syncFromSnapshot(payload: ptr uint8, payloadLen: uint32) =
     gConnectSaslPass = jsonString(node, "connectSaslPass", gConnectSaslPass)
     gActionServerId = jsonInt(node, "actionServerId", gActionServerId)
     gActionNick = jsonString(node, "actionNick", gActionNick)
+    gActionColor = jsonString(node, "actionColor", gActionColor)
     gActionTransferId = jsonInt(node, "actionTransferId", gActionTransferId)
     gJoinChannelText = jsonString(node, "joinChannelText", gJoinChannelText)
+    gChannelSwitcherText = jsonString(node, "channelSwitcherText", gChannelSwitcherText)
     gCompletionSelectIndex = jsonInt(node, "completionSelectIndex", gCompletionSelectIndex)
+    gSmartFilterEnabled = jsonBool(node, "smartFilterEnabled", gSmartFilterEnabled)
+    gSmartFilterTimeout = jsonInt(node, "smartFilterTimeout", gSmartFilterTimeout)
 
     # Sync activeServerId and activeChannelName if provided
     let snapServerId = jsonInt(node, "activeServerId", gActiveServerId)
     if snapServerId >= 0 and findServerIdx(snapServerId) >= 0:
+      # Save current channel for old server before switching (skip *server*)
+      if gActiveServerId >= 0 and gActiveChannelName.len > 0 and
+         gActiveChannelName != ServerChannel and snapServerId != gActiveServerId:
+        gLastChannelPerServer[gActiveServerId] = gActiveChannelName
       gActiveServerId = snapServerId
     let snapChannel = jsonString(node, "activeChannelName", "")
+    # Only update channel from snapshot if Swift sends a non-empty value.
+    # Swift resets activeChannelName to "" on server switch, but Nim
+    # restores the correct channel in tagSwitchServer. We must not
+    # overwrite it on subsequent tagPoll dispatches.
     if snapChannel.len > 0:
       gActiveChannelName = snapChannel
   except CatchableError:
@@ -2712,6 +3422,17 @@ proc syncFromSnapshot(payload: ptr uint8, payloadLen: uint32) =
 proc ensureInit() =
   if not gInitialized:
     initLock(gLock)
+    # Create notification pipe (non-blocking)
+    var fds: array[2, cint]
+    if posix.pipe(fds) == 0:
+      gNotifyPipeRead = fds[0]
+      gNotifyPipeWrite = fds[1]
+      # Set both ends non-blocking
+      discard fcntl(gNotifyPipeRead, F_SETFL,
+        fcntl(gNotifyPipeRead, F_GETFL) or O_NONBLOCK)
+      discard fcntl(gNotifyPipeWrite, F_SETFL,
+        fcntl(gNotifyPipeWrite, F_GETFL) or O_NONBLOCK)
+    gNotifyPending.store(false)
     gInitialized = true
 
 # ============================================================
@@ -2804,6 +3525,40 @@ proc actionName(tag: uint32): string =
   of tagHideWhois: "HideWhois"
   of tagInputChanged: "InputChanged"
   of tagCompletionSelect: "CompletionSelect"
+  of tagShowSettings: "ShowSettings"
+  of tagHideSettings: "HideSettings"
+  of tagSetFontSize: "SetFontSize"
+  of tagSetMessageDensity: "SetMessageDensity"
+  of tagSetTimestampFormat: "SetTimestampFormat"
+  of tagUpdateSidebarFilter: "UpdateSidebarFilter"
+  of tagToggleAway: "ToggleAway"
+  of tagShowChannelInfo: "ShowChannelInfo"
+  of tagHideChannelInfo: "HideChannelInfo"
+  of tagToggleSearch: "ToggleSearch"
+  of tagClearSearch: "ClearSearch"
+  of tagUpdateSearch: "UpdateSearch"
+  of tagSelectNetwork: "SelectNetwork"
+  of tagHistoryUp: "HistoryUp"
+  of tagHistoryDown: "HistoryDown"
+  of tagMuteJoinPart: "MuteJoinPart"
+  of tagSetSmartFilter: "SetSmartFilter"
+  of tagSetSmartFilterTimeout: "SetSmartFilterTimeout"
+  of tagSwitchChannelByIndex: "SwitchChannelByIndex"
+  of tagPrevChannel: "PrevChannel"
+  of tagNextChannel: "NextChannel"
+  of tagNextUnreadChannel: "NextUnreadChannel"
+  of tagClearScrollback: "ClearScrollback"
+  of tagShowChannelSwitcher: "ShowChannelSwitcher"
+  of tagHideChannelSwitcher: "HideChannelSwitcher"
+  of tagSwitchChannelFromSwitcher: "SwitchChannelFromSwitcher"
+  of tagSetNickColor: "SetNickColor"
+  of tagPrevServer: "PrevServer"
+  of tagNextServer: "NextServer"
+  of tagPrevUnreadChannel: "PrevUnreadChannel"
+  of tagShowKeybindSheet: "ShowKeybindSheet"
+  of tagHideKeybindSheet: "HideKeybindSheet"
+  of tagUpdateKeybind: "UpdateKeybind"
+  of tagResetKeybinds: "ResetKeybinds"
   else: "Unknown"
 
 # ============================================================
@@ -2815,21 +3570,30 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
   ensureInit()
 
   let actionTag = decodeActionTag(payload, payloadLen)
+  let prevServerId = gActiveServerId
   syncFromSnapshot(payload, payloadLen)
+
+  var pollSkipped = false  # true when poll found no dirty state → skip buildPatch
 
   case actionTag
   of tagPoll:
-    processUiEvents()
-    syncActiveChannelContext()
-    # Clear unread for active channel
-    if gActiveServerId >= 0 and gActiveChannelName.len > 0:
-      let sk = serverKey(gActiveServerId)
-      if sk in gChannels:
-        for i in 0 ..< gChannels[sk].len:
-          if gChannels[sk][i].name == gActiveChannelName:
-            gChannels[sk][i].unread = 0
-            gChannels[sk][i].mentions = 0
-            break
+    let hadEvents = processUiEvents()
+    # Check if typing indicators need expiry (even when no IRC events arrived)
+    let ck = channelKey(gActiveServerId, gActiveChannelName)
+    let hasTyping = ck in gTypingUsers and gTypingUsers[ck].len > 0
+    if not hadEvents and not hasTyping:
+      pollSkipped = true
+    else:
+      syncActiveChannelContext()
+      # Clear unread for active channel
+      if gActiveServerId >= 0 and gActiveChannelName.len > 0:
+        let sk = serverKey(gActiveServerId)
+        if sk in gChannels:
+          for i in 0 ..< gChannels[sk].len:
+            if gChannels[sk][i].name == gActiveChannelName:
+              gChannels[sk][i].unread = 0
+              gChannels[sk][i].mentions = 0
+              break
 
   of tagStartPoll:
     gPollActive = true
@@ -2866,6 +3630,10 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
         lagMs: -1,
         isAway: false,
       ))
+      # Save current channel for old server before switching to new one (skip *server*)
+      if gActiveServerId >= 0 and gActiveChannelName.len > 0 and
+         gActiveChannelName != ServerChannel:
+        gLastChannelPerServer[gActiveServerId] = gActiveChannelName
       gActiveServerId = serverId
       gActiveChannelName = ServerChannel
       ensureChannel(serverId, ServerChannel)
@@ -2899,17 +3667,30 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
       gStatusText = "Disconnected"
 
   of tagSwitchServer:
-    # Server ID passed via snapshot's activeServerId
-    let si = findServerIdx(gActiveServerId)
-    if si >= 0:
-      gStatusText = gServers[si].name
-      # Select first channel of the new server
-      let sk = serverKey(gActiveServerId)
-      if sk in gChannels and gChannels[sk].len > 0:
-        gActiveChannelName = gChannels[sk][0].name
-      else:
-        gActiveChannelName = ServerChannel
-    syncActiveChannelContext()
+    if prevServerId == gActiveServerId:
+      # Same server clicked — navigate to server console
+      gActiveChannelName = ServerChannel
+      syncActiveChannelContext()
+    else:
+      let si = findServerIdx(gActiveServerId)
+      if si >= 0:
+        gStatusText = gServers[si].name
+        # Restore last viewed channel for this server
+        let sk = serverKey(gActiveServerId)
+        if gActiveServerId in gLastChannelPerServer:
+          gActiveChannelName = gLastChannelPerServer[gActiveServerId]
+        elif sk in gChannels:
+          var found = false
+          for ch in gChannels[sk]:
+            if ch.name != ServerChannel:
+              gActiveChannelName = ch.name
+              found = true
+              break
+          if not found:
+            gActiveChannelName = ServerChannel
+        else:
+          gActiveChannelName = ServerChannel
+      syncActiveChannelContext()
 
   of tagReconnect:
     if gActiveServerId >= 0:
@@ -2923,7 +3704,10 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
         gServers[si].connecting = true
 
   of tagSwitchChannel:
-    # Channel name is in snapshot
+    # Channel name is in snapshot — remember it for this server (skip *server*)
+    if gActiveServerId >= 0 and gActiveChannelName.len > 0 and
+       gActiveChannelName != ServerChannel:
+      gLastChannelPerServer[gActiveServerId] = gActiveChannelName
     syncActiveChannelContext()
     gSelectedUserNick = ""
     # Clear unread
@@ -2988,7 +3772,10 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
       syncActiveChannelContext()
 
   of tagSendMessage:
-    if gActiveServerId >= 0 and gActiveChannelName.len > 0:
+    # If completion popup is active, Enter accepts the selection instead of sending
+    if gCompletionActive:
+      acceptCompletion()
+    elif gActiveServerId >= 0 and gActiveChannelName.len > 0:
       let text = gInputText.strip()
       if text.len > 0:
         if not handleSlashCommand(gActiveServerId, text):
@@ -3009,6 +3796,14 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
           else:
             addErrorMessage(gActiveServerId, ServerChannel,
               "Cannot send messages to server window. Use /msg or switch to a channel.")
+        # Push to input history
+        if gInputHistory.len == 0 or gInputHistory[^1] != text:
+          gInputHistory.add(text)
+          const MaxHistory = 100
+          if gInputHistory.len > MaxHistory:
+            gInputHistory.delete(0)
+        gHistoryIndex = -1
+        gSavedInput = ""
         gInputText = ""
       dismissCompletion()
 
@@ -3027,7 +3822,6 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
 
   of tagTabComplete:
     if gCompletionActive:
-      # If @-mention popup is showing, Tab accepts the selection
       acceptCompletion()
     else:
       computeCompletions()
@@ -3337,30 +4131,393 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
   of tagShowJoinChannel, tagHideJoinChannel, tagHideWhois:
     discard  # Handled by Swift reducer
 
+  of tagToggleAway:
+    if gActiveServerId >= 0:
+      let si = findServerIdx(gActiveServerId)
+      if si >= 0 and gServers[si].connected:
+        ensureEventLoop()
+        if gServers[si].isAway:
+          withLock gLock:
+            gCommandQueue.add(BridgeCommand(kind: cmdClearAway,
+              serverId: gActiveServerId))
+          addSystemMessage(gActiveServerId,
+            if gActiveChannelName.len > 0: gActiveChannelName else: ServerChannel,
+            "You are no longer away")
+        else:
+          withLock gLock:
+            gCommandQueue.add(BridgeCommand(kind: cmdSetAway,
+              serverId: gActiveServerId, text: "Away"))
+          addSystemMessage(gActiveServerId,
+            if gActiveChannelName.len > 0: gActiveChannelName else: ServerChannel,
+            "You have been marked as away")
+
+  of tagSetFontSize, tagSetMessageDensity, tagSetTimestampFormat,
+     tagUpdateSidebarFilter, tagUpdateSearch:
+    discard  # State handled by Swift reducer; future: persist to config
+
+  of tagShowSettings, tagHideSettings, tagShowChannelInfo, tagHideChannelInfo,
+     tagToggleSearch, tagClearSearch, tagSelectNetwork:
+    discard  # Handled by Swift reducer
+
+  of tagHistoryUp:
+    if gCompletionActive and gCompletionSuggestions.len > 0:
+      # Navigate completion list upward
+      if gCompletionIndex > 0:
+        gCompletionIndex -= 1
+      else:
+        gCompletionIndex = gCompletionSuggestions.len - 1
+    elif gInputHistory.len > 0:
+      if gHistoryIndex < 0:
+        # Start browsing: save current input, go to most recent
+        gSavedInput = gInputText
+        gHistoryIndex = gInputHistory.len - 1
+        gInputText = gInputHistory[gHistoryIndex]
+      elif gHistoryIndex > 0:
+        # Go to older entry
+        gHistoryIndex -= 1
+        gInputText = gInputHistory[gHistoryIndex]
+      # else: already at oldest, do nothing
+
+  of tagHistoryDown:
+    if gCompletionActive and gCompletionSuggestions.len > 0:
+      # Navigate completion list downward
+      if gCompletionIndex < gCompletionSuggestions.len - 1:
+        gCompletionIndex += 1
+      else:
+        gCompletionIndex = 0
+    elif gHistoryIndex >= 0:
+      if gHistoryIndex < gInputHistory.len - 1:
+        # Go to newer entry
+        gHistoryIndex += 1
+        gInputText = gInputHistory[gHistoryIndex]
+      else:
+        # Past the newest: restore saved input
+        gHistoryIndex = -1
+        gInputText = gSavedInput
+        gSavedInput = ""
+
+  of tagMuteJoinPart:
+    let nick = gActionNick
+    if nick.len > 0 and gActiveServerId >= 0:
+      let nickLower = nick.toLowerAscii
+      if nickLower in gJoinPartMuteList:
+        let idx = gJoinPartMuteList.find(nickLower)
+        if idx >= 0:
+          gJoinPartMuteList.delete(idx)
+          saveConfig()
+          addSystemMessage(gActiveServerId, gActiveChannelName, "Unmuted join/part for: " & nick)
+      else:
+        gJoinPartMuteList.add(nickLower)
+        saveConfig()
+        addSystemMessage(gActiveServerId, gActiveChannelName, "Muted join/part for: " & nick)
+
+  of tagSetSmartFilter:
+    # State synced from snapshot (smartFilterEnabled)
+    saveConfig()
+
+  of tagSetSmartFilterTimeout:
+    # State synced from snapshot (smartFilterTimeout)
+    saveConfig()
+
+  of tagSwitchChannelByIndex:
+    if gActiveServerId >= 0:
+      let sk = serverKey(gActiveServerId)
+      if sk in gChannels:
+        var visibleChannels: seq[string]
+        for ch in gChannels[sk]:
+          if ch.name != ServerChannel and (ch.isChannel or ch.isDm):
+            visibleChannels.add ch.name
+        # The index is passed via actionServerId field
+        let idx = gActionServerId
+        if idx >= 0 and idx < visibleChannels.len:
+          gActiveChannelName = visibleChannels[idx]
+          if gActiveChannelName != ServerChannel:
+            gLastChannelPerServer[gActiveServerId] = gActiveChannelName
+          syncActiveChannelContext()
+          for i in 0 ..< gChannels[sk].len:
+            if gChannels[sk][i].name == gActiveChannelName:
+              gChannels[sk][i].unread = 0
+              gChannels[sk][i].mentions = 0
+              break
+
+  of tagPrevChannel:
+    if gActiveServerId >= 0:
+      let sk = serverKey(gActiveServerId)
+      if sk in gChannels:
+        var visibleChannels: seq[string]
+        for ch in gChannels[sk]:
+          if ch.name != ServerChannel and (ch.isChannel or ch.isDm):
+            visibleChannels.add ch.name
+        if visibleChannels.len > 0:
+          let curIdx = visibleChannels.find(gActiveChannelName)
+          if curIdx > 0:
+            gActiveChannelName = visibleChannels[curIdx - 1]
+          else:
+            gActiveChannelName = visibleChannels[^1]
+          if gActiveChannelName != ServerChannel:
+            gLastChannelPerServer[gActiveServerId] = gActiveChannelName
+          syncActiveChannelContext()
+          for i in 0 ..< gChannels[sk].len:
+            if gChannels[sk][i].name == gActiveChannelName:
+              gChannels[sk][i].unread = 0
+              gChannels[sk][i].mentions = 0
+              break
+
+  of tagNextChannel:
+    if gActiveServerId >= 0:
+      let sk = serverKey(gActiveServerId)
+      if sk in gChannels:
+        var visibleChannels: seq[string]
+        for ch in gChannels[sk]:
+          if ch.name != ServerChannel and (ch.isChannel or ch.isDm):
+            visibleChannels.add ch.name
+        if visibleChannels.len > 0:
+          let curIdx = visibleChannels.find(gActiveChannelName)
+          if curIdx >= 0 and curIdx < visibleChannels.len - 1:
+            gActiveChannelName = visibleChannels[curIdx + 1]
+          else:
+            gActiveChannelName = visibleChannels[0]
+          if gActiveChannelName != ServerChannel:
+            gLastChannelPerServer[gActiveServerId] = gActiveChannelName
+          syncActiveChannelContext()
+          for i in 0 ..< gChannels[sk].len:
+            if gChannels[sk][i].name == gActiveChannelName:
+              gChannels[sk][i].unread = 0
+              gChannels[sk][i].mentions = 0
+              break
+
+  of tagNextUnreadChannel:
+    if gActiveServerId >= 0:
+      let sk = serverKey(gActiveServerId)
+      if sk in gChannels:
+        var visibleChannels: seq[ChannelState]
+        for ch in gChannels[sk]:
+          if ch.name != ServerChannel and (ch.isChannel or ch.isDm):
+            visibleChannels.add ch
+        if visibleChannels.len > 0:
+          let curIdx = block:
+            var found = -1
+            for i, ch in visibleChannels:
+              if ch.name == gActiveChannelName:
+                found = i
+                break
+            found
+          for offset in 1 .. visibleChannels.len:
+            let idx = (curIdx + offset) mod visibleChannels.len
+            if visibleChannels[idx].unread > 0 or visibleChannels[idx].mentions > 0:
+              gActiveChannelName = visibleChannels[idx].name
+              if gActiveChannelName != ServerChannel:
+                gLastChannelPerServer[gActiveServerId] = gActiveChannelName
+              syncActiveChannelContext()
+              for i in 0 ..< gChannels[sk].len:
+                if gChannels[sk][i].name == gActiveChannelName:
+                  gChannels[sk][i].unread = 0
+                  gChannels[sk][i].mentions = 0
+                  break
+              break
+
+  of tagClearScrollback:
+    if gActiveServerId >= 0 and gActiveChannelName.len > 0:
+      let ck = channelKey(gActiveServerId, gActiveChannelName)
+      gMessages[ck] = @[]
+      addSystemMessage(gActiveServerId, gActiveChannelName, "Scrollback cleared")
+
+  of tagShowChannelSwitcher, tagHideChannelSwitcher:
+    discard  # Handled by Swift reducer
+
+  of tagSwitchChannelFromSwitcher:
+    if gActiveServerId >= 0 and gChannelSwitcherText.len > 0:
+      let sk = serverKey(gActiveServerId)
+      if sk in gChannels:
+        let filterLower = gChannelSwitcherText.toLowerAscii
+        for ch in gChannels[sk]:
+          if ch.name != ServerChannel and (ch.isChannel or ch.isDm):
+            if filterLower.len == 0 or ch.name.toLowerAscii.contains(filterLower):
+              gActiveChannelName = ch.name
+              if gActiveChannelName != ServerChannel:
+                gLastChannelPerServer[gActiveServerId] = gActiveChannelName
+              syncActiveChannelContext()
+              for i in 0 ..< gChannels[sk].len:
+                if gChannels[sk][i].name == gActiveChannelName:
+                  gChannels[sk][i].unread = 0
+                  gChannels[sk][i].mentions = 0
+                  break
+              break
+    gChannelSwitcherText = ""
+
+  of tagSetNickColor:
+    let nick = gActionNick.toLowerAscii
+    # Color is stored in gActionColor (set by snapshot sync)
+    if nick.len > 0 and gActiveServerId >= 0:
+      if gActionColor.len > 0:
+        gNickColors[nick] = gActionColor
+        saveConfig()
+        addSystemMessage(gActiveServerId,
+          if gActiveChannelName.len > 0: gActiveChannelName else: ServerChannel,
+          "Nick color for " & nick & " set to " & gActionColor)
+      else:
+        # No color means clear
+        if nick in gNickColors:
+          gNickColors.del(nick)
+          saveConfig()
+          addSystemMessage(gActiveServerId,
+            if gActiveChannelName.len > 0: gActiveChannelName else: ServerChannel,
+            "Nick color for " & nick & " cleared")
+
+  of tagPrevServer:
+    if gServers.len > 1:
+      let curIdx = findServerIdx(gActiveServerId)
+      if curIdx > 0:
+        let newId = gServers[curIdx - 1].id
+        # Save current channel
+        if gActiveServerId >= 0 and gActiveChannelName.len > 0 and
+           gActiveChannelName != ServerChannel:
+          gLastChannelPerServer[gActiveServerId] = gActiveChannelName
+        gActiveServerId = newId
+      else:
+        # Wrap around to last server
+        let newId = gServers[^1].id
+        if gActiveServerId >= 0 and gActiveChannelName.len > 0 and
+           gActiveChannelName != ServerChannel:
+          gLastChannelPerServer[gActiveServerId] = gActiveChannelName
+        gActiveServerId = newId
+      # Restore last channel for new server
+      if gActiveServerId in gLastChannelPerServer:
+        gActiveChannelName = gLastChannelPerServer[gActiveServerId]
+      else:
+        let sk = serverKey(gActiveServerId)
+        if sk in gChannels and gChannels[sk].len > 0:
+          gActiveChannelName = gChannels[sk][0].name
+        else:
+          gActiveChannelName = ServerChannel
+      syncActiveChannelContext()
+
+  of tagNextServer:
+    if gServers.len > 1:
+      let curIdx = findServerIdx(gActiveServerId)
+      if curIdx >= 0 and curIdx < gServers.len - 1:
+        let newId = gServers[curIdx + 1].id
+        if gActiveServerId >= 0 and gActiveChannelName.len > 0 and
+           gActiveChannelName != ServerChannel:
+          gLastChannelPerServer[gActiveServerId] = gActiveChannelName
+        gActiveServerId = newId
+      else:
+        # Wrap around to first server
+        let newId = gServers[0].id
+        if gActiveServerId >= 0 and gActiveChannelName.len > 0 and
+           gActiveChannelName != ServerChannel:
+          gLastChannelPerServer[gActiveServerId] = gActiveChannelName
+        gActiveServerId = newId
+      if gActiveServerId in gLastChannelPerServer:
+        gActiveChannelName = gLastChannelPerServer[gActiveServerId]
+      else:
+        let sk = serverKey(gActiveServerId)
+        if sk in gChannels and gChannels[sk].len > 0:
+          gActiveChannelName = gChannels[sk][0].name
+        else:
+          gActiveChannelName = ServerChannel
+      syncActiveChannelContext()
+
+  of tagPrevUnreadChannel:
+    if gActiveServerId >= 0:
+      let sk = serverKey(gActiveServerId)
+      if sk in gChannels:
+        var visibleChannels: seq[ChannelState]
+        for ch in gChannels[sk]:
+          if ch.name != ServerChannel and (ch.isChannel or ch.isDm):
+            visibleChannels.add ch
+        if visibleChannels.len > 0:
+          let curIdx = block:
+            var found = -1
+            for i, ch in visibleChannels:
+              if ch.name == gActiveChannelName:
+                found = i
+                break
+            found
+          # Search backward from current position, wrapping around
+          for offset in 1 .. visibleChannels.len:
+            let idx = (curIdx - offset + visibleChannels.len) mod visibleChannels.len
+            if visibleChannels[idx].unread > 0 or visibleChannels[idx].mentions > 0:
+              gActiveChannelName = visibleChannels[idx].name
+              if gActiveChannelName != ServerChannel:
+                gLastChannelPerServer[gActiveServerId] = gActiveChannelName
+              syncActiveChannelContext()
+              for i in 0 ..< gChannels[sk].len:
+                if gChannels[sk][i].name == gActiveChannelName:
+                  gChannels[sk][i].unread = 0
+                  gChannels[sk][i].mentions = 0
+                  break
+              break
+
+  of tagUpdateKeybind:
+    # id stored in actionNick, key|modifiers stored in actionColor
+    let kbId = gActionNick
+    let combined = gActionColor
+    stderr.writeLine "[BRIDGE] UpdateKeybind: id=" & kbId & " combined=" & combined
+    let pipePos = combined.find('|')
+    if kbId.len > 0 and pipePos > 0:
+      let kbKey = combined[0 ..< pipePos]
+      let kbMods = combined[pipePos + 1 .. ^1]
+      stderr.writeLine "[BRIDGE] UpdateKeybind: key=" & kbKey & " mods=" & kbMods
+      for i in 0 ..< gKeybinds.len:
+        if gKeybinds[i].id == kbId:
+          gKeybinds[i].key = kbKey
+          gKeybinds[i].modifiers = kbMods
+          stderr.writeLine "[BRIDGE] UpdateKeybind: updated keybind " & kbId
+          break
+      saveConfig()
+    else:
+      stderr.writeLine "[BRIDGE] UpdateKeybind: SKIPPED - kbId empty or no pipe found (pipePos=" & $pipePos & ")"
+
+  of tagResetKeybinds:
+    stderr.writeLine "[BRIDGE] ResetKeybinds: resetting " & $gKeybinds.len & " keybinds"
+    gKeybinds.setLen(0)
+    for kb in defaultKeybinds:
+      gKeybinds.add(kb)
+    saveConfig()
+    stderr.writeLine "[BRIDGE] ResetKeybinds: done, " & $gKeybinds.len & " default keybinds restored"
+
+  of tagShowKeybindSheet, tagHideKeybindSheet:
+    discard  # handled by Swift reducer
+
   else:
     gStatusText = "Unknown action (" & $actionTag & ")"
 
-  syncActiveChannelContext()
+  if not pollSkipped:
+    # For non-poll actions, syncActiveChannelContext was already called in the
+    # action handler or needs to run here. For poll with events, it ran above.
+    if actionTag != tagPoll:
+      syncActiveChannelContext()
 
-  # Update status text from active server state
-  if gActiveServerId >= 0:
-    let si = findServerIdx(gActiveServerId)
-    if si >= 0:
-      if gServers[si].connected:
-        var status = "Connected to " & gServers[si].host
-        if gServers[si].lagMs >= 0:
-          status.add(" | Lag: " & $gServers[si].lagMs & "ms")
-        if gServers[si].isAway:
-          status.add(" | Away")
-        gStatusText = status
-      elif gServers[si].connecting:
-        gStatusText = "Connecting to " & gServers[si].host & "..."
+    # Update status text from active server state
+    if gActiveServerId >= 0:
+      let si = findServerIdx(gActiveServerId)
+      if si >= 0:
+        if gServers[si].connected:
+          var status = "Connected to " & gServers[si].host
+          if gServers[si].lagMs >= 0:
+            status.add(" | Lag: " & $gServers[si].lagMs & "ms")
+          if gServers[si].isAway:
+            status.add(" | Away")
+          gStatusText = status
+        elif gServers[si].connecting:
+          gStatusText = "Connecting to " & gServers[si].host & "..."
 
-  # During Poll / InputChanged, don't include user-editable text fields in the
-  # patch to avoid overwriting in-progress typing (race condition with 100ms timer)
-  let includeEditable = actionTag != tagPoll and actionTag != tagStartPoll and
-                        actionTag != tagInputChanged
-  let patchBlob = buildPatch(includeEditable)
+  # When poll found no state changes, skip the expensive buildPatch entirely.
+  # This drops idle CPU from ~30-40% to near 0%.
+  var patchBlob: seq[byte]
+  if pollSkipped:
+    patchBlob = @[]  # empty → Swift skips applyBridgeStatePatch entirely
+  else:
+    # During Poll / InputChanged, don't include user-editable text fields in the
+    # patch to avoid overwriting in-progress typing (race condition with 100ms timer)
+    let includeEditable = actionTag != tagPoll and actionTag != tagStartPoll and
+                          actionTag != tagInputChanged
+    try:
+      patchBlob = buildPatch(includeEditable)
+    except CatchableError as e:
+      stderr.writeLine "[BRIDGE] buildPatch failed: " & e.msg
+      patchBlob = toBytes("{}")
   let diagBlob = toBytes("nim.irc action=" & actionName(actionTag))
 
   if outp != nil:
@@ -3375,11 +4532,16 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
 # FFI export
 # ============================================================
 
+proc bridgeGetNotifyFd(): int32 {.cdecl.} =
+  ensureInit()
+  gNotifyPipeRead.int32
+
 var gBridgeTable = GUIBridgeFunctionTable(
   abiVersion: guiBridgeAbiVersion,
   alloc: bridgeAlloc,
   free: bridgeFree,
-  dispatch: bridgeDispatch
+  dispatch: bridgeDispatch,
+  getNotifyFd: bridgeGetNotifyFd
 )
 
 proc gui_bridge_get_table(): ptr GUIBridgeFunctionTable {.cdecl, exportc, dynlib.} =

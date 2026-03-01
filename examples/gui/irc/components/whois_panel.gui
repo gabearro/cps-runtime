@@ -1,9 +1,9 @@
 component WhoisPanel(isDark: Bool) {
-  let fg = isDark ? Color(red: 0.93, green: 0.93, blue: 0.95) : token.color.textPrimary
-  let fgSecondary = isDark ? Color(red: 0.56, green: 0.56, blue: 0.60) : token.color.textMuted
-  let fgTertiary = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
-  let cardBg = isDark ? Color(red: 0.13, green: 0.13, blue: 0.14) : Color(red: 0.96, green: 0.96, blue: 0.97)
-  let cardBorder = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.06)
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.65) : token.color.textSubtle
+  let cardBg = isDark ? Color(red: 0.19, green: 0.19, blue: 0.20) : Color(red: 0.96, green: 0.96, blue: 0.97)
+  let cardBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
 
   VStack(alignment: HorizontalAlignment.leading, spacing: 20) {
     HStack {
@@ -23,10 +23,10 @@ component WhoisPanel(isDark: Bool) {
         Image(systemName: "xmark")
           .font(.system(size: 10, weight: Font.Weight.medium))
           .foregroundColor(fgSecondary)
-          .frame(width: 22, height: 22)
+          .frame(width: 24, height: 24)
           .background(
             Circle()
-              .fill(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04))
+              .fill(isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.04))
           )
       }
       .buttonStyle(BorderlessButtonStyle())
@@ -62,10 +62,11 @@ component WhoisPanel(isDark: Bool) {
       )
     }
 
-    HStack {
+    HStack(spacing: 12) {
       Button(action: StartDm(nick: whoisNick)) {
         Label("Message", systemImage: "bubble.left")
           .font(.system(size: 12, weight: Font.Weight.medium))
+          .foregroundColor(token.color.accent)
       }
       .buttonStyle(BorderlessButtonStyle())
 
@@ -81,5 +82,5 @@ component WhoisPanel(isDark: Bool) {
     }
   }
   .padding(24)
-  .frame(width: 420)
+  .frame(width: 440)
 }

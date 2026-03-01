@@ -16,26 +16,26 @@ struct MessageSpan: Decodable {
 // MARK: - Nick Color
 
 enum NickColor {
-    // Carefully tuned palette for legibility on dark backgrounds.
+    // Tuned for high contrast on dark backgrounds, readable in sunlight.
     // Each color is distinct, avoids confusion with UI semantic colors,
-    // and maintains sufficient contrast against #141415 / #fefeff.
+    // and maintains strong contrast against dark surfaces.
     private static let darkPalette: [Color] = [
-        Color(hue: 0.02, saturation: 0.55, brightness: 0.78),  // warm coral
-        Color(hue: 0.08, saturation: 0.60, brightness: 0.80),  // apricot
-        Color(hue: 0.14, saturation: 0.52, brightness: 0.76),  // amber
-        Color(hue: 0.28, saturation: 0.45, brightness: 0.72),  // sage
-        Color(hue: 0.38, saturation: 0.48, brightness: 0.72),  // seafoam
-        Color(hue: 0.48, saturation: 0.42, brightness: 0.74),  // teal
-        Color(hue: 0.55, saturation: 0.40, brightness: 0.76),  // sky
-        Color(hue: 0.62, saturation: 0.45, brightness: 0.78),  // periwinkle
-        Color(hue: 0.72, saturation: 0.38, brightness: 0.76),  // lavender
-        Color(hue: 0.82, saturation: 0.40, brightness: 0.76),  // mauve
-        Color(hue: 0.92, saturation: 0.42, brightness: 0.76),  // rose
-        Color(hue: 0.42, saturation: 0.50, brightness: 0.70),  // mint
-        Color(hue: 0.58, saturation: 0.50, brightness: 0.75),  // cornflower
-        Color(hue: 0.76, saturation: 0.42, brightness: 0.74),  // wisteria
-        Color(hue: 0.18, saturation: 0.48, brightness: 0.74),  // chartreuse
-        Color(hue: 0.95, saturation: 0.45, brightness: 0.78),  // blush
+        Color(hue: 0.02, saturation: 0.50, brightness: 0.92),  // warm coral
+        Color(hue: 0.08, saturation: 0.55, brightness: 0.92),  // apricot
+        Color(hue: 0.14, saturation: 0.48, brightness: 0.91),  // amber
+        Color(hue: 0.28, saturation: 0.42, brightness: 0.87),  // sage
+        Color(hue: 0.38, saturation: 0.44, brightness: 0.87),  // seafoam
+        Color(hue: 0.48, saturation: 0.38, brightness: 0.89),  // teal
+        Color(hue: 0.55, saturation: 0.36, brightness: 0.91),  // sky
+        Color(hue: 0.62, saturation: 0.40, brightness: 0.92),  // periwinkle
+        Color(hue: 0.72, saturation: 0.34, brightness: 0.91),  // lavender
+        Color(hue: 0.82, saturation: 0.36, brightness: 0.91),  // mauve
+        Color(hue: 0.92, saturation: 0.38, brightness: 0.91),  // rose
+        Color(hue: 0.42, saturation: 0.46, brightness: 0.85),  // mint
+        Color(hue: 0.58, saturation: 0.46, brightness: 0.90),  // cornflower
+        Color(hue: 0.76, saturation: 0.38, brightness: 0.89),  // wisteria
+        Color(hue: 0.18, saturation: 0.44, brightness: 0.89),  // chartreuse
+        Color(hue: 0.95, saturation: 0.40, brightness: 0.92),  // blush
     ]
 
     private static let lightPalette: [Color] = [
@@ -64,6 +64,18 @@ enum NickColor {
         }
         let idx = Int(hash % UInt(darkPalette.count))
         return darkPalette[idx]
+    }
+
+    /// Returns override color if set in nickColors JSON, otherwise falls back to hash.
+    static func forNick(_ nick: String, overrides: String) -> Color {
+        if !overrides.isEmpty,
+           let data = overrides.data(using: .utf8),
+           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+           let hex = dict[nick.lowercased()],
+           let color = colorFromHex(hex) {
+            return color
+        }
+        return forNick(nick)
     }
 }
 

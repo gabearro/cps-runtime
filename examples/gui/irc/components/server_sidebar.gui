@@ -1,10 +1,10 @@
 component ServerRow(server: IrcServer, isActive: Bool, isDark: Bool) {
-  let fg = isDark ? Color(red: 0.93, green: 0.93, blue: 0.95) : token.color.textPrimary
-  let fgSecondary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.66) : token.color.textMuted
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
   let accentColor = token.color.accent
   let warningColor = token.color.warning
-  let activeBg = isDark ? Color.white.opacity(0.07) : accentColor.opacity(0.08)
-  let activeBorder = isDark ? Color.white.opacity(0.10) : accentColor.opacity(0.15)
+  let activeBg = isDark ? Color.white.opacity(0.12) : accentColor.opacity(0.08)
+  let activeBorder = isDark ? Color.white.opacity(0.14) : accentColor.opacity(0.15)
 
   HStack(spacing: 10) {
     ZStack {
@@ -14,13 +14,13 @@ component ServerRow(server: IrcServer, isActive: Bool, isDark: Bool) {
             ? token.color.success
             : server.connecting
               ? token.color.warning
-              : isDark ? Color(red: 0.35, green: 0.35, blue: 0.38) : Color(red: 0.76, green: 0.76, blue: 0.78)
+              : isDark ? Color(red: 0.49, green: 0.49, blue: 0.52) : Color(red: 0.76, green: 0.76, blue: 0.78)
         )
         .frame(width: 7, height: 7)
 
       if server.connecting {
         Circle()
-          .stroke(warningColor.opacity(0.3), lineWidth: 2)
+          .stroke(warningColor.opacity(0.4), lineWidth: 2)
           .frame(width: 13, height: 13)
       }
     }
@@ -32,10 +32,18 @@ component ServerRow(server: IrcServer, isActive: Bool, isDark: Bool) {
         .foregroundColor(isActive ? fg : fgSecondary)
         .lineLimit(1)
 
-      Text(server.nick)
-        .font(.system(size: 10))
-        .foregroundColor(isDark ? Color(red: 0.48, green: 0.48, blue: 0.52) : token.color.textSubtle)
-        .lineLimit(1)
+      HStack(spacing: 4) {
+        Text(server.nick)
+          .font(.system(size: 10))
+          .foregroundColor(isDark ? Color(red: 0.58, green: 0.58, blue: 0.61) : token.color.textSubtle)
+          .lineLimit(1)
+
+        if server.isAway {
+          Text("(away)")
+            .font(.system(size: 9))
+            .foregroundColor(isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : token.color.textSubtle)
+        }
+      }
     }
 
     Spacer()
@@ -44,7 +52,7 @@ component ServerRow(server: IrcServer, isActive: Bool, isDark: Bool) {
       if server.lagMs >= 0 {
         Text("\(server.lagMs)ms")
           .font(.system(size: 9))
-          .foregroundColor(isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle)
+          .foregroundColor(isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : token.color.textSubtle)
           .monospacedDigit()
       }
     }
@@ -72,41 +80,71 @@ component ServerRow(server: IrcServer, isActive: Bool, isDark: Bool) {
 }
 
 component ChannelRow(channel: IrcChannel, isActive: Bool, isDark: Bool, isDm: Bool) {
-  let fg = isDark ? Color(red: 0.93, green: 0.93, blue: 0.95) : token.color.textPrimary
-  let fgSecondary = isDark ? Color(red: 0.56, green: 0.56, blue: 0.60) : token.color.textMuted
-  let fgTertiary = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.66, green: 0.66, blue: 0.69) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : token.color.textSubtle
   let accentColor = token.color.accent
-  let activeBg = isDark ? Color.white.opacity(0.07) : accentColor.opacity(0.08)
-  let activeBorder = isDark ? Color.white.opacity(0.10) : accentColor.opacity(0.15)
+  let mentionColor = isDark ? Color(red: 1.0, green: 0.27, blue: 0.23) : token.color.danger
+  let unreadColor = isDark ? Color(red: 0.35, green: 0.68, blue: 1.0) : token.color.accent
+  let activeBg = isDark ? Color.white.opacity(0.12) : accentColor.opacity(0.08)
+  let activeBorder = isDark ? Color.white.opacity(0.14) : accentColor.opacity(0.15)
   let hasActivity = channel.unread > 0 || channel.mentions > 0
+  let activityColor = channel.mentions > 0 ? mentionColor : unreadColor
 
   HStack(spacing: 7) {
-    if isDm {
-      Image(systemName: "person.fill")
-        .font(.system(size: 10))
-        .foregroundColor(
-          hasActivity ? token.color.accent : isActive ? fgSecondary : fgTertiary
-        )
-        .frame(width: 16)
-    } else {
-      Text("#")
-        .font(.system(size: 14, weight: Font.Weight.medium, design: Font.Design.rounded))
+    ZStack {
+      if isDm {
+        Image(systemName: "person.fill")
+          .font(.system(size: 10))
+          .foregroundColor(
+            channel.mentions > 0
+              ? mentionColor
+              : hasActivity
+                ? unreadColor
+                : isActive ? fgSecondary : fgTertiary
+          )
+          .frame(width: 16)
+      } else {
+        Text("#")
+          .font(.system(size: 14, weight: Font.Weight.medium, design: Font.Design.rounded))
+          .foregroundColor(
+            channel.mentions > 0
+              ? mentionColor
+              : hasActivity
+                ? unreadColor
+                : isActive ? fgSecondary : fgTertiary
+          )
+          .frame(width: 16)
+      }
+
+      if hasActivity {
+        Circle()
+          .fill(activityColor)
+          .frame(width: 5, height: 5)
+          .offset(x: 8, y: -6)
+      }
+    }
+    .frame(width: 16)
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 1) {
+      Text(channel.name)
+        .font(.system(size: 13, weight: hasActivity ? Font.Weight.semibold : Font.Weight.regular))
         .foregroundColor(
           channel.mentions > 0
-            ? token.color.danger
+            ? mentionColor
             : hasActivity
-              ? token.color.accent
-              : isActive ? fgSecondary : fgTertiary
+              ? (isDark ? fg : unreadColor)
+              : isActive ? fg : fgSecondary
         )
-        .frame(width: 16)
-    }
+        .lineLimit(1)
 
-    Text(channel.name)
-      .font(.system(size: 13, weight: hasActivity ? Font.Weight.semibold : Font.Weight.regular))
-      .foregroundColor(
-        hasActivity ? fg : isActive ? fg : fgSecondary
-      )
-      .lineLimit(1)
+      if channel.isChannel {
+        Text("\(channel.userCount) users")
+          .font(.system(size: 9))
+          .foregroundColor(fgTertiary)
+          .lineLimit(1)
+      }
+    }
 
     Spacer()
 
@@ -117,12 +155,17 @@ component ChannelRow(channel: IrcChannel, isActive: Bool, isDark: Bool, isDm: Bo
         .padding(vertical: 1, horizontal: 5)
         .background(
           Capsule()
-            .fill(token.color.danger)
+            .fill(mentionColor)
         )
     } else if channel.unread > 0 {
-      Circle()
-        .fill(token.color.accent)
-        .frame(width: 6, height: 6)
+      Text("\(channel.unread)")
+        .font(.system(size: 9, weight: Font.Weight.semibold))
+        .foregroundColor(isDark ? Color.white.opacity(0.8) : unreadColor)
+        .padding(vertical: 1, horizontal: 5)
+        .background(
+          Capsule()
+            .fill(isDark ? unreadColor.opacity(0.25) : unreadColor.opacity(0.12))
+        )
     }
   }
   .padding(vertical: 6, horizontal: 10)
@@ -138,15 +181,50 @@ component ChannelRow(channel: IrcChannel, isActive: Bool, isDark: Bool, isDm: Bo
 }
 
 component ServerSidebar(isDark: Bool) {
-  let fgTertiary = isDark ? Color(red: 0.42, green: 0.42, blue: 0.46) : token.color.textSubtle
-  let fgSecondary = isDark ? Color(red: 0.56, green: 0.56, blue: 0.60) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : token.color.textSubtle
+  let fgSecondary = isDark ? Color(red: 0.66, green: 0.66, blue: 0.69) : token.color.textMuted
   let sidebarBg = isDark
-    ? Color(red: 0.10, green: 0.10, blue: 0.11)
+    ? Color(red: 0.16, green: 0.16, blue: 0.17)
     : Color(red: 0.965, green: 0.965, blue: 0.975)
-  let dividerColor = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.06)
-  let sectionLabelColor = isDark ? Color(red: 0.38, green: 0.38, blue: 0.42) : Color(red: 0.60, green: 0.60, blue: 0.63)
+  let dividerColor = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+  let sectionLabelColor = isDark ? Color(red: 0.58, green: 0.58, blue: 0.61) : Color(red: 0.60, green: 0.60, blue: 0.63)
+  let filterBg = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04)
+  let filterStroke = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
 
   VStack(spacing: 0) {
+    HStack(spacing: 8) {
+      Image(systemName: "magnifyingglass")
+        .font(.system(size: 11))
+        .foregroundColor(fgTertiary)
+
+      TextField("Filter...", text: sidebarFilter)
+        .textFieldStyle(PlainTextFieldStyle())
+        .font(.system(size: 12))
+
+      if sidebarFilter != "" {
+        Button(action: UpdateSidebarFilter) {
+          Image(systemName: "xmark.circle.fill")
+            .font(.system(size: 10))
+            .foregroundColor(fgTertiary)
+        }
+        .buttonStyle(BorderlessButtonStyle())
+      }
+    }
+    .padding(vertical: 6, horizontal: 10)
+    .background(
+      RoundedRectangle(cornerRadius: 7)
+        .fill(filterBg)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 7)
+        .stroke(filterStroke, lineWidth: 0.5)
+    )
+    .padding(vertical: 8, horizontal: 10)
+
+    Rectangle()
+      .fill(dividerColor)
+      .frame(height: 1)
+
     ScrollView {
       VStack(alignment: HorizontalAlignment.leading, spacing: 0) {
         HStack {
@@ -164,7 +242,6 @@ component ServerSidebar(isDark: Bool) {
           }
           .buttonStyle(BorderlessButtonStyle())
           .help("Add server")
-          .keyboardShortcut("n", modifiers: EventModifiers.command)
         }
         .padding(vertical: 10, horizontal: 14)
 
@@ -173,7 +250,7 @@ component ServerSidebar(isDark: Bool) {
             Image(systemName: "server.rack")
               .font(.system(size: 28))
               .foregroundColor(fgTertiary)
-              .opacity(0.4)
+              .opacity(0.5)
 
             Text("No servers")
               .font(.system(size: 12))
@@ -191,17 +268,27 @@ component ServerSidebar(isDark: Bool) {
         }
 
         ForEach(items: servers, item: server) {
-          ServerRow(
-            server: server,
-            isActive: server.id == activeServerId,
-            isDark: isDark,
-            onTap: SwitchServer(serverId: server.id)
-          )
-          .padding(horizontal: 6)
+          if sidebarFilter == "" || server.name.localizedCaseInsensitiveContains(sidebarFilter) {
+            ServerRow(
+              server: server,
+              isActive: server.id == activeServerId,
+              isDark: isDark,
+              onTap: SwitchServer(serverId: server.id)
+            )
+            .padding(horizontal: 6)
+          }
         }
 
         Spacer()
           .frame(height: 16)
+
+        Rectangle()
+          .fill(dividerColor)
+          .frame(height: 1)
+          .padding(horizontal: 14)
+
+        Spacer()
+          .frame(height: 8)
 
         HStack {
           Text("CHANNELS")
@@ -213,7 +300,7 @@ component ServerSidebar(isDark: Bool) {
 
           if activeServerId >= 0 {
             Button(action: ShowJoinChannel) {
-              Image(systemName: "plus")
+              Image(systemName: "number")
                 .font(.system(size: 11, weight: Font.Weight.medium))
                 .foregroundColor(fgSecondary)
             }
@@ -224,26 +311,43 @@ component ServerSidebar(isDark: Bool) {
         .padding(vertical: 8, horizontal: 14)
 
         if channels.count == 0 {
-          Text("No channels joined")
-            .font(.system(size: 12))
-            .foregroundColor(fgTertiary)
-            .padding(vertical: 16, horizontal: 14)
+          VStack(spacing: 8) {
+            Text("No channels joined")
+              .font(.system(size: 12))
+              .foregroundColor(fgTertiary)
+
+            if activeServerId >= 0 {
+              Button(action: ShowJoinChannel) {
+                Text("Join a Channel")
+                  .font(.system(size: 12, weight: Font.Weight.medium))
+                  .foregroundColor(token.color.accent)
+              }
+              .buttonStyle(BorderlessButtonStyle())
+            }
+          }
+          .padding(vertical: 16, horizontal: 14)
         }
 
         ForEach(items: channels, item: channel) {
           if channel.isChannel || channel.isDm {
-            ChannelRow(
-              channel: channel,
-              isActive: channel.name == activeChannelName,
-              isDark: isDark,
-              isDm: channel.isDm,
-              onTap: SwitchChannel(channelName: channel.name)
-            )
-            .padding(horizontal: 6)
-            .contextMenu {
-              Button("Close", action: CloseChannel)
-              if channel.isChannel {
-                Button("Part Channel", action: PartChannel)
+            if sidebarFilter == "" || channel.name.localizedCaseInsensitiveContains(sidebarFilter) {
+              ChannelRow(
+                channel: channel,
+                isActive: channel.name == activeChannelName,
+                isDark: isDark,
+                isDm: channel.isDm,
+                onTap: SwitchChannel(channelName: channel.name)
+              )
+              .padding(horizontal: 6)
+              .contextMenu {
+                Button("Close", action: CloseChannel)
+                if channel.isChannel {
+                  Button("Part Channel", action: PartChannel)
+                }
+                if channel.isChannel {
+                  Divider()
+                  Button("Channel Info", action: ShowChannelInfo)
+                }
               }
             }
           }
