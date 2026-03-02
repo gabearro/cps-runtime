@@ -4,7 +4,7 @@ import std/strutils
 import ./ir
 
 const
-  guiBridgeAbiVersion* = 3'u32
+  guiBridgeAbiVersion* = 4'u32
 
 proc swiftEscape(value: string): string =
   value
@@ -76,6 +76,7 @@ proc emitBridgeHeader*(irProgram: GuiIrProgram): string =
   lines.add "typedef void (*GUIBridgeFreeFn)(void* ptr);"
   lines.add "typedef int32_t (*GUIBridgeDispatchFn)(const uint8_t* payload, uint32_t payloadLen, GUIBridgeDispatchOutput* out);"
   lines.add "typedef int32_t (*GUIBridgeGetNotifyFdFn)(void);"
+  lines.add "typedef int32_t (*GUIBridgeWaitShutdownFn)(int32_t timeoutMs);"
   lines.add ""
   lines.add "typedef struct GUIBridgeFunctionTable {"
   lines.add "  uint32_t abiVersion;"
@@ -83,6 +84,7 @@ proc emitBridgeHeader*(irProgram: GuiIrProgram): string =
   lines.add "  GUIBridgeFreeFn free;"
   lines.add "  GUIBridgeDispatchFn dispatch;"
   lines.add "  GUIBridgeGetNotifyFdFn getNotifyFd;"
+  lines.add "  GUIBridgeWaitShutdownFn waitShutdown;"
   lines.add "} GUIBridgeFunctionTable;"
   lines.add ""
   lines.add "const GUIBridgeFunctionTable* gui_bridge_get_table(void);"
@@ -137,6 +139,7 @@ proc emitBridgeSwiftWrapper*(irProgram: GuiIrProgram): string =
   lines.add "  var free: (@convention(c) (UnsafeMutableRawPointer?) -> Void)?"
   lines.add "  var dispatch: (@convention(c) (UnsafePointer<UInt8>?, UInt32, UnsafeMutableRawPointer?) -> Int32)?"
   lines.add "  var getNotifyFd: (@convention(c) () -> Int32)?"
+  lines.add "  var waitShutdown: (@convention(c) (Int32) -> Int32)?"
   lines.add "}"
   lines.add ""
   lines.add "private typealias GUIBridgeGetTableFn = @convention(c) () -> UnsafeRawPointer?"
@@ -214,6 +217,11 @@ proc emitBridgeSwiftWrapper*(irProgram: GuiIrProgram): string =
   lines.add "  func getNotifyFd() -> Int32 {"
   lines.add "    guard let t = table, let fn = t.getNotifyFd else { return -1 }"
   lines.add "    return fn()"
+  lines.add "  }"
+  lines.add ""
+  lines.add "  func waitShutdown(timeoutMs: Int32) -> Bool {"
+  lines.add "    guard let t = table, let fn = t.waitShutdown else { return false }"
+  lines.add "    return fn(timeoutMs) != 0"
   lines.add "  }"
   lines.add ""
   lines.add "  func maybeReload(path: String) {"

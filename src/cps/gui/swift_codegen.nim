@@ -1470,8 +1470,19 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
   outLines.add "    runtime.enqueue(effects)"
   outLines.add "  }"
   outLines.add ""
-  outLines.add "  func shutdown() {"
+  outLines.add "  func shutdown(completion: @escaping () -> Void) {"
+  # If the app declares an AppShutdown action, dispatch it to the bridge
+  # then wait for the Nim event loop to finish on a background thread.
+  # This allows the bridge to send graceful disconnect messages (e.g., IRC QUIT)
+  # before the process exits, without blocking the main thread.
+  for i, action in ir.actions:
+    if action.name == "AppShutdown":
+      outLines.add "    runtime.dispatchShutdownAction(actionTag: " & $i & ", state: state)"
+      outLines.add "    runtime.awaitShutdownComplete(timeoutMs: 3000, completion: completion)"
+      outLines.add "    return"
+      break
   outLines.add "    runtime.shutdown()"
+  outLines.add "    completion()"
   outLines.add "  }"
   outLines.add "}"
   outLines.add ""
@@ -1661,14 +1672,16 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
     outLines.add "#if os(macOS)"
     outLines.add "@MainActor"
     outLines.add "final class GUILifecycleDelegate: NSObject, NSApplicationDelegate {"
-    outLines.add "  static var onTerminate: (() -> Void)?"
+    outLines.add "  static var onShutdown: ((@escaping () -> Void) -> Void)?"
     outLines.add ""
     outLines.add "  func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {"
     outLines.add "    true"
     outLines.add "  }"
     outLines.add ""
-    outLines.add "  func applicationWillTerminate(_ notification: Notification) {"
-    outLines.add "    GUILifecycleDelegate.onTerminate?()"
+    outLines.add "  func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {"
+    outLines.add "    guard let onShutdown = GUILifecycleDelegate.onShutdown else { return .terminateNow }"
+    outLines.add "    onShutdown { sender.reply(toApplicationShouldTerminate: true) }"
+    outLines.add "    return .terminateLater"
     outLines.add "  }"
     outLines.add "}"
     outLines.add "#endif"
@@ -1692,7 +1705,7 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
     outLines.add "        .onAppear {"
     if shouldCloseOnLastWindow:
       outLines.add "#if os(macOS)"
-      outLines.add "          GUILifecycleDelegate.onTerminate = { store.shutdown() }"
+      outLines.add "          GUILifecycleDelegate.onShutdown = { completion in store.shutdown(completion: completion) }"
       outLines.add "#endif"
     if needsAppKit:
       outLines.add "#if os(macOS)"
@@ -1731,7 +1744,6 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
       outLines.add "#endif"
     outLines.add "        }"
   outLines.add "        .onDisappear {"
-  outLines.add "          store.shutdown()"
   if hasShortcutMonitor:
     outLines.add "#if os(macOS)"
     outLines.add "          store.shortcutMonitor.stop()"
@@ -1916,12 +1928,39 @@ final class GUIRuntime {
   private var bridgeTimeoutMs = 250
   private var notifySource: DispatchSourceRead?
   private var notifyStarted = false
+  private var pollPending = false
 
   init(store: GUIStore) {
     self.store = store
   }
 
+  func dispatchShutdownAction(actionTag: UInt32, state: GUIState?) {
+    // Dispatch a shutdown action to the bridge without waiting.
+    // This gives the Nim event loop thread a chance to send QUIT messages.
+    guard let bridgePath = resolveBridgeDylibPath() else { return }
+    bridgeRuntime.maybeReload(path: bridgePath)
+    if !bridgeRuntime.load(path: bridgePath) { return }
+    let payload = makeBridgePayload(actionTag: actionTag, state: state)
+    _ = bridgeRuntime.dispatch(payload: payload)
+  }
+
+  func awaitShutdownComplete(timeoutMs: Int32, completion: @escaping () -> Void) {
+    // Wait for the Nim event loop to finish graceful shutdown on a background
+    // thread, then clean up and call completion on the main thread.
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      _ = self?.bridgeRuntime.waitShutdown(timeoutMs: timeoutMs)
+      DispatchQueue.main.async {
+        self?.shutdown()
+        completion()
+      }
+    }
+  }
+
+  private var hasShutDown = false
+
   func shutdown() {
+    guard !hasShutDown else { return }
+    hasShutDown = true
     notifySource?.cancel()
     notifySource = nil
 
@@ -1954,8 +1993,12 @@ final class GUIRuntime {
       // Drain all bytes from the pipe
       var buf = [UInt8](repeating: 0, count: 64)
       while Darwin.read(fd, &buf, buf.count) > 0 {}
+      // Coalesce rapid notifications — only enqueue one poll per run loop cycle
+      guard let self, !self.pollPending else { return }
+      self.pollPending = true
       Task { @MainActor in
-        self?.store.send(.poll)
+        self.pollPending = false
+        self.store.send(.poll)
       }
     }
     notifySource = source
@@ -2195,54 +2238,37 @@ final class GUIRuntime {
     let actionTag = UInt32(args["actionTag"]?.intValue ?? Int(guiActionTag(action)))
     let payload = makeBridgePayload(actionTag: actionTag, state: store.state)
     let correlation = UUID().uuidString
-    let timeoutMs = bridgeTimeoutMs
 
-    Task.detached { [weak self] in
-      guard let self else { return }
-      let started = Date()
+    // Run bridge dispatch synchronously on the main actor to prevent
+    // concurrent state mutations that crash SwiftUI during layout.
+    bridgeRuntime.maybeReload(path: bridgePath)
+    if !bridgeRuntime.load(path: bridgePath) {
+      logBridge("error", "failed to load bridge function table", code: "GUI_BRIDGE_ABI_MISMATCH")
+    }
+    startBridgeNotifySource()
 
-      await MainActor.run {
-        self.bridgeRuntime.maybeReload(path: bridgePath)
-        if !self.bridgeRuntime.load(path: bridgePath) {
-          self.logBridge("error", "failed to load bridge function table", code: "GUI_BRIDGE_ABI_MISMATCH")
-        }
-        self.startBridgeNotifySource()
-      }
+    let started = Date()
+    let result = bridgeRuntime.dispatch(payload: payload)
+    let elapsedMs = Date().timeIntervalSince(started) * 1000.0
+    if elapsedMs > Double(bridgeTimeoutMs) {
+      logBridge("warning", "bridge dispatch exceeded timeout (\(Int(elapsedMs))ms)", code: "GUI_BRIDGE_TIMEOUT")
+    }
 
-      let result = await MainActor.run { self.bridgeRuntime.dispatch(payload: payload) }
-      let elapsedMs = Date().timeIntervalSince(started) * 1000.0
-      if elapsedMs > Double(timeoutMs) {
-        await MainActor.run {
-          self.logBridge("warning", "bridge dispatch exceeded timeout (\(Int(elapsedMs))ms)", code: "GUI_BRIDGE_TIMEOUT")
-        }
-      }
+    if !result.diagnostics.isEmpty,
+       let text = String(data: result.diagnostics, encoding: .utf8) {
+      logBridge("info", "[\(correlation)] " + text, code: "GUI_BRIDGE_DIAGNOSTIC")
+    }
 
-      if !result.diagnostics.isEmpty,
-         let text = String(data: result.diagnostics, encoding: .utf8) {
-        await MainActor.run {
-          self.logBridge("info", "[\(correlation)] " + text, code: "GUI_BRIDGE_DIAGNOSTIC")
-        }
-      }
+    if !result.statePatch.isEmpty {
+      applyBridgeStatePatch(result.statePatch)
+    }
 
-      if !result.statePatch.isEmpty {
-        await MainActor.run {
-          self.applyBridgeStatePatch(result.statePatch)
-        }
-      }
-
-      let emittedTags = await MainActor.run {
-        self.decodeBridgeActionTags(result.emittedActions)
-      }
-      if !emittedTags.isEmpty {
-        await MainActor.run {
-          for tag in emittedTags {
-            if let emittedAction = guiActionFromTag(tag) {
-              self.store.send(emittedAction)
-            } else {
-              self.logBridge("warning", "bridge emitted unsupported action tag \(tag)", code: "GUI_BRIDGE_EMIT_TAG")
-            }
-          }
-        }
+    let emittedTags = decodeBridgeActionTags(result.emittedActions)
+    for tag in emittedTags {
+      if let emittedAction = guiActionFromTag(tag) {
+        store.send(emittedAction)
+      } else {
+        logBridge("warning", "bridge emitted unsupported action tag \(tag)", code: "GUI_BRIDGE_EMIT_TAG")
       }
     }
   }
@@ -2641,6 +2667,7 @@ final class GUIBridgeRuntime {
   func maybeReload(path: String) {}
   func dispatch(payload: Data) -> GUIBridgeDispatchResult { .empty }
   func getNotifyFd() -> Int32 { -1 }
+  func waitShutdown(timeoutMs: Int32) -> Bool { false }
 }
 """.strip() & "\n"
 
@@ -2674,5 +2701,6 @@ proc emitSwiftSources*(
   generatedFiles.add customAggregatePath
 
   let bridgeStubPath = generatedDir / "GUIBridgeSwift.generated.swift"
-  writeFile(bridgeStubPath, emitBridgeSwiftStub())
+  if not fileExists(bridgeStubPath):
+    writeFile(bridgeStubPath, emitBridgeSwiftStub())
   generatedFiles.add bridgeStubPath

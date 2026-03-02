@@ -46,4 +46,7 @@ component IrcApp {
   .sheet(isPresented: showKeybindSheet) {
     KeybindSheetPanel(isDark: isDark)
   }
+  .sheet(isPresented: showServerEditor) {
+    ServerEditorPanel(isDark: isDark)
+  }
 }

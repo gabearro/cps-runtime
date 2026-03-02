@@ -12,13 +12,11 @@ struct ChatMessageList: View {
     var body: some View {
         ScrollViewReader { proxy in
             List {
-                ForEach(0..<store.state.messages.count, id: \.self) { idx in
-                    let msg = store.state.messages[idx]
+                ForEach(store.state.messages, id: \.id) { msg in
                     Component_MessageRow(store: store, message: msg, isDark: isDark, nickColorOverrides: store.state.nickColors)
                         .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
                         .listRowBackground(Color.clear)
-                        .id(msg.id)
                 }
 
                 // Invisible bottom anchor

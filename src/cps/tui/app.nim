@@ -34,6 +34,7 @@ type
   RenderProc* = proc(width, height: int): Widget
   InputHandler* = proc(evt: InputEvent): bool
   TickHandler* = proc(): bool
+  ShutdownHandler* = proc()
 
   TuiApp* = ref object
     ## The main TUI application object.
@@ -44,6 +45,7 @@ type
     onRender*: RenderProc
     onInput*: InputHandler
     onTick*: TickHandler       ## Called every tick (for animations, etc.)
+    onShutdown*: ShutdownHandler  ## Called on Ctrl+C before teardown (for cleanup)
 
     # Rendering state
     frontBuf: CellBuffer
@@ -247,7 +249,12 @@ proc requestFullRedraw*(app: TuiApp) =
   app.fullRedraw = true
 
 proc stop*(app: TuiApp) =
-  ## Signal the app to stop.
+  ## Signal the app to stop. Calls onShutdown if set.
+  ## The main loop will drain a few event loop ticks before exiting
+  ## to allow pending I/O (e.g., IRC QUIT messages) to be sent.
+  if app.onShutdown != nil:
+    app.onShutdown()
+    app.onShutdown = nil  # Prevent double-call
   app.running = false
 
 # ============================================================
@@ -302,7 +309,7 @@ proc run*(app: TuiApp): CpsVoidFuture {.cps.} =
       for evt in events:
         # Built-in quit handler: Ctrl+C
         if evt.isCtrl('c'):
-          app.running = false
+          app.stop()
           break
 
         # Try declarative event routing first
@@ -338,6 +345,14 @@ proc run*(app: TuiApp): CpsVoidFuture {.cps.} =
           app.doRender()
         except Exception:
           discard  # Don't crash the app on render errors
+
+    # Drain event loop ticks so pending I/O completes
+    # (e.g., IRC QUIT messages triggered by onShutdown/stop).
+    # disconnect() half-closes the write side (SHUT_WR) which flushes the
+    # QUIT immediately, but we still need ticks for readLoop to see the
+    # server's ERROR/EOF and for run() to close the stream cleanly.
+    for drainIdx in 0 ..< 10:
+      await tuiWaitFrame(50)
   finally:
     app.teardown()
 

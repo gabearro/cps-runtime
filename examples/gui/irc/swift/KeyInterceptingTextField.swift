@@ -24,7 +24,15 @@ struct KeyInterceptingTextField: View {
             onTabPress: { store.send(.tabComplete) },
             onUpArrow: { store.send(.historyUp) },
             onDownArrow: { store.send(.historyDown) },
-            onTextChange: { store.send(.inputChanged) }
+            onTextChange: { store.send(.inputChanged) },
+            onEscapePress: {
+                if store.state.completionActive {
+                    store.state.completionActive = false
+                    store.state.completionSuggestions = []
+                    store.state.completionIndex = -1
+                    store.state.completionSelectIndex = -1
+                }
+            }
         )
         .frame(height: max(inputFontSize + 16, 28))
         .padding(.horizontal, 12)
@@ -51,6 +59,7 @@ private struct InterceptingTextFieldWrapper: NSViewRepresentable {
     var onUpArrow: () -> Void
     var onDownArrow: () -> Void
     var onTextChange: () -> Void
+    var onEscapePress: () -> Void
 
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
@@ -81,6 +90,7 @@ private struct InterceptingTextFieldWrapper: NSViewRepresentable {
         context.coordinator.onUpArrow = onUpArrow
         context.coordinator.onDownArrow = onDownArrow
         context.coordinator.onTextChange = onTextChange
+        context.coordinator.onEscapePress = onEscapePress
     }
 
     func makeCoordinator() -> Coordinator {
@@ -90,7 +100,8 @@ private struct InterceptingTextFieldWrapper: NSViewRepresentable {
             onTabPress: onTabPress,
             onUpArrow: onUpArrow,
             onDownArrow: onDownArrow,
-            onTextChange: onTextChange
+            onTextChange: onTextChange,
+            onEscapePress: onEscapePress
         )
     }
 
@@ -101,6 +112,7 @@ private struct InterceptingTextFieldWrapper: NSViewRepresentable {
         var onUpArrow: () -> Void
         var onDownArrow: () -> Void
         var onTextChange: () -> Void
+        var onEscapePress: () -> Void
 
         init(
             text: Binding<String>,
@@ -108,7 +120,8 @@ private struct InterceptingTextFieldWrapper: NSViewRepresentable {
             onTabPress: @escaping () -> Void,
             onUpArrow: @escaping () -> Void,
             onDownArrow: @escaping () -> Void,
-            onTextChange: @escaping () -> Void
+            onTextChange: @escaping () -> Void,
+            onEscapePress: @escaping () -> Void
         ) {
             self.text = text
             self.onSubmit = onSubmit
@@ -116,6 +129,7 @@ private struct InterceptingTextFieldWrapper: NSViewRepresentable {
             self.onUpArrow = onUpArrow
             self.onDownArrow = onDownArrow
             self.onTextChange = onTextChange
+            self.onEscapePress = onEscapePress
         }
 
         func controlTextDidChange(_ obj: Notification) {
@@ -143,6 +157,10 @@ private struct InterceptingTextFieldWrapper: NSViewRepresentable {
             }
             if commandSelector == #selector(NSResponder.moveDown(_:)) {
                 onDownArrow()
+                return true
+            }
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                onEscapePress()
                 return true
             }
             return false

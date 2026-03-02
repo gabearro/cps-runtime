@@ -22,14 +22,19 @@
 ##   nim c -r examples/tui/irc_tui.nim --reset
 
 import cps/runtime
+import cps/transform
 import cps/eventloop
 import cps/ircclient
 import cps/concurrency/channels
 import cps/io/files
+import cps/io/unix
+import cps/io/buffered
+import cps/io/streams
 import cps/irc/dcc
+import cps/bouncer/bridge
 import cps/tui
 
-import std/[strutils, times, options, os, sequtils, posix, algorithm]
+import std/[strutils, times, options, os, sequtils, posix, algorithm, json, tables]
 
 # ============================================================
 # Clipboard
@@ -96,6 +101,8 @@ type
     logDir*: string
     loggingEnabled*: bool
     themeName*: string
+    bouncerPassword*: string  ## Password for bouncer authentication (empty = no auth)
+    quitMessage*: string      ## QUIT reason shown to other users (default "Goodbye")
 
 proc configDir(): string =
   getConfigDir() / "cps-irc"
@@ -150,6 +157,14 @@ proc serializeConfig(cfg: AppConfig): string =
     lines.add("[theme]")
     lines.add("name = " & cfg.themeName)
     lines.add("")
+  if cfg.bouncerPassword.len > 0:
+    lines.add("[bouncer]")
+    lines.add("password = " & cfg.bouncerPassword)
+    lines.add("")
+  if cfg.quitMessage.len > 0:
+    lines.add("[quit]")
+    lines.add("message = " & cfg.quitMessage)
+    lines.add("")
   lines.join("\n")
 
 proc parseConfig(data: string): AppConfig =
@@ -179,7 +194,7 @@ proc parseConfig(data: string): AppConfig =
           port: 6667,
           autoconnect: false,
         )
-      elif section in ["ignore", "highlights", "logging", "theme"]:
+      elif section in ["ignore", "highlights", "logging", "theme", "bouncer", "quit"]:
         currentSection = section
       continue
     let eqIdx = line.find('=')
@@ -222,6 +237,14 @@ proc parseConfig(data: string): AppConfig =
     elif currentSection == "theme":
       case key
       of "name": result.themeName = val
+      else: discard
+    elif currentSection == "bouncer":
+      case key
+      of "password": result.bouncerPassword = val
+      else: discard
+    elif currentSection == "quit":
+      case key
+      of "message": result.quitMessage = val
       else: discard
   # Flush last server entry
   if inServer and currentServer.host.len > 0:
@@ -663,6 +686,17 @@ type
     active: bool
     transfer: DccTransfer
 
+  ConnectionMode = enum
+    cmDirect    ## Direct IRC connection (current behavior)
+    cmBouncer   ## Connected through bouncer
+
+  BouncerSession = ref object
+    stream: UnixStream
+    reader: BufferedReader
+    serverNames: seq[string]     ## Servers available from bouncer
+    lastSeenIds: Table[string, int64]  ## "server:channel" → last msg id
+    connected: bool
+
   IrcChatState = ref object
     client: IrcClient
     channels: seq[Channel]
@@ -676,6 +710,9 @@ type
     batches: seq[BatchAccumulator]  ## Active batch accumulators
     serverLabel: string      ## Short label for multi-server (e.g., "libera")
     dccManager: DccManager   ## DCC file transfer manager
+    connMode: ConnectionMode        ## cmDirect or cmBouncer
+    bouncerServerName: string       ## Bouncer server name (e.g. "libera")
+    bouncerEvents: AsyncChannel[IrcEvent]  ## Bouncer-sourced events (only in cmBouncer mode)
 
   NickComplete = object
     ## State for @-mention autocomplete.
@@ -746,6 +783,7 @@ type
     lastPingTime: float          ## For periodic lag pings
     pasteConfirm: PasteConfirm   ## Multi-line paste confirmation
     dccConfirm: DccConfirm       ## DCC transfer confirmation
+    bouncerSession: BouncerSession  ## Shared bouncer connection (nil = not connected)
 
 # ============================================================
 # Multi-server convenience: active chat accessor
@@ -1464,12 +1502,17 @@ proc dismissQuickSwitcher(ms: MasterState) =
 
 proc processIrcEventsForChat(ms: MasterState, cs: IrcChatState): bool =
   ## Process IRC events for a single server connection.
-  if cs == nil or cs.client == nil: return false
+  if cs == nil: return false
+  if cs.connMode == cmDirect and cs.client == nil: return false
+  if cs.connMode == cmBouncer and cs.bouncerEvents == nil: return false
   var changed = false
   var eventsThisTick = 0
   const maxEventsPerTick = 200  # Prevent processing from starving the render loop
   while eventsThisTick < maxEventsPerTick:
-    let evtOpt = cs.client.events.tryRecv()
+    let evtOpt = if cs.connMode == cmBouncer:
+        cs.bouncerEvents.tryRecv()
+      else:
+        cs.client.events.tryRecv()
     if evtOpt.isNone: break
     changed = true
     inc eventsThisTick
@@ -1533,18 +1576,22 @@ proc processIrcEventsForChat(ms: MasterState, cs: IrcChatState): bool =
     try:
       case evt.kind
       of iekConnected:
-        cs.myNick = cs.client.currentNick
-        cs.addServerMsg("Connected as " & cs.myNick)
-        ms.notifications.notify("Connected to " & cs.client.config.host, nlSuccess)
-        # On reconnect, re-join all open IRC channels that aren't in autoJoinChannels
-        # (autoJoinChannels are already re-joined by the client on 001).
-        # Also clear stale user lists — they'll be repopulated by NAMES replies.
-        for i in 0 ..< cs.channels.len:
-          let chName = cs.channels[i].name
-          if chName != ServerChannel and chName.isChannel():
-            cs.channels[i].users = @[]
-            if chName notin cs.client.config.autoJoinChannels:
-              discard cs.client.joinChannel(chName)
+        if cs.connMode == cmBouncer:
+          cs.addServerMsg("Connected as " & cs.myNick)
+          ms.notifications.notify("Connected to " & cs.bouncerServerName & " (bouncer)", nlSuccess)
+        else:
+          cs.myNick = cs.client.currentNick
+          cs.addServerMsg("Connected as " & cs.myNick)
+          ms.notifications.notify("Connected to " & cs.client.config.host, nlSuccess)
+          # On reconnect, re-join all open IRC channels that aren't in autoJoinChannels
+          # (autoJoinChannels are already re-joined by the client on 001).
+          # Also clear stale user lists — they'll be repopulated by NAMES replies.
+          for i in 0 ..< cs.channels.len:
+            let chName = cs.channels[i].name
+            if chName != ServerChannel and chName.isChannel():
+              cs.channels[i].users = @[]
+              if chName notin cs.client.config.autoJoinChannels:
+                discard cs.client.joinChannel(chName)
       of iekDisconnected:
         cs.addServerMsg("Disconnected: " & evt.reason)
         ms.notifications.notify("Disconnected", nlWarning)
@@ -1559,7 +1606,7 @@ proc processIrcEventsForChat(ms: MasterState, cs: IrcChatState): bool =
         if source.toLowerAscii in ms.config.ignoreList.mapIt(it.toLowerAscii):
           discard
         # echo-message: skip if this is our own message echoed back
-        elif source == cs.myNick and "echo-message" in cs.client.enabledCaps:
+        elif source == cs.myNick and cs.client != nil and "echo-message" in cs.client.enabledCaps:
           discard  # We already displayed it when sending
         else:
           let msgText = stripIrcFormatting(evt.pmText)
@@ -1706,7 +1753,8 @@ proc processIrcEventsForChat(ms: MasterState, cs: IrcChatState): bool =
         of RPL_ENDOFMOTD, ERR_NOMOTD:
           cs.addServerMsg("--- End of MOTD ---")
         of ERR_NICKNAMEINUSE:
-          cs.myNick = cs.client.currentNick
+          if cs.client != nil:
+            cs.myNick = cs.client.currentNick
           cs.addServerMsg("Nick in use, trying " & cs.myNick)
         of RPL_WHOISUSER:
           if evt.numParams.len >= 6:
@@ -1957,14 +2005,326 @@ proc processIrcEvents(ms: MasterState): bool =
   return changed
 
 # ============================================================
+# Bouncer integration helpers
+# ============================================================
+
+proc sendBouncerCmd(session: BouncerSession, msg: BouncerMsg) =
+  ## Fire-and-forget write a command to the bouncer socket.
+  ## Non-CPS: writes synchronously via POSIX send() on the Unix socket fd.
+  if session == nil or not session.connected: return
+  let line = buildBouncerLine(msg)
+  var offset = 0
+  while offset < line.len:
+    let n = posix.send(session.stream.fd, cast[pointer](unsafeAddr line[offset]),
+                       line.len - offset, cint(0))
+    if n <= 0: break
+    offset += n
+
+proc findChatByBouncerServer(ms: MasterState, serverName: string): IrcChatState =
+  ## Find the IrcChatState for a given bouncer server name.
+  for cs in ms.chats:
+    if cs.connMode == cmBouncer and cs.bouncerServerName == serverName:
+      return cs
+  return nil
+
+proc channelUpdateNamesLine(ch: ChannelState): string =
+  ## Build a NAMES-style string from a ChannelState's users table.
+  ## Non-CPS helper to avoid Table iteration inside CPS procs.
+  var parts: seq[string] = @[]
+  for nick, prefix in ch.users:
+    parts.add(prefix & nick)
+  result = parts.join(" ")
+
+proc bouncerEventReader(ms: MasterState, session: BouncerSession): CpsVoidFuture {.cps.} =
+  ## Reads JSON lines from bouncer socket, converts to IrcEvents,
+  ## routes to the correct IrcChatState.bouncerEvents channel.
+  while session.connected:
+    let line = await session.reader.readLine("\n")
+    if line.len == 0:
+      # Disconnected from bouncer
+      session.connected = false
+      break
+
+    try:
+      let msg = parseBouncerMsg(line)
+      case msg.kind
+      of bmkMessage:
+        let evtOpt = bouncerMsgToIrcEvent(msg.msgData, msg.msgServer)
+        if evtOpt.isSome:
+          let cs = ms.findChatByBouncerServer(msg.msgServer)
+          if cs != nil and cs.bouncerEvents != nil:
+            discard cs.bouncerEvents.send(evtOpt.get())
+          # Track last seen ID
+          let key = msg.msgServer & ":" & msg.msgData.target.toLowerAscii()
+          session.lastSeenIds[key] = msg.msgData.id
+
+      of bmkServerConnected:
+        let cs = ms.findChatByBouncerServer(msg.scServer)
+        if cs != nil and cs.bouncerEvents != nil:
+          cs.myNick = msg.scNick
+          discard cs.bouncerEvents.send(IrcEvent(kind: iekConnected))
+
+      of bmkServerDisconnected:
+        let cs = ms.findChatByBouncerServer(msg.sdServer)
+        if cs != nil and cs.bouncerEvents != nil:
+          discard cs.bouncerEvents.send(IrcEvent(kind: iekDisconnected,
+            reason: msg.sdReason))
+
+      of bmkChannelUpdate:
+        let cs = ms.findChatByBouncerServer(msg.cuServer)
+        if cs != nil and cs.bouncerEvents != nil:
+          # Synthesize topic event if topic changed
+          if msg.cuChannel.topic.len > 0:
+            discard cs.bouncerEvents.send(IrcEvent(kind: iekTopic,
+              topicChannel: msg.cuChannel.name,
+              topicText: msg.cuChannel.topic,
+              topicBy: msg.cuChannel.topicSetBy))
+          # Synthesize NAMES for user list update
+          var namesLine = channelUpdateNamesLine(msg.cuChannel)
+          if namesLine.len > 0:
+            discard cs.bouncerEvents.send(IrcEvent(kind: iekNumeric,
+              numCode: 353,
+              numParams: @["=", msg.cuChannel.name, namesLine]))
+            discard cs.bouncerEvents.send(IrcEvent(kind: iekNumeric,
+              numCode: 366,
+              numParams: @[msg.cuChannel.name, "End of /NAMES list."]))
+
+      of bmkNickChanged:
+        let cs = ms.findChatByBouncerServer(msg.ncServer)
+        if cs != nil and cs.bouncerEvents != nil:
+          discard cs.bouncerEvents.send(IrcEvent(kind: iekNick,
+            nickOld: msg.ncOldNick,
+            nickNew: msg.ncNewNick))
+          if msg.ncOldNick == cs.myNick:
+            cs.myNick = msg.ncNewNick
+
+      of bmkReplayEnd:
+        # Replay complete — update lastSeenIds
+        let repKey = msg.reServer & ":" & msg.reChannel.toLowerAscii()
+        if msg.reNewestId > 0:
+          session.lastSeenIds[repKey] = msg.reNewestId
+
+      of bmkServerAdded:
+        # New server added via BouncerServ — create a chat for it
+        let addedCs = ms.findChatByBouncerServer(msg.saServer)
+        if addedCs == nil:
+          let newCs = IrcChatState(
+            channels: @[],
+            activeChannel: 0,
+            splitView: newSplitView(dirHorizontal, 0.2, minFirst = 12, minSecond = 30),
+            statusBar: newStatusBar(style(clBlack, clCyan)),
+            myNick: "?",
+            serverLabel: msg.saServer,
+            dccManager: newDccManager(downloadDir = "downloads", maxConcurrent = 3),
+            connMode: cmBouncer,
+            bouncerServerName: msg.saServer,
+            bouncerEvents: newAsyncChannel[IrcEvent](64),
+          )
+          var serverCh = Channel(
+            name: ServerChannel,
+            messages: newScrollableTextView(maxLines = 500, autoScroll = true),
+            users: @[], topic: "Server messages", unread: 0,
+          )
+          serverCh.messages.showTimestamps = true
+          newCs.channels = @[serverCh]
+          newCs.addServerMsg("Server '" & msg.saServer & "' added via bouncer — connecting...")
+          ms.addChat(newCs)
+
+      of bmkServerRemoved:
+        # Server removed via BouncerServ — remove the chat
+        let rmChatCount = ms.chats.len
+        for ri in countdown(rmChatCount - 1, 0):
+          let rcs = ms.chats[ri]
+          if rcs.connMode == cmBouncer and rcs.bouncerServerName == msg.srServer:
+            if rcs.bouncerEvents != nil:
+              rcs.bouncerEvents.close()
+            ms.removeChat(ri)
+            break
+
+      of bmkChannelDetach:
+        let detachCs = ms.findChatByBouncerServer(msg.cdServer)
+        if detachCs != nil:
+          let detachIdx = detachCs.findChannel(msg.cdChannel)
+          let detachTarget = if detachIdx >= 0: msg.cdChannel else: ServerChannel
+          detachCs.addSystem(detachTarget,
+            "Channel " & msg.cdChannel & " detached")
+
+      of bmkChannelAttach:
+        let attachCs = ms.findChatByBouncerServer(msg.caServer)
+        if attachCs != nil:
+          let attachIdx = attachCs.findChannel(msg.caChannel)
+          let attachTarget = if attachIdx >= 0: msg.caChannel else: ServerChannel
+          attachCs.addSystem(attachTarget,
+            "Channel " & msg.caChannel & " reattached")
+          # Request replay for missed messages
+          let attachKey = msg.caServer & ":" & msg.caChannel.toLowerAscii()
+          let sinceId = session.lastSeenIds.getOrDefault(attachKey, 0'i64)
+          sendBouncerCmd(session, BouncerMsg(kind: bmkReplay,
+            replayServer: msg.caServer,
+            replayChannel: msg.caChannel,
+            replaySinceId: sinceId,
+            replayLimit: 500))
+
+      of bmkError:
+        # Show error on all bouncer chats
+        let chatCount = ms.chats.len
+        for i in 0 ..< chatCount:
+          let cs = ms.chats[i]
+          if cs.connMode == cmBouncer and cs.bouncerEvents != nil:
+            discard cs.bouncerEvents.send(IrcEvent(kind: iekNotice,
+              pmSource: "bouncer",
+              pmTarget: ServerChannel,
+              pmText: "[bouncer error] " & msg.errText,
+              pmPrefix: IrcPrefix(nick: "bouncer")))
+            break  # Only show on first bouncer chat
+
+      else:
+        discard
+    except CatchableError:
+      discard  # Skip malformed messages
+
+proc connectBouncerAsync(ms: MasterState): CpsVoidFuture {.cps.} =
+  ## Try to discover and connect to a running bouncer.
+  ## Creates IrcChatState entries for bouncer-managed servers.
+  let socketPath = discoverBouncer()
+  if socketPath.len == 0: return
+
+  var stream: UnixStream
+  try:
+    stream = await unixConnect(socketPath)
+  except CatchableError:
+    return  # Can't connect — fall through to direct mode
+
+  let reader = newBufferedReader(stream.AsyncStream)
+  let session = BouncerSession(
+    stream: stream,
+    reader: reader,
+    serverNames: @[],
+    lastSeenIds: initTable[string, int64](),
+    connected: true,
+  )
+
+  # Send hello (with password if configured)
+  let helloMsg = BouncerMsg(kind: bmkHello,
+    helloVersion: 1,
+    helloClientName: "cps-tui",
+    helloPassword: ms.config.bouncerPassword)
+  let helloLine = buildBouncerLine(helloMsg)
+  try:
+    await stream.write(helloLine)
+  except CatchableError:
+    stream.close()
+    return
+
+  # Read hello_ok
+  let helloResp = await reader.readLine("\n")
+  if helloResp.len == 0:
+    stream.close()
+    return
+
+  try:
+    let resp = parseBouncerMsg(helloResp)
+    if resp.kind != bmkHelloOk:
+      stream.close()
+      return
+    session.serverNames = resp.helloOkServers
+  except CatchableError:
+    stream.close()
+    return
+
+  if session.serverNames.len == 0:
+    stream.close()
+    return
+
+  ms.bouncerSession = session
+
+  # Read server_state messages for each server
+  let serverCount = session.serverNames.len
+  for i in 0 ..< serverCount:
+    let stateLine = await reader.readLine("\n")
+    if stateLine.len == 0: break
+
+    try:
+      let stateMsg = parseBouncerMsg(stateLine)
+      if stateMsg.kind != bmkServerState: continue
+
+      let serverName = stateMsg.ssServer
+      let nick = stateMsg.ssNick
+
+      # Create IrcChatState for this bouncer server
+      let cs = IrcChatState(
+        channels: @[],
+        activeChannel: 0,
+        splitView: newSplitView(dirHorizontal, 0.2, minFirst = 12, minSecond = 30),
+        statusBar: newStatusBar(style(clBlack, clCyan)),
+        myNick: nick,
+        serverLabel: serverName,
+        dccManager: newDccManager(downloadDir = "downloads", maxConcurrent = 3),
+        connMode: cmBouncer,
+        bouncerServerName: serverName,
+        bouncerEvents: newAsyncChannel[IrcEvent](64),
+      )
+
+      # Server console
+      var serverCh = Channel(
+        name: ServerChannel,
+        messages: newScrollableTextView(maxLines = 500, autoScroll = true),
+        users: @[], topic: "Server messages", unread: 0,
+      )
+      serverCh.messages.showTimestamps = true
+      cs.channels = @[serverCh]
+
+      if stateMsg.ssConnected:
+        cs.addServerMsg("Connected to " & serverName & " via bouncer as " & nick)
+      else:
+        cs.addServerMsg("Server " & serverName & " (via bouncer) — not connected")
+
+      # Synthesize join/topic/names events from channel state
+      let events = channelStateToIrcEvents(nick, stateMsg.ssChannels)
+      for evt in events:
+        discard cs.bouncerEvents.send(evt)
+
+      ms.addChat(cs)
+
+      # Request replay for each channel
+      let chanCount = stateMsg.ssChannels.len
+      for ci in 0 ..< chanCount:
+        let ch = stateMsg.ssChannels[ci]
+        let key = serverName & ":" & ch.name.toLowerAscii()
+        let sinceId = session.lastSeenIds.getOrDefault(key, 0'i64)
+        let replayMsg = BouncerMsg(kind: bmkReplay,
+          replayServer: serverName,
+          replayChannel: ch.name,
+          replaySinceId: sinceId,
+          replayLimit: 500)
+        sendBouncerCmd(session, replayMsg)
+
+    except CatchableError:
+      continue
+
+  # Start background event reader
+  discard bouncerEventReader(ms, session)
+
+  ms.screen = asChat
+  ms.tuiApp.fullRedraw = true
+
+# ============================================================
 # Connect to a server (transition to chat)
 # ============================================================
 
 proc connectToServer(ms: MasterState, server: ServerEntry) =
   # Check if already connected to this server — switch to it instead
   for i, cs in ms.chats:
-    if cs.client.config.host == server.host and
-       cs.client.config.port == server.port:
+    if cs.connMode == cmBouncer:
+      # Bouncer-managed servers are matched by server label
+      if cs.bouncerServerName.toLowerAscii == server.name.toLowerAscii or
+         cs.bouncerServerName.toLowerAscii == server.host.split('.')[^2].toLowerAscii:
+        ms.activeChat = i
+        ms.screen = asChat
+        ms.tuiApp.fullRedraw = true
+        return
+    elif cs.client != nil and cs.client.config.host == server.host and
+         cs.client.config.port == server.port:
       ms.activeChat = i
       ms.screen = asChat
       ms.tuiApp.fullRedraw = true
@@ -1980,6 +2340,8 @@ proc connectToServer(ms: MasterState, server: ServerEntry) =
   config.autoReconnect = true
   config.reconnectDelayMs = 5000
   config.ctcpVersion = "CPS IRC TUI 1.0"
+  if ms.config.quitMessage.len > 0:
+    config.quitMessage = ms.config.quitMessage
   config.useTls = server.useTls
   if server.saslUsername.len > 0:
     config.saslUsername = server.saslUsername
@@ -2032,38 +2394,57 @@ proc handleChatCommand(ms: MasterState, cmd: string) =
 
   case command
   of "/quit":
-    ms.running = false
-    for chat in ms.chats:
-      if chat.client != nil:
-        discard chat.client.disconnect()
+    # Triggers onShutdown callback (sends QUIT) + drain ticks in app.nim
     ms.tuiApp.stop()
   of "/help":
     ms.helpDialog.toggle()
   of "/part":
     let ch = cs.currentChannel.name
     if ch != ServerChannel and ch.isChannel():
-      discard cs.client.partChannel(ch, if parts.len > 1: parts[1] else: "")
+      if cs.connMode == cmBouncer:
+        sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkPart,
+          partServer: cs.bouncerServerName,
+          partChannel: ch,
+          partReason: if parts.len > 1: parts[1] else: ""))
+      else:
+        discard cs.client.partChannel(ch, if parts.len > 1: parts[1] else: "")
     else:
       cs.addError(ch, "Cannot part " & ch)
   of "/join":
     if parts.len > 1:
       let target = parts[1].strip()
       if target.len > 0:
-        discard cs.client.joinChannel(target)
+        if cs.connMode == cmBouncer:
+          sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkJoin,
+            joinServer: cs.bouncerServerName,
+            joinChannel: target))
+        else:
+          discard cs.client.joinChannel(target)
       else:
         cs.addError(cs.currentChannel.name, "Usage: /join #channel")
     else:
       cs.addError(cs.currentChannel.name, "Usage: /join #channel")
   of "/nick":
     if parts.len > 1:
-      discard cs.client.changeNick(parts[1].strip())
+      if cs.connMode == cmBouncer:
+        sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkNick,
+          nickServer: cs.bouncerServerName,
+          nickNewNick: parts[1].strip()))
+      else:
+        discard cs.client.changeNick(parts[1].strip())
     else:
       cs.addError(cs.currentChannel.name, "Usage: /nick newnick")
   of "/msg":
     if parts.len > 1:
       let msgParts = parts[1].split(' ', 1)
       if msgParts.len >= 2:
-        discard cs.client.privMsg(msgParts[0], msgParts[1])
+        if cs.connMode == cmBouncer:
+          sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkSendPrivmsg,
+            spServer: cs.bouncerServerName,
+            spTarget: msgParts[0],
+            spText: msgParts[1]))
+        else:
+          discard cs.client.privMsg(msgParts[0], msgParts[1])
         cs.addMsg(msgParts[0], cs.myNick, msgParts[1])
         # Switch to the DM channel
         let idx = cs.findChannel(msgParts[0])
@@ -2082,7 +2463,13 @@ proc handleChatCommand(ms: MasterState, cmd: string) =
         let idx = cs.getOrCreateChannel(target)
         cs.switchChannel(idx)
         if queryParts.len >= 2 and queryParts[1].len > 0:
-          discard cs.client.privMsg(target, queryParts[1])
+          if cs.connMode == cmBouncer:
+            sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkSendPrivmsg,
+              spServer: cs.bouncerServerName,
+              spTarget: target,
+              spText: queryParts[1]))
+          else:
+            discard cs.client.privMsg(target, queryParts[1])
           cs.addMsg(target, cs.myNick, queryParts[1])
       else:
         cs.addError(cs.currentChannel.name, "Usage: /query nick [message]")
@@ -2091,22 +2478,44 @@ proc handleChatCommand(ms: MasterState, cmd: string) =
   of "/me":
     let ch = cs.currentChannel.name
     if parts.len > 1 and ch != ServerChannel:
-      discard cs.client.ctcpSend(ch, "ACTION", parts[1])
+      if cs.connMode == cmBouncer:
+        # ACTION is sent as a PRIVMSG with CTCP wrapping
+        sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkSendPrivmsg,
+          spServer: cs.bouncerServerName,
+          spTarget: ch,
+          spText: "\x01ACTION " & parts[1] & "\x01"))
+      else:
+        discard cs.client.ctcpSend(ch, "ACTION", parts[1])
       cs.addAction(ch, cs.myNick, parts[1])
     else:
       cs.addError(ch, "Usage: /me action text")
   of "/topic":
     let ch = cs.currentChannel.name
     if ch.isChannel():
-      if parts.len > 1:
-        discard cs.client.sendMessage("TOPIC", ch, parts[1])
+      if cs.connMode == cmBouncer:
+        if parts.len > 1:
+          sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkRaw,
+            rawServer: cs.bouncerServerName,
+            rawLine: "TOPIC " & ch & " :" & parts[1]))
+        else:
+          sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkRaw,
+            rawServer: cs.bouncerServerName,
+            rawLine: "TOPIC " & ch))
       else:
-        discard cs.client.sendMessage("TOPIC", ch)
+        if parts.len > 1:
+          discard cs.client.sendMessage("TOPIC", ch, parts[1])
+        else:
+          discard cs.client.sendMessage("TOPIC", ch)
     else:
       cs.addError(ch, "Not a channel")
   of "/raw":
     if parts.len > 1:
-      discard cs.client.sendMessage(parts[1])
+      if cs.connMode == cmBouncer:
+        sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkRaw,
+          rawServer: cs.bouncerServerName,
+          rawLine: parts[1]))
+      else:
+        discard cs.client.sendMessage(parts[1])
       cs.addServerMsg(">>> " & parts[1])
   of "/server":
     if parts.len > 1:
@@ -2183,7 +2592,10 @@ proc handleChatCommand(ms: MasterState, cmd: string) =
             var lines: seq[string] = @[]
             for i, chat in ms.chats:
               let marker = if i == ms.activeChat: " *" else: ""
-              lines.add("  " & $(i+1) & ". " & chat.serverLabel & " (" & chat.client.config.host & ")" & marker)
+              let hostInfo = if chat.connMode == cmBouncer: "bouncer:" & chat.bouncerServerName
+                            elif chat.client != nil: chat.client.config.host
+                            else: "?"
+              lines.add("  " & $(i+1) & ". " & chat.serverLabel & " (" & hostInfo & ")" & marker)
             cs.addSystem(cs.currentChannel.name, "Connected servers:\n" & lines.join("\n"))
       else:
         cs.addError(cs.currentChannel.name, "Usage: /server list|add|remove|connect|switch <name>")
@@ -2193,35 +2605,62 @@ proc handleChatCommand(ms: MasterState, cmd: string) =
     if parts.len > 1:
       let target = parts[1].strip()
       if target.len > 0:
-        discard cs.client.sendMessage("WHOIS", target, target)
+        if cs.connMode == cmBouncer:
+          sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkRaw,
+            rawServer: cs.bouncerServerName,
+            rawLine: "WHOIS " & target & " " & target))
+        else:
+          discard cs.client.sendMessage("WHOIS", target, target)
       else:
         cs.addError(cs.currentChannel.name, "Usage: /whois nick")
     else:
       cs.addError(cs.currentChannel.name, "Usage: /whois nick")
   of "/mode":
     let ch = cs.currentChannel.name
-    if parts.len > 1:
-      let args = parts[1].strip().split(' ')
-      if args.len == 1 and args[0].isChannel():
-        discard cs.client.sendMessage("MODE", args[0])
-      elif args.len >= 1:
-        let modeArgs = @[ch] & args
-        case modeArgs.len
-        of 1: discard cs.client.sendMessage("MODE", modeArgs[0])
-        of 2: discard cs.client.sendMessage("MODE", modeArgs[0], modeArgs[1])
-        else: discard cs.client.sendMessage("MODE", modeArgs[0], modeArgs[1], modeArgs[2..^1].join(" "))
-    else:
-      if ch.isChannel():
-        discard cs.client.sendMessage("MODE", ch)
+    if cs.connMode == cmBouncer:
+      if parts.len > 1:
+        sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkRaw,
+          rawServer: cs.bouncerServerName,
+          rawLine: "MODE " & parts[1].strip()))
+      elif ch.isChannel():
+        sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkRaw,
+          rawServer: cs.bouncerServerName,
+          rawLine: "MODE " & ch))
       else:
         cs.addError(ch, "Usage: /mode [channel] [modes] [params]")
-  of "/away":
-    if parts.len > 1:
-      discard cs.client.sendMessage("AWAY", parts[1])
     else:
-      discard cs.client.sendMessage("AWAY", "Away")
+      if parts.len > 1:
+        let args = parts[1].strip().split(' ')
+        if args.len == 1 and args[0].isChannel():
+          discard cs.client.sendMessage("MODE", args[0])
+        elif args.len >= 1:
+          let modeArgs = @[ch] & args
+          case modeArgs.len
+          of 1: discard cs.client.sendMessage("MODE", modeArgs[0])
+          of 2: discard cs.client.sendMessage("MODE", modeArgs[0], modeArgs[1])
+          else: discard cs.client.sendMessage("MODE", modeArgs[0], modeArgs[1], modeArgs[2..^1].join(" "))
+      else:
+        if ch.isChannel():
+          discard cs.client.sendMessage("MODE", ch)
+        else:
+          cs.addError(ch, "Usage: /mode [channel] [modes] [params]")
+  of "/away":
+    if cs.connMode == cmBouncer:
+      let awayMsg = if parts.len > 1: parts[1] else: "Away"
+      sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkAway,
+        awayServer: cs.bouncerServerName,
+        awayMessage: awayMsg))
+    else:
+      if parts.len > 1:
+        discard cs.client.sendMessage("AWAY", parts[1])
+      else:
+        discard cs.client.sendMessage("AWAY", "Away")
   of "/back":
-    discard cs.client.sendMessage("AWAY")
+    if cs.connMode == cmBouncer:
+      sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkBack,
+        backServer: cs.bouncerServerName))
+    else:
+      discard cs.client.sendMessage("AWAY")
   of "/ignore":
     if parts.len > 1:
       let nick = parts[1].strip().toLowerAscii
@@ -2335,7 +2774,12 @@ proc handleChatCommand(ms: MasterState, cmd: string) =
   of "/monitor":
     if parts.len > 1:
       let sub = parts[1].strip()
-      discard cs.client.sendMessage("MONITOR", sub)
+      if cs.connMode == cmBouncer:
+        sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkRaw,
+          rawServer: cs.bouncerServerName,
+          rawLine: "MONITOR " & sub))
+      else:
+        discard cs.client.sendMessage("MONITOR", sub)
       cs.addSystem(cs.currentChannel.name, "MONITOR " & sub)
     else:
       cs.addError(cs.currentChannel.name, "Usage: /monitor + nick1,nick2 | - nick1 | C | L | S")
@@ -2349,8 +2793,9 @@ proc handleChatCommand(ms: MasterState, cmd: string) =
       cs.addSystem(cs.currentChannel.name, "No events received yet")
     else:
       cs.addSystem(cs.currentChannel.name, "Event counts: " & lines.join(", "))
-    # Also show caps
-    if cs.client.enabledCaps.len > 0:
+    if cs.connMode == cmBouncer:
+      cs.addSystem(cs.currentChannel.name, "Mode: bouncer (" & cs.bouncerServerName & ")")
+    elif cs.client != nil and cs.client.enabledCaps.len > 0:
       cs.addSystem(cs.currentChannel.name, "Enabled caps: " & cs.client.enabledCaps.join(", "))
   of "/close":
     let chName = if parts.len > 1: parts[1].strip() else: cs.currentChannel.name
@@ -2358,7 +2803,13 @@ proc handleChatCommand(ms: MasterState, cmd: string) =
       cs.addError(chName, "Cannot close server window")
     else:
       if chName.isChannel():
-        discard cs.client.partChannel(chName, "")
+        if cs.connMode == cmBouncer:
+          sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkPart,
+            partServer: cs.bouncerServerName,
+            partChannel: chName,
+            partReason: ""))
+        else:
+          discard cs.client.partChannel(chName, "")
       cs.removeChannel(chName)
   of "/accept":
     let nick = if parts.len > 1: parts[1].strip() else: ""
@@ -2400,7 +2851,12 @@ proc handleChatCommand(ms: MasterState, cmd: string) =
   of "/clear":
     cs.currentChannel.messages.clear()
   of "/disconnect":
-    discard cs.client.disconnect()
+    if cs.connMode == cmBouncer:
+      sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkQuit,
+        quitServer: cs.bouncerServerName,
+        quitReason: "Client disconnecting"))
+    else:
+      discard cs.client.disconnect()
     if ms.chats.len > 1:
       # Remove this server from multi-server list
       let idx = ms.chats.find(cs)
@@ -2410,6 +2866,72 @@ proc handleChatCommand(ms: MasterState, cmd: string) =
     else:
       ms.screen = asServerList
       ms.tuiApp.fullRedraw = true
+  of "/bouncer":
+    # Send commands to BouncerServ (works in bouncer mode only)
+    if cs.connMode != cmBouncer:
+      cs.addError(cs.currentChannel.name, "Not connected via bouncer. Use /bouncer only with bouncer connections.")
+    elif ms.bouncerSession == nil or not ms.bouncerSession.connected:
+      cs.addError(cs.currentChannel.name, "Bouncer session not connected.")
+    else:
+      let bouncerText = if parts.len > 1: parts[1] else: "help"
+      sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkSendPrivmsg,
+        spServer: cs.bouncerServerName,
+        spTarget: "BouncerServ",
+        spText: bouncerText))
+  of "/detach":
+    # Shortcut: /detach [#channel] — detach a channel via BouncerServ
+    if cs.connMode != cmBouncer:
+      cs.addError(cs.currentChannel.name, "Not connected via bouncer.")
+    elif ms.bouncerSession == nil or not ms.bouncerSession.connected:
+      cs.addError(cs.currentChannel.name, "Bouncer session not connected.")
+    else:
+      let detachChan = if parts.len > 1: parts[1].strip()
+                       else: cs.currentChannel.name
+      if not detachChan.isChannel():
+        cs.addError(cs.currentChannel.name, "Can only detach channels (not DMs/server).")
+      else:
+        sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkSendPrivmsg,
+          spServer: cs.bouncerServerName,
+          spTarget: "BouncerServ",
+          spText: "channel update " & cs.bouncerServerName & " " & detachChan & " -detached"))
+  of "/attach":
+    # Shortcut: /attach [#channel] — reattach a channel via BouncerServ
+    if cs.connMode != cmBouncer:
+      cs.addError(cs.currentChannel.name, "Not connected via bouncer.")
+    elif ms.bouncerSession == nil or not ms.bouncerSession.connected:
+      cs.addError(cs.currentChannel.name, "Bouncer session not connected.")
+    else:
+      let attachChan = if parts.len > 1: parts[1].strip()
+                       else: cs.currentChannel.name
+      if not attachChan.isChannel():
+        cs.addError(cs.currentChannel.name, "Can only attach channels (not DMs/server).")
+      else:
+        sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkSendPrivmsg,
+          spServer: cs.bouncerServerName,
+          spTarget: "BouncerServ",
+          spText: "channel update " & cs.bouncerServerName & " " & attachChan & " -attached"))
+  of "/set":
+    if parts.len > 1:
+      let setParts = parts[1].strip().split(' ', 1)
+      case setParts[0].toLowerAscii
+      of "quit_message", "quitmessage", "quit":
+        if setParts.len > 1:
+          ms.config.quitMessage = setParts[1].strip()
+          # Update all connected clients
+          for chat in ms.chats:
+            if chat.client != nil:
+              chat.client.config.quitMessage = ms.config.quitMessage
+          saveConfig(ms.config)
+          cs.addSystem(cs.currentChannel.name, "Quit message set to: " & ms.config.quitMessage)
+        else:
+          let current = if ms.config.quitMessage.len > 0: ms.config.quitMessage else: "Goodbye"
+          cs.addSystem(cs.currentChannel.name, "Quit message: " & current)
+      else:
+        cs.addError(cs.currentChannel.name, "Unknown setting: " & setParts[0] & ". Available: quit_message")
+    else:
+      cs.addSystem(cs.currentChannel.name, "Usage: /set <setting> [value]")
+      cs.addSystem(cs.currentChannel.name, "  quit_message - QUIT reason shown to others (current: " &
+        (if ms.config.quitMessage.len > 0: ms.config.quitMessage else: "Goodbye") & ")")
   else:
     cs.addError(cs.currentChannel.name, "Unknown command: " & command)
 
@@ -2428,7 +2950,13 @@ proc handleChatSend(ms: MasterState) =
       for line in lines:
         let stripped = line.strip(chars = {'\r'})
         if stripped.len > 0:
-          discard cs.client.privMsg(ch, stripped)
+          if cs.connMode == cmBouncer:
+            sendBouncerCmd(ms.bouncerSession, BouncerMsg(kind: bmkSendPrivmsg,
+              spServer: cs.bouncerServerName,
+              spTarget: ch,
+              spText: stripped))
+          else:
+            discard cs.client.privMsg(ch, stripped)
           cs.addMsg(ch, cs.myNick, stripped)
 
 # ============================================================
@@ -2639,7 +3167,13 @@ proc renderChannelList(ms: MasterState, cs: IrcChatState, width, height: int, th
           # Close button clicked
           let chName = csRef.channels[my].name
           if chName.isChannel():
-            discard csRef.client.partChannel(chName)
+            if csRef.connMode == cmBouncer:
+              sendBouncerCmd(msRef.bouncerSession, BouncerMsg(kind: bmkPart,
+                partServer: csRef.bouncerServerName,
+                partChannel: chName,
+                partReason: ""))
+            elif csRef.client != nil:
+              discard csRef.client.partChannel(chName)
           csRef.removeChannel(chName)
         else:
           csRef.switchChannel(my)
@@ -2659,22 +3193,29 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
   let ch = cs.channels[cs.activeChannel]
 
   # Status bar
-  let stateStr = case cs.client.state
+  let stateStr = if cs.connMode == cmBouncer:
+    if ms.bouncerSession != nil and ms.bouncerSession.connected: ""
+    else: " [bouncer disconnected] "
+  elif cs.client != nil:
+    case cs.client.state
     of icsDisconnected: " [disconnected] "
     of icsConnecting: " [connecting...] "
     of icsRegistering: " [registering...] "
     of icsConnected: ""
+  else: " [no client] "
   let topicStr = if ch.topic.len > 0: " " & stripIrcFormatting(ch.topic) & " " else: ""
   let userStr = if ch.users.len > 0: " " & $ch.users.len & " users " else: ""
 
   # Lag indicator
-  let lagStr = if cs.client.lagMs >= 0:
-    let lag = cs.client.lagMs
-    " lag:" & $lag & "ms "
+  let clientLagMs = if cs.connMode == cmBouncer: -1
+                    elif cs.client != nil: cs.client.lagMs
+                    else: -1
+  let lagStr = if clientLagMs >= 0:
+    " lag:" & $clientLagMs & "ms "
   else: ""
-  let lagSt = if cs.client.lagMs < 0: ms.theme.statusBg
-              elif cs.client.lagMs < 200: style(clBlack, clCyan)
-              elif cs.client.lagMs < 500: style(clBlack, clCyan).bold()
+  let lagSt = if clientLagMs < 0: ms.theme.statusBg
+              elif clientLagMs < 200: style(clBlack, clCyan)
+              elif clientLagMs < 500: style(clBlack, clCyan).bold()
               else: style(clRed, clCyan).bold()
 
   # Away indicator
@@ -2823,7 +3364,13 @@ proc renderChat(ms: MasterState, width, height: int): Widget =
             if chName != ServerChannel:
               for line in pasteLines:
                 if line.len > 0:
-                  discard csRef2.client.privMsg(chName, line)
+                  if csRef2.connMode == cmBouncer:
+                    sendBouncerCmd(msRef.bouncerSession, BouncerMsg(kind: bmkSendPrivmsg,
+                      spServer: csRef2.bouncerServerName,
+                      spTarget: chName,
+                      spText: line))
+                  elif csRef2.client != nil:
+                    discard csRef2.client.privMsg(chName, line)
                   csRef2.addMsg(chName, csRef2.myNick, line)
             else:
               csRef2.addError(chName, "Cannot paste to server console")
@@ -3327,15 +3874,7 @@ proc handleChatInput(ms: MasterState, evt: InputEvent): bool =
 # ============================================================
 
 proc handleMasterInput(ms: MasterState, evt: InputEvent): bool =
-  # Global: Ctrl+C quits from any screen
-  if evt.isCtrl('c'):
-    for cs in ms.chats:
-      if cs.client != nil:
-        discard cs.client.disconnect()
-    ms.running = false
-    ms.tuiApp.stop()
-    return false
-
+  # Ctrl+C is handled by app.nim's built-in handler which calls onShutdown
   case ms.screen
   of asLoading:
     return false
@@ -3384,6 +3923,11 @@ proc handleMasterTick(ms: MasterState): bool =
           if ms.config.profile.realname.len > 0:
             ms.setupFields[sfRealname].setText(ms.config.profile.realname)
         else:
+          # Try bouncer discovery before showing server list
+          let bouncerPath = discoverBouncer()
+          if bouncerPath.len > 0:
+            # Start async bouncer connection (will switch to chat if successful)
+            discard connectBouncerAsync(ms)
           ms.screen = asServerList
           ms.serverListIdx = 0
       ms.tuiApp.fullRedraw = true
@@ -3517,6 +4061,15 @@ proc main() =
 
   tuiApp.onTick = proc(): bool =
     handleMasterTick(ms)
+
+  tuiApp.onShutdown = proc() =
+    for cs in ms.chats:
+      if cs.connMode == cmDirect and cs.client != nil:
+        discard cs.client.disconnect()
+    if ms.bouncerSession != nil and ms.bouncerSession.connected:
+      ms.bouncerSession.connected = false
+      ms.bouncerSession.stream.close()
+    ms.running = false
 
   runCps(tuiApp.run())
 

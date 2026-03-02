@@ -182,7 +182,7 @@ final class KeyboardShortcutMonitor {
 
     private static func actionForTag(_ tag: UInt32) -> GUIAction? {
         switch tag {
-        case  9: return .closeChannel
+        case  9: return .closeChannel(channelName: "")
         case 12: return .toggleUserList
         case 13: return .showConnectForm
         case 32: return .showJoinChannel

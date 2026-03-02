@@ -155,6 +155,15 @@ proc tlsStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
   ensureOnReactor(doSend)
   result = fut
 
+proc tlsShutdownWrite*(tls: TlsStream) =
+  ## Send TLS close_notify without closing the stream or freeing SSL state.
+  ## Used for graceful IRC disconnect: sends close_notify so the server
+  ## knows the TLS session is ending cleanly, but keeps the read side
+  ## open so readLoop can still see the server's response.
+  if tls.connected:
+    discard SSL_shutdown(tls.ssl)
+    tls.connected = false
+
 proc tlsStreamClose(s: AsyncStream) =
   let tls = TlsStream(s)
   if tls.connected:

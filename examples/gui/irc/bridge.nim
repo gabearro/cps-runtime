@@ -14,8 +14,13 @@ import cps/transform
 import cps/eventloop
 import cps/ircclient
 import cps/concurrency/channels
+import cps/io/unix
+import cps/io/buffered
+import cps/io/streams
+import cps/bouncer/bridge except ChannelState
+import cps/bouncer/types as bouncerTypes
 
-import std/[json, os, strutils, locks, tables, times, algorithm, atomics, posix]
+import std/[json, os, strutils, locks, tables, times, algorithm, atomics, posix, options]
 
 # ============================================================
 # Action tags (must match action declaration order in app.gui)
@@ -97,6 +102,21 @@ const
   tagHideKeybindSheet = 72'u32     # owner swift
   tagUpdateKeybind = 73'u32
   tagResetKeybinds = 74'u32
+  tagSetQuitMessage = 75'u32
+  tagAppShutdown = 76'u32
+  tagSetLoggingEnabled = 77'u32
+  tagSetLogDir = 78'u32
+  tagSetBouncerPassword = 79'u32
+  tagSetShowUserList = 80'u32
+  tagUpdateIgnoreList = 81'u32
+  tagUpdateHighlightWords = 82'u32
+  tagUpdateJoinPartMuteList = 83'u32
+  tagOpenKeyboardShortcuts = 84'u32
+  tagEditServer = 85'u32
+  tagHideServerEditor = 86'u32       # owner swift
+  tagSaveServerConfig = 87'u32
+  tagDeleteServer = 88'u32
+  tagDuplicateServer = 89'u32
 
 # ============================================================
 # Bridge types
@@ -106,7 +126,8 @@ type
   BridgeCommandKind = enum
     cmdConnect, cmdDisconnect, cmdSendMessage, cmdJoinChannel, cmdPartChannel,
     cmdChangeNick, cmdSetAway, cmdClearAway, cmdSetTopic, cmdSendRaw,
-    cmdSwitchServer, cmdReconnect, cmdQuit, cmdAcceptDcc, cmdRetryDcc
+    cmdSwitchServer, cmdReconnect, cmdQuit, cmdAcceptDcc, cmdRetryDcc,
+    cmdShutdownAll
 
   BridgeCommand = object
     kind: BridgeCommandKind
@@ -196,6 +217,14 @@ type
     config: IrcClientConfig
     channels: seq[string]
     myNick: string
+    fromBouncer: bool          ## True if this connection is managed by the bouncer
+
+  BouncerBridgeSession = ref object
+    stream: UnixStream
+    reader: BufferedReader
+    serverNames: seq[string]   ## Servers available from bouncer
+    lastSeenIds: Table[string, int64]
+    connected: bool
 
   GUIBridgeBuffer {.bycopy.} = object
     data: ptr uint8
@@ -214,6 +243,7 @@ type
     dispatch: proc(payload: ptr uint8, payloadLen: uint32,
                    outp: ptr GUIBridgeDispatchOutput): int32 {.cdecl.}
     getNotifyFd: proc(): int32 {.cdecl.}
+    waitShutdown: proc(timeoutMs: int32): int32 {.cdecl.}
 
   DccTransferState = enum
     dccPending, dccActive, dccDone, dccDeclined, dccFailed
@@ -240,7 +270,7 @@ type
     actionTag: uint32
 
 const
-  guiBridgeAbiVersion = 3'u32
+  guiBridgeAbiVersion = 4'u32
   MaxMessagesPerChannel = 500
   ServerChannel = "*server*"
 
@@ -278,6 +308,8 @@ var
   gEventQueue: seq[UiEvent]
   gEventLoopThread: Thread[void]
   gEventLoopRunning: bool
+  gShutdownLock: Lock
+  gShutdownComplete: bool
 
   # IRC state (modified during bridgeDispatch on main thread)
   gServers: seq[ServerState]
@@ -366,10 +398,16 @@ var
   gLoggingEnabled: bool = false
   gLogDir: string = ""
 
+  # JSON strings for list fields (synced from Swift snapshot, parsed on update actions)
+  gIgnoreListJson: string = "[]"
+  gHighlightWordsJson: string = "[]"
+  gJoinPartMuteListJson: string = "[]"
+
   # Action params (set by reducer before dispatch)
   gActionServerId: int = -1
   gActionNick: string = ""
   gActionColor: string = ""
+  gActionChannelName: string = ""
 
   # Servers that were intentionally disconnected (don't show as reconnecting)
   gIntentionalDisconnects: seq[int]
@@ -379,6 +417,24 @@ var
 
   # Event loop side: IRC connections (only accessed from event loop thread)
   gConnections: seq[IrcConnection]
+
+  # Quit message
+  gQuitMessage: string = "Goodbye"  ## QUIT reason shown to other IRC users
+
+  # Bouncer config
+  gBouncerPassword: string = ""  ## Password for bouncer authentication
+
+  # Server editor state
+  gEditingServerId: int = -1
+  gEditServerJson: string = "{}"
+
+  # Bouncer session (only accessed from event loop thread)
+  gBouncerSession: BouncerBridgeSession
+
+  # Appearance settings (persisted)
+  gFontSize: int = 13
+  gMessageDensity: string = "comfortable"
+  gTimestampFormat: string = "short"
 
   # Notification pipe: Nim writes when state changes, Swift monitors with DispatchSource
   gNotifyPipeRead: cint = -1
@@ -835,6 +891,9 @@ proc saveConfig() =
     servers.add(obj)
   root["servers"] = servers
   root["showUserList"] = %gShowUserList
+  root["fontSize"] = %gFontSize
+  root["messageDensity"] = %gMessageDensity
+  root["timestampFormat"] = %gTimestampFormat
   root["loggingEnabled"] = %gLoggingEnabled
   if gLogDir.len > 0:
     root["logDir"] = %gLogDir
@@ -857,6 +916,10 @@ proc saveConfig() =
     for nick, color in gNickColors:
       nc[nick] = %color
     root["nickColors"] = nc
+  if gQuitMessage.len > 0 and gQuitMessage != "Goodbye":
+    root["quitMessage"] = %gQuitMessage
+  if gBouncerPassword.len > 0:
+    root["bouncerPassword"] = %gBouncerPassword
   # Only save non-default keybinds
   var customKeybinds = newJArray()
   for i, kb in gKeybinds:
@@ -890,6 +953,9 @@ proc loadConfig() =
     if parsed.kind != JObject:
       return
     gShowUserList = jsonBool(parsed, "showUserList", true)
+    gFontSize = jsonInt(parsed, "fontSize", 13)
+    gMessageDensity = jsonString(parsed, "messageDensity", "comfortable")
+    gTimestampFormat = jsonString(parsed, "timestampFormat", "short")
     gLoggingEnabled = jsonBool(parsed, "loggingEnabled", false)
     gLogDir = jsonString(parsed, "logDir", "")
     if "servers" in parsed and parsed["servers"].kind == JArray:
@@ -964,6 +1030,10 @@ proc loadConfig() =
       for nick, colorNode in parsed["nickColors"].pairs:
         if colorNode.kind == JString and colorNode.getStr().len > 0:
           gNickColors[nick.toLowerAscii] = colorNode.getStr()
+    # Load quit message
+    gQuitMessage = jsonString(parsed, "quitMessage", "Goodbye")
+    # Load bouncer password
+    gBouncerPassword = jsonString(parsed, "bouncerPassword", "")
     # Load custom keybinds (override defaults)
     gKeybinds = defaultKeybinds  # start from defaults
     if "keybinds" in parsed and parsed["keybinds"].kind == JArray:
@@ -1855,6 +1925,63 @@ proc handleSlashCommand(serverId: int, text: string): bool =
         "Usage: /unnickcolor nick")
     return true
 
+  of "/bouncer":
+    # Send a command to BouncerServ (e.g. /bouncer network status)
+    if args.len == 0:
+      addErrorMessage(serverId, gActiveChannelName,
+        "Usage: /bouncer <command> (e.g. /bouncer help, /bouncer network status)")
+      return true
+    # Route through bouncer as a PRIVMSG to BouncerServ
+    # Use gServers.host for server name (stores bouncer server name for bouncer connections)
+    let si = findServerIdx(serverId)
+    if si >= 0 and gBouncerSession != nil:
+      ensureEventLoop()
+      withLock gLock:
+        gCommandQueue.add(BridgeCommand(kind: cmdSendMessage,
+          serverId: serverId, text: args, text2: "BouncerServ"))
+    else:
+      addErrorMessage(serverId, gActiveChannelName,
+        "Not connected via bouncer")
+    return true
+
+  of "/detach":
+    # Detach a channel from the bouncer
+    let channel = if args.len > 0: args.split(' ')[0]
+                  else: gActiveChannelName
+    if channel.len == 0 or channel == ServerChannel:
+      addErrorMessage(serverId, gActiveChannelName,
+        "Usage: /detach [#channel]")
+      return true
+    let dsi = findServerIdx(serverId)
+    if dsi < 0 or gBouncerSession == nil:
+      addErrorMessage(serverId, gActiveChannelName, "Not connected via bouncer")
+      return true
+    let detachCmd = "channel update " & gServers[dsi].host & " " & channel & " -detached"
+    ensureEventLoop()
+    withLock gLock:
+      gCommandQueue.add(BridgeCommand(kind: cmdSendMessage,
+        serverId: serverId, text: detachCmd, text2: "BouncerServ"))
+    return true
+
+  of "/attach":
+    # Reattach a detached channel
+    let channel = if args.len > 0: args.split(' ')[0]
+                  else: gActiveChannelName
+    if channel.len == 0 or channel == ServerChannel:
+      addErrorMessage(serverId, gActiveChannelName,
+        "Usage: /attach [#channel]")
+      return true
+    let asi = findServerIdx(serverId)
+    if asi < 0 or gBouncerSession == nil:
+      addErrorMessage(serverId, gActiveChannelName, "Not connected via bouncer")
+      return true
+    let attachCmd = "channel update " & gServers[asi].host & " " & channel & " -attached"
+    ensureEventLoop()
+    withLock gLock:
+      gCommandQueue.add(BridgeCommand(kind: cmdSendMessage,
+        serverId: serverId, text: attachCmd, text2: "BouncerServ"))
+    return true
+
   of "/help":
     let helpLines = @[
       "Chat: /msg /me /notice /ctcp /query",
@@ -1864,6 +1991,7 @@ proc handleSlashCommand(serverId: int, text: string): bool =
       "Highlight: /highlight add|remove|list [word]",
       "Filtering: /mutejp /unmutejp /smartfilter",
       "Server: /server /disconnect /quit /raw /oper",
+      "Bouncer: /bouncer /detach /attach",
       "Display: /clear /scrollback",
       "DCC: /accept /decline /transfers",
       "Other: /log /debug /monitor /help",
@@ -2363,8 +2491,564 @@ proc dccDownloader(dccTransferId: int, dccIp: uint32, dccPort: int,
   except CatchableError as e:
     pushDccEvent(uiDccFailed, dccServerId, dccTransferId, e.msg)
 
+# ============================================================
+# Bouncer integration helpers (event loop thread only)
+# ============================================================
+
+proc sendBouncerCmd(session: BouncerBridgeSession, msg: BouncerMsg) =
+  ## Fire-and-forget send a bouncer command. Non-CPS, uses POSIX send().
+  if session == nil or not session.connected: return
+  let line = buildBouncerLine(msg)
+  var offset = 0
+  while offset < line.len:
+    let n = posix.send(session.stream.fd, cast[pointer](unsafeAddr line[offset]),
+                       line.len - offset, cint(0))
+    if n <= 0: break
+    offset += n
+
+proc isBouncerConnection(connId: int): bool =
+  ## Check if a connection is bouncer-managed.
+  for i in 0 ..< gConnections.len:
+    if gConnections[i].id == connId:
+      return gConnections[i].fromBouncer
+  false
+
+proc findBouncerServerName(connId: int): string =
+  ## Get the bouncer server name for a connection ID.
+  ## Convention: IrcConnection.config.host stores the bouncer server name.
+  for i in 0 ..< gConnections.len:
+    if gConnections[i].id == connId and gConnections[i].fromBouncer:
+      return gConnections[i].config.host
+  ""
+
+proc channelUpdateNamesLineGui(users: Table[string, string]): string =
+  ## Build a NAMES-style line from ChannelState.users (non-CPS helper).
+  var parts: seq[string] = @[]
+  for nick, prefix in users:
+    parts.add(prefix & nick)
+  parts.join(" ")
+
+proc findBouncerConnId(serverName: string): int =
+  ## Find the connection ID for a bouncer-managed server. Non-CPS helper.
+  for i in 0 ..< gConnections.len:
+    if gConnections[i].fromBouncer and gConnections[i].config.host == serverName:
+      return gConnections[i].id
+  -1
+
+proc getConnNick(connId: int): string =
+  ## Get the current nick for a connection. Non-CPS helper.
+  for i in 0 ..< gConnections.len:
+    if gConnections[i].id == connId:
+      return gConnections[i].myNick
+  ""
+
+proc setConnNick(connId: int, nick: string) =
+  ## Set the current nick for a connection. Non-CPS helper.
+  for i in 0 ..< gConnections.len:
+    if gConnections[i].id == connId:
+      gConnections[i].myNick = nick
+      return
+
+proc findBouncerConnIdAndSetNick(serverName: string, nick: string): int =
+  ## Find bouncer connection ID and update nick. Non-CPS helper.
+  for i in 0 ..< gConnections.len:
+    if gConnections[i].fromBouncer and gConnections[i].config.host == serverName:
+      gConnections[i].myNick = nick
+      return gConnections[i].id
+  -1
+
+proc allocBouncerServerId(): int =
+  ## Allocate a new server ID. Non-CPS helper.
+  let id = gNextServerId
+  inc gNextServerId
+  id
+
+proc addBouncerServer(connId: int, serverName: string, nick: string,
+                      connected: bool) =
+  ## Add a bouncer server to the GUI state. Non-CPS helper. Must hold gLock.
+  gServers.add(ServerState(
+    id: connId,
+    name: serverName,
+    host: serverName,
+    port: 0,
+    nick: nick,
+    connected: connected,
+    connecting: not connected,
+    lagMs: -1,
+  ))
+  gDirty = true
+
+proc setActiveServerIfNone() =
+  ## Set the active server to the first connection if none selected. Must hold gLock.
+  if gActiveServerId < 0 and gConnections.len > 0:
+    gActiveServerId = gConnections[0].id
+
+proc bouncerEventForwarder(session: BouncerBridgeSession): CpsVoidFuture {.cps.} =
+  ## Reads JSON lines from bouncer socket, converts to UiEvent, pushes to gEventQueue.
+  ## Runs on the event loop thread.
+  var alive = true
+  while alive and session.connected:
+    var line: string
+    try:
+      line = await session.reader.readLine("\n")
+    except CatchableError:
+      alive = false
+    if not alive:
+      discard  # exit loop
+    elif line.len == 0:
+      alive = false
+    else:
+      var msg: BouncerMsg
+      var parsed = false
+      try:
+        msg = parseBouncerMsg(line)
+        parsed = true
+      except CatchableError:
+        discard
+
+      if parsed:
+        case msg.kind
+        of bmkMessage:
+          let data = msg.msgData
+          let serverName = msg.msgServer
+          let connId = findBouncerConnId(serverName)
+          if connId >= 0:
+            let evtOpt = bouncerMsgToIrcEvent(data, serverName)
+            if evtOpt.isSome:
+              let event = evtOpt.get()
+              var uiEvt = UiEvent(serverId: connId)
+
+              case event.kind
+              of iekPrivMsg:
+                uiEvt.kind = uiNewMessage
+                uiEvt.channel = event.pmTarget
+                uiEvt.nick = event.pmSource
+                uiEvt.text = event.pmText
+                if event.pmTarget.len > 0 and event.pmTarget[0] != '#':
+                  let myNick = getConnNick(connId)
+                  if event.pmSource == myNick:
+                    uiEvt.channel = event.pmTarget
+                  else:
+                    uiEvt.channel = event.pmSource
+                withLock gLock:
+                  pushEvent(uiEvt)
+              of iekNotice:
+                uiEvt.kind = uiNewMessage
+                uiEvt.channel = if event.pmTarget.len > 0 and event.pmTarget[0] == '#':
+                                   event.pmTarget
+                                 else: ServerChannel
+                uiEvt.nick = event.pmSource
+                uiEvt.text = event.pmText
+                uiEvt.text2 = "notice"
+                withLock gLock:
+                  pushEvent(uiEvt)
+              of iekJoin:
+                uiEvt.kind = uiUserJoin
+                uiEvt.channel = event.joinChannel
+                uiEvt.nick = event.joinNick
+                withLock gLock:
+                  pushEvent(uiEvt)
+              of iekPart:
+                uiEvt.kind = uiUserPart
+                uiEvt.channel = event.partChannel
+                uiEvt.nick = event.partNick
+                uiEvt.text = event.partReason
+                withLock gLock:
+                  pushEvent(uiEvt)
+              of iekQuit:
+                uiEvt.kind = uiUserQuit
+                uiEvt.nick = event.quitNick
+                uiEvt.text = event.quitReason
+                withLock gLock:
+                  pushEvent(uiEvt)
+              of iekKick:
+                uiEvt.kind = uiUserPart
+                uiEvt.channel = event.kickChannel
+                uiEvt.nick = event.kickNick
+                uiEvt.text = "Kicked by " & event.kickBy & ": " & event.kickReason
+                withLock gLock:
+                  pushEvent(uiEvt)
+              of iekNick:
+                uiEvt.kind = uiUserNick
+                uiEvt.nick = event.nickNew
+                uiEvt.text2 = event.nickOld
+                withLock gLock:
+                  pushEvent(uiEvt)
+              of iekMode:
+                uiEvt.kind = uiModeChange
+                uiEvt.channel = event.modeTarget
+                uiEvt.text = event.modeChanges
+                uiEvt.users = event.modeParams
+                withLock gLock:
+                  pushEvent(uiEvt)
+              of iekTopic:
+                uiEvt.kind = uiTopicChange
+                uiEvt.channel = event.topicChannel
+                uiEvt.text = event.topicText
+                uiEvt.nick = event.topicBy
+                withLock gLock:
+                  pushEvent(uiEvt)
+              of iekCtcp:
+                if event.ctcpCommand == "ACTION":
+                  uiEvt.kind = uiNewMessage
+                  uiEvt.channel = event.ctcpTarget
+                  uiEvt.nick = event.ctcpSource
+                  uiEvt.text = event.ctcpArgs
+                  uiEvt.boolParam = true
+                  if event.ctcpTarget.len > 0 and event.ctcpTarget[0] != '#':
+                    let myNick = getConnNick(connId)
+                    if event.ctcpSource == myNick:
+                      uiEvt.channel = event.ctcpTarget
+                    else:
+                      uiEvt.channel = event.ctcpSource
+                  withLock gLock:
+                    pushEvent(uiEvt)
+              of iekNumeric:
+                case event.numCode
+                of 353:
+                  uiEvt.kind = uiUserList
+                  if event.numParams.len >= 2:
+                    uiEvt.channel = event.numParams[^2]
+                    uiEvt.users = event.numParams[^1].strip().split(' ')
+                  withLock gLock:
+                    pushEvent(uiEvt)
+                of 332:
+                  uiEvt.kind = uiTopicChange
+                  if event.numParams.len >= 2:
+                    uiEvt.channel = event.numParams[1]
+                    uiEvt.text = event.numParams[^1]
+                  withLock gLock:
+                    pushEvent(uiEvt)
+                of 366:
+                  discard
+                else:
+                  if event.numParams.len > 0:
+                    uiEvt.kind = uiNewMessage
+                    uiEvt.channel = ServerChannel
+                    uiEvt.nick = ""
+                    uiEvt.text = $event.numCode & " " & event.numParams.join(" ")
+                    uiEvt.text2 = "numeric"
+                    withLock gLock:
+                      pushEvent(uiEvt)
+              else:
+                discard
+
+        of bmkServerConnected:
+          let connId = findBouncerConnIdAndSetNick(msg.scServer, msg.scNick)
+          if connId >= 0:
+            withLock gLock:
+              pushEvent(UiEvent(kind: uiConnected, serverId: connId))
+
+        of bmkServerDisconnected:
+          let connId = findBouncerConnId(msg.sdServer)
+          if connId >= 0:
+            withLock gLock:
+              pushEvent(UiEvent(kind: uiDisconnected, serverId: connId, text: msg.sdReason))
+
+        of bmkChannelUpdate:
+          let connId = findBouncerConnId(msg.cuServer)
+          if connId >= 0:
+            let ch = msg.cuChannel
+            if ch.topic.len > 0:
+              withLock gLock:
+                pushEvent(UiEvent(kind: uiTopicChange, serverId: connId,
+                  channel: ch.name, text: ch.topic, nick: ch.topicSetBy))
+            let namesLine = channelUpdateNamesLineGui(ch.users)
+            if namesLine.len > 0:
+              withLock gLock:
+                pushEvent(UiEvent(kind: uiUserList, serverId: connId,
+                  channel: ch.name, users: namesLine.split(' ')))
+
+        of bmkNickChanged:
+          let connId = findBouncerConnIdAndSetNick(msg.ncServer, msg.ncNewNick)
+          if connId >= 0:
+            withLock gLock:
+              pushEvent(UiEvent(kind: uiNickChange, serverId: connId,
+                nick: msg.ncNewNick, text2: msg.ncOldNick))
+
+        of bmkReplayEnd:
+          let key = msg.reServer & ":" & msg.reChannel.toLowerAscii()
+          session.lastSeenIds[key] = msg.reNewestId
+
+        of bmkServerAdded:
+          # Dynamic network added at runtime — create a new IrcConnection + ServerState
+          let newServerName = msg.saServer
+          # Check if we already have this server
+          let existingId = findBouncerConnId(newServerName)
+          if existingId < 0:
+            let newConnId = allocBouncerServerId()
+            var newCfg = newIrcClientConfig(host = newServerName, port = 0, nick = "")
+            newCfg.autoReconnect = false
+            gConnections.add(IrcConnection(
+              id: newConnId,
+              client: nil,
+              config: newCfg,
+              channels: @[],
+              myNick: "",
+              fromBouncer: true,
+            ))
+            withLock gLock:
+              addBouncerServer(newConnId, newServerName, "", false)
+              setActiveServerIfNone()
+
+        of bmkServerRemoved:
+          # Dynamic network removed at runtime — remove IrcConnection + ServerState
+          let rmServerName = msg.srServer
+          let rmConnId = findBouncerConnId(rmServerName)
+          if rmConnId >= 0:
+            # Remove from gConnections
+            for ri in 0 ..< gConnections.len:
+              if gConnections[ri].id == rmConnId:
+                gConnections.delete(ri)
+                break
+            # Remove from gServers (under lock)
+            withLock gLock:
+              for rsi in 0 ..< gServers.len:
+                if gServers[rsi].id == rmConnId:
+                  gServers.delete(rsi)
+                  break
+              # If this was the active server, switch to another
+              if gActiveServerId == rmConnId:
+                if gServers.len > 0:
+                  gActiveServerId = gServers[0].id
+                  gActiveChannelName = ServerChannel
+                else:
+                  gActiveServerId = -1
+                  gActiveChannelName = ""
+              gDirty = true
+              notifySwift()
+
+        of bmkChannelDetach:
+          let detachServer = msg.cdServer
+          let detachChannel = msg.cdChannel
+          let detachConnId = findBouncerConnId(detachServer)
+          if detachConnId >= 0:
+            withLock gLock:
+              pushEvent(UiEvent(kind: uiNewMessage, serverId: detachConnId,
+                channel: detachChannel, nick: "",
+                text: "Channel " & detachChannel & " detached",
+                text2: "system"))
+
+        of bmkChannelAttach:
+          let attachServer = msg.caServer
+          let attachChannel = msg.caChannel
+          let attachConnId = findBouncerConnId(attachServer)
+          if attachConnId >= 0:
+            withLock gLock:
+              pushEvent(UiEvent(kind: uiNewMessage, serverId: attachConnId,
+                channel: attachChannel, nick: "",
+                text: "Channel " & attachChannel & " reattached",
+                text2: "system"))
+            # Request replay for missed messages
+            let attachKey = attachServer & ":" & attachChannel.toLowerAscii()
+            let sinceId = session.lastSeenIds.getOrDefault(attachKey, 0'i64)
+            sendBouncerCmd(session, BouncerMsg(kind: bmkReplay,
+              replayServer: attachServer,
+              replayChannel: attachChannel,
+              replaySinceId: sinceId,
+              replayLimit: 500))
+
+        of bmkSearchResults:
+          # Display search results in the active channel as system messages
+          let srServer = msg.srchServer
+          let srConnId = findBouncerConnId(srServer)
+          if srConnId >= 0:
+            let resultCount = msg.srchMessages.len
+            if resultCount == 0:
+              withLock gLock:
+                pushEvent(UiEvent(kind: uiNewMessage, serverId: srConnId,
+                  channel: ServerChannel, nick: "",
+                  text: "Search: no results found",
+                  text2: "system"))
+            else:
+              withLock gLock:
+                pushEvent(UiEvent(kind: uiNewMessage, serverId: srConnId,
+                  channel: ServerChannel, nick: "",
+                  text: "Search: " & $resultCount & " result(s):",
+                  text2: "system"))
+              for sri in 0 ..< resultCount:
+                let sr = msg.srchMessages[sri]
+                let srText = "[" & sr.target & "] <" & sr.source & "> " & sr.text
+                withLock gLock:
+                  pushEvent(UiEvent(kind: uiNewMessage, serverId: srConnId,
+                    channel: ServerChannel, nick: "",
+                    text: srText, text2: "system"))
+          elif msg.srchServer.len == 0:
+            # No server specified — show in first bouncer connection
+            if gConnections.len > 0:
+              let fallbackConnId = gConnections[0].id
+              let fbResultCount = msg.srchMessages.len
+              withLock gLock:
+                pushEvent(UiEvent(kind: uiNewMessage, serverId: fallbackConnId,
+                  channel: ServerChannel, nick: "",
+                  text: "Search: " & $fbResultCount & " result(s)",
+                  text2: "system"))
+
+        of bmkError:
+          withLock gLock:
+            pushEvent(UiEvent(kind: uiError, text: "Bouncer: " & msg.errText))
+
+        else:
+          discard
+
+  # Bouncer disconnected
+  session.connected = false
+
+proc connectToBouncerGui(): CpsVoidFuture {.cps.} =
+  ## Try to discover and connect to a running bouncer daemon.
+  ## Creates IrcConnection entries with fromBouncer=true for each bouncer server.
+  let socketPath = discoverBouncer()
+  if socketPath.len == 0: return
+
+  var stream: UnixStream
+  try:
+    stream = await unixConnect(socketPath)
+  except CatchableError:
+    return
+
+  let reader = newBufferedReader(stream.AsyncStream)
+  let session = BouncerBridgeSession(
+    stream: stream,
+    reader: reader,
+    serverNames: @[],
+    lastSeenIds: initTable[string, int64](),
+    connected: true,
+  )
+
+  # Send hello handshake
+  let helloMsg = BouncerMsg(kind: bmkHello,
+    helloVersion: 1,
+    helloClientName: "cps-irc-gui",
+    helloPassword: gBouncerPassword)
+  sendBouncerCmd(session, helloMsg)
+
+  # Read hello_ok
+  var helloLine: string
+  try:
+    helloLine = await reader.readLine("\n")
+  except CatchableError:
+    stream.close()
+    return
+  if helloLine.len == 0:
+    stream.close()
+    return
+
+  var helloReply: BouncerMsg
+  try:
+    helloReply = parseBouncerMsg(helloLine)
+  except CatchableError:
+    stream.close()
+    return
+
+  if helloReply.kind != bmkHelloOk:
+    stream.close()
+    return
+
+  session.serverNames = helloReply.helloOkServers
+  gBouncerSession = session
+
+  # Read server_state messages for each server
+  let serverCount = session.serverNames.len
+  var readOk = true
+  for si in 0 ..< serverCount:
+    if not readOk:
+      discard  # skip remaining servers
+    else:
+      var stateLine: string
+      try:
+        stateLine = await reader.readLine("\n")
+      except CatchableError:
+        readOk = false
+      if readOk and stateLine.len == 0:
+        readOk = false
+
+      if readOk:
+        var stateMsg: BouncerMsg
+        var parsed = false
+        try:
+          stateMsg = parseBouncerMsg(stateLine)
+          parsed = true
+        except CatchableError:
+          discard
+
+        if parsed and stateMsg.kind == bmkServerState:
+          let serverName = stateMsg.ssServer
+          let nick = stateMsg.ssNick
+
+          let connId = allocBouncerServerId()
+
+          var cfg = newIrcClientConfig(host = serverName, port = 0, nick = nick)
+          cfg.autoReconnect = false
+
+          gConnections.add(IrcConnection(
+            id: connId,
+            client: nil,
+            config: cfg,
+            channels: @[],
+            myNick: nick,
+            fromBouncer: true,
+          ))
+
+          withLock gLock:
+            addBouncerServer(connId, serverName, nick, stateMsg.ssConnected)
+
+          # Synthesize join/topic/names events from channel state
+          let events = channelStateToIrcEvents(nick, stateMsg.ssChannels)
+          let evtCount = events.len
+          for ei in 0 ..< evtCount:
+            let evt = events[ei]
+            var uiEvt = UiEvent(serverId: connId)
+            case evt.kind
+            of iekJoin:
+              uiEvt.kind = uiUserJoin
+              uiEvt.channel = evt.joinChannel
+              uiEvt.nick = evt.joinNick
+              withLock gLock:
+                pushEvent(uiEvt)
+            of iekTopic:
+              uiEvt.kind = uiTopicChange
+              uiEvt.channel = evt.topicChannel
+              uiEvt.text = evt.topicText
+              uiEvt.nick = evt.topicBy
+              withLock gLock:
+                pushEvent(uiEvt)
+            of iekNumeric:
+              if evt.numCode == 353:
+                uiEvt.kind = uiUserList
+                if evt.numParams.len >= 2:
+                  uiEvt.channel = evt.numParams[^2]
+                  uiEvt.users = evt.numParams[^1].strip().split(' ')
+                withLock gLock:
+                  pushEvent(uiEvt)
+            else:
+              discard
+
+          # Request replay for each channel
+          let chanCount = stateMsg.ssChannels.len
+          for ci in 0 ..< chanCount:
+            let ch = stateMsg.ssChannels[ci]
+            let key = serverName & ":" & ch.name.toLowerAscii()
+            let sinceId = session.lastSeenIds.getOrDefault(key, 0'i64)
+            sendBouncerCmd(session, BouncerMsg(kind: bmkReplay,
+              replayServer: serverName,
+              replayChannel: ch.name,
+              replaySinceId: sinceId,
+              replayLimit: 500))
+
+  # If connected, set as active server
+  if session.serverNames.len > 0 and gConnections.len > 0:
+    withLock gLock:
+      setActiveServerIfNone()
+
+  # Start the bouncer event forwarder background task
+  discard spawn bouncerEventForwarder(session)
+
 proc commandProcessor(): CpsVoidFuture {.cps.} =
   ## Runs on event loop thread. Drains command queue every 50ms.
+
+  # Try to connect to bouncer at startup
+  await connectToBouncerGui()
+
   while true:
     var commands: seq[BridgeCommand]
     withLock gLock:
@@ -2377,6 +3061,8 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
         let connId = cmd.serverId
         let existing = findConnection(connId)
         if existing >= 0:
+          if gConnections[existing].fromBouncer:
+            continue  # Bouncer-managed server — skip direct connect
           # Stale connection — clean it up first
           let oldClient = gConnections[existing].client
           oldClient.config.autoReconnect = false
@@ -2393,6 +3079,9 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
         cfg.maxReconnectAttempts = 0
         cfg.reconnectDelayMs = 5000
         cfg.ctcpVersion = "CPS IRC GUI 1.0"
+        {.cast(gcsafe).}:
+          if gQuitMessage.len > 0:
+            cfg.quitMessage = gQuitMessage
         if cmd.text3.len > 0:
           cfg.password = cmd.text3
         if cmd.text4.len > 0 and cmd.text5.len > 0:
@@ -2416,61 +3105,119 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
       of cmdDisconnect:
         let idx = findConnection(cmd.serverId)
         if idx >= 0:
-          {.cast(gcsafe).}:
-            withLock gLock:
-              if cmd.serverId notin gIntentionalDisconnects:
-                gIntentionalDisconnects.add(cmd.serverId)
-          let client = gConnections[idx].client
-          client.config.autoReconnect = false
-          discard spawn client.disconnect()
-          gConnections.delete(idx)
+          if gConnections[idx].fromBouncer:
+            let srvName = findBouncerServerName(cmd.serverId)
+            if srvName.len > 0 and gBouncerSession != nil:
+              sendBouncerCmd(gBouncerSession, BouncerMsg(kind: bmkQuit,
+                quitServer: srvName, quitReason: "Disconnecting"))
+          else:
+            {.cast(gcsafe).}:
+              withLock gLock:
+                if cmd.serverId notin gIntentionalDisconnects:
+                  gIntentionalDisconnects.add(cmd.serverId)
+            let client = gConnections[idx].client
+            client.config.autoReconnect = false
+            # Patch quit message from current setting (may have changed since connect)
+            {.cast(gcsafe).}:
+              if gQuitMessage.len > 0:
+                client.config.quitMessage = gQuitMessage
+            discard spawn client.disconnect()
+            gConnections.delete(idx)
 
       of cmdSendMessage:
         let idx = findConnection(cmd.serverId)
         if idx >= 0:
-          discard spawn gConnections[idx].client.privMsg(cmd.text2, cmd.text)
+          if gConnections[idx].fromBouncer:
+            let srvName = findBouncerServerName(cmd.serverId)
+            if srvName.len > 0 and gBouncerSession != nil:
+              sendBouncerCmd(gBouncerSession, BouncerMsg(kind: bmkSendPrivmsg,
+                spServer: srvName, spTarget: cmd.text2, spText: cmd.text))
+          else:
+            discard spawn gConnections[idx].client.privMsg(cmd.text2, cmd.text)
 
       of cmdJoinChannel:
         let idx = findConnection(cmd.serverId)
         if idx >= 0:
-          discard spawn gConnections[idx].client.joinChannel(cmd.text)
+          if gConnections[idx].fromBouncer:
+            let srvName = findBouncerServerName(cmd.serverId)
+            if srvName.len > 0 and gBouncerSession != nil:
+              sendBouncerCmd(gBouncerSession, BouncerMsg(kind: bmkJoin,
+                joinServer: srvName, joinChannel: cmd.text))
+          else:
+            discard spawn gConnections[idx].client.joinChannel(cmd.text)
 
       of cmdPartChannel:
         let idx = findConnection(cmd.serverId)
         if idx >= 0:
-          discard spawn gConnections[idx].client.partChannel(cmd.text, cmd.text2)
+          if gConnections[idx].fromBouncer:
+            let srvName = findBouncerServerName(cmd.serverId)
+            if srvName.len > 0 and gBouncerSession != nil:
+              sendBouncerCmd(gBouncerSession, BouncerMsg(kind: bmkPart,
+                partServer: srvName, partChannel: cmd.text, partReason: cmd.text2))
+          else:
+            discard spawn gConnections[idx].client.partChannel(cmd.text, cmd.text2)
 
       of cmdChangeNick:
         let idx = findConnection(cmd.serverId)
         if idx >= 0:
-          discard spawn gConnections[idx].client.changeNick(cmd.text)
+          if gConnections[idx].fromBouncer:
+            let srvName = findBouncerServerName(cmd.serverId)
+            if srvName.len > 0 and gBouncerSession != nil:
+              sendBouncerCmd(gBouncerSession, BouncerMsg(kind: bmkNick,
+                nickServer: srvName, nickNewNick: cmd.text))
+          else:
+            discard spawn gConnections[idx].client.changeNick(cmd.text)
 
       of cmdSetAway:
         let idx = findConnection(cmd.serverId)
         if idx >= 0:
-          discard spawn gConnections[idx].client.sendMessage("AWAY", cmd.text)
+          if gConnections[idx].fromBouncer:
+            let srvName = findBouncerServerName(cmd.serverId)
+            if srvName.len > 0 and gBouncerSession != nil:
+              sendBouncerCmd(gBouncerSession, BouncerMsg(kind: bmkAway,
+                awayServer: srvName, awayMessage: cmd.text))
+          else:
+            discard spawn gConnections[idx].client.sendMessage("AWAY", cmd.text)
 
       of cmdClearAway:
         let idx = findConnection(cmd.serverId)
         if idx >= 0:
-          discard spawn gConnections[idx].client.sendMessage("AWAY")
+          if gConnections[idx].fromBouncer:
+            let srvName = findBouncerServerName(cmd.serverId)
+            if srvName.len > 0 and gBouncerSession != nil:
+              sendBouncerCmd(gBouncerSession, BouncerMsg(kind: bmkBack,
+                backServer: srvName))
+          else:
+            discard spawn gConnections[idx].client.sendMessage("AWAY")
 
       of cmdSetTopic:
         let idx = findConnection(cmd.serverId)
         if idx >= 0:
-          discard spawn gConnections[idx].client.sendMessage("TOPIC", cmd.text2, cmd.text)
+          if gConnections[idx].fromBouncer:
+            let srvName = findBouncerServerName(cmd.serverId)
+            if srvName.len > 0 and gBouncerSession != nil:
+              sendBouncerCmd(gBouncerSession, BouncerMsg(kind: bmkRaw,
+                rawServer: srvName, rawLine: "TOPIC " & cmd.text2 & " :" & cmd.text))
+          else:
+            discard spawn gConnections[idx].client.sendMessage("TOPIC", cmd.text2, cmd.text)
 
       of cmdSendRaw:
         let idx = findConnection(cmd.serverId)
         if idx >= 0:
-          let rawText = cmd.text.strip()
-          let spaceIdx = rawText.find(' ')
-          if spaceIdx < 0:
-            discard spawn gConnections[idx].client.sendMessage(rawText)
+          if gConnections[idx].fromBouncer:
+            let srvName = findBouncerServerName(cmd.serverId)
+            if srvName.len > 0 and gBouncerSession != nil:
+              sendBouncerCmd(gBouncerSession, BouncerMsg(kind: bmkRaw,
+                rawServer: srvName, rawLine: cmd.text.strip()))
           else:
-            let rawCmd = rawText[0 ..< spaceIdx]
-            let rest = rawText[spaceIdx + 1 .. ^1]
-            discard spawn gConnections[idx].client.sendMessage(rawCmd, rest)
+            let rawText = cmd.text.strip()
+            let spaceIdx = rawText.find(' ')
+            if spaceIdx < 0:
+              discard spawn gConnections[idx].client.sendMessage(rawText)
+            else:
+              let rawCmd = rawText[0 ..< spaceIdx]
+              let rest = rawText[spaceIdx + 1 .. ^1]
+              discard spawn gConnections[idx].client.sendMessage(rawCmd, rest)
 
       of cmdSwitchServer:
         discard  # Handled on main thread
@@ -2478,30 +3225,60 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
       of cmdReconnect:
         let idx = findConnection(cmd.serverId)
         if idx >= 0:
-          let oldCfg = gConnections[idx].config
-          let oldClient = gConnections[idx].client
-          oldClient.config.autoReconnect = false
-          discard spawn oldClient.disconnect()
-          gConnections.delete(idx)
-          var cfg = oldCfg
-          cfg.autoReconnect = true
-          let client = newIrcClient(cfg)
-          gConnections.add(IrcConnection(
-            id: cmd.serverId,
-            client: client,
-            config: cfg,
-            channels: @[],
-            myNick: cfg.nick,
-          ))
-          discard spawn client.run()
-          discard spawn ircEventForwarder(cmd.serverId, client)
-          discard spawn lagPinger(cmd.serverId, client)
+          if gConnections[idx].fromBouncer:
+            discard  # Bouncer handles reconnection
+          else:
+            let oldClient = gConnections[idx].client
+            oldClient.config.autoReconnect = false
+            discard spawn oldClient.disconnect()
+            gConnections.delete(idx)
+            # Re-read current server config (user may have edited host/port/SASL/etc.)
+            var cfg: IrcClientConfig
+            {.cast(gcsafe).}:
+              let si = findServerIdx(cmd.serverId)
+              if si >= 0:
+                let s = gServers[si]
+                cfg = newIrcClientConfig(host = s.host, port = s.port, nick = s.nick)
+                cfg.useTls = s.useTls
+                if s.password.len > 0:
+                  cfg.password = s.password
+                if s.saslUser.len > 0 and s.saslPass.len > 0:
+                  cfg.saslUsername = s.saslUser
+                  cfg.saslPassword = s.saslPass
+              else:
+                # Server was removed while reconnecting — use defaults
+                cfg = newIrcClientConfig(host = "localhost", port = 6667, nick = "user")
+            cfg.autoReconnect = true
+            cfg.maxReconnectAttempts = 0
+            cfg.reconnectDelayMs = 5000
+            cfg.ctcpVersion = "CPS IRC GUI 1.0"
+            {.cast(gcsafe).}:
+              if gQuitMessage.len > 0:
+                cfg.quitMessage = gQuitMessage
+            let client = newIrcClient(cfg)
+            gConnections.add(IrcConnection(
+              id: cmd.serverId,
+              client: client,
+              config: cfg,
+              channels: @[],
+              myNick: cfg.nick,
+            ))
+            discard spawn client.run()
+            discard spawn ircEventForwarder(cmd.serverId, client)
+            discard spawn lagPinger(cmd.serverId, client)
 
       of cmdQuit:
         let idx = findConnection(cmd.serverId)
         if idx >= 0:
-          let reason = if cmd.text.len > 0: cmd.text else: "Goodbye"
-          discard spawn gConnections[idx].client.quit(reason)
+          if gConnections[idx].fromBouncer:
+            let srvName = findBouncerServerName(cmd.serverId)
+            if srvName.len > 0 and gBouncerSession != nil:
+              let reason = if cmd.text.len > 0: cmd.text else: "Goodbye"
+              sendBouncerCmd(gBouncerSession, BouncerMsg(kind: bmkQuit,
+                quitServer: srvName, quitReason: reason))
+          else:
+            let reason = if cmd.text.len > 0: cmd.text else: "Goodbye"
+            discard spawn gConnections[idx].client.quit(reason)
 
       of cmdAcceptDcc, cmdRetryDcc:
         # Look up DCC transfer info and spawn the download.
@@ -2534,6 +3311,30 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
             pushDccEvent(uiDccFailed, cmd.serverId, cmd.intParam,
               "DCC spawn failed: " & e.msg)
 
+      of cmdShutdownAll:
+        # Gracefully disconnect all IRC connections (sends QUIT to servers).
+        # Runs on the event loop thread so gConnections access is safe.
+        # We await all disconnect futures to ensure QUIT messages are flushed
+        # to the kernel's TCP buffer before returning (critical for TLS where
+        # SSL_write may return WANT_WRITE/WANT_READ).
+        var disconnectFuts: seq[CpsVoidFuture]
+        for conn in gConnections:
+          if not conn.fromBouncer:
+            conn.client.config.autoReconnect = false
+            {.cast(gcsafe).}:
+              if gQuitMessage.len > 0:
+                conn.client.config.quitMessage = gQuitMessage
+            disconnectFuts.add(conn.client.disconnect())
+        if disconnectFuts.len > 0:
+          await waitAll(disconnectFuts)
+        gConnections.setLen(0)
+        if gBouncerSession != nil and gBouncerSession.connected:
+          gBouncerSession.connected = false
+          gBouncerSession.stream.close()
+        # All connections closed — exit the command processor so the event
+        # loop thread terminates cleanly before Swift calls dlclose().
+        return
+
     await cpsSleep(50)
 
 proc eventLoopMain() {.thread.} =
@@ -2543,7 +3344,9 @@ proc eventLoopMain() {.thread.} =
       runCps(commandProcessor())
     except Exception as e:
       stderr.writeLine "[EVENT LOOP] FATAL CRASH: " & e.msg & " (" & $e.name & ")"
-      stderr.writeLine "[EVENT LOOP] Event loop thread is dead — IRC will disconnect"
+    # Signal that the event loop thread is done (for waitShutdown).
+    withLock gShutdownLock:
+      gShutdownComplete = true
 
 proc ensureEventLoop() =
   if not gEventLoopRunning:
@@ -2553,6 +3356,8 @@ proc ensureEventLoop() =
 # ============================================================
 # Process UI events from the event loop thread
 # ============================================================
+
+proc syncActiveChannelContext()  # forward declaration
 
 proc processUiEvents(): bool =
   ## Drain gEventQueue and update main-thread state.
@@ -2688,22 +3493,45 @@ proc processUiEvents(): bool =
 
     of uiUserPart:
       let ck = channelKey(evt.serverId, evt.channel)
-      if ck in gUsers:
-        for i in countdown(gUsers[ck].len - 1, 0):
-          if gUsers[ck][i].nick == evt.nick:
-            gUsers[ck].delete(i)
-            break
-      let sk = serverKey(evt.serverId)
-      if sk in gChannels:
-        for i in 0 ..< gChannels[sk].len:
-          if gChannels[sk][i].name.toLowerAscii == evt.channel.toLowerAscii:
-            if ck in gUsers:
-              gChannels[sk][i].userCount = gUsers[ck].len
-            break
-      let reason = if evt.text.len > 0: " (" & evt.text & ")" else: ""
-      if not shouldSuppressJoinPart(evt.nick, evt.serverId, evt.channel):
-        addSystemMessage(evt.serverId, evt.channel,
-          evt.nick & " has left " & evt.channel & reason)
+      let isOwnPart = si >= 0 and evt.nick == gServers[si].nick
+      if isOwnPart:
+        # We parted — remove the channel from sidebar and clean up state
+        let sk = serverKey(evt.serverId)
+        if sk in gChannels:
+          for i in countdown(gChannels[sk].len - 1, 0):
+            if gChannels[sk][i].name.toLowerAscii == evt.channel.toLowerAscii:
+              gChannels[sk].delete(i)
+              break
+        gMessages.del(ck)
+        gUsers.del(ck)
+        # Switch away if this was the active channel
+        if evt.serverId == gActiveServerId and
+           gActiveChannelName.toLowerAscii == evt.channel.toLowerAscii:
+          let sk2 = serverKey(gActiveServerId)
+          if sk2 in gChannels and gChannels[sk2].len > 0:
+            gActiveChannelName = gChannels[sk2][0].name
+          else:
+            gActiveChannelName = ServerChannel
+          syncActiveChannelContext()
+        syncAutoJoinChannels(evt.serverId)
+      else:
+        # Someone else parted — just remove them from the user list
+        if ck in gUsers:
+          for i in countdown(gUsers[ck].len - 1, 0):
+            if gUsers[ck][i].nick == evt.nick:
+              gUsers[ck].delete(i)
+              break
+        let sk = serverKey(evt.serverId)
+        if sk in gChannels:
+          for i in 0 ..< gChannels[sk].len:
+            if gChannels[sk][i].name.toLowerAscii == evt.channel.toLowerAscii:
+              if ck in gUsers:
+                gChannels[sk][i].userCount = gUsers[ck].len
+              break
+        let reason = if evt.text.len > 0: " (" & evt.text & ")" else: ""
+        if not shouldSuppressJoinPart(evt.nick, evt.serverId, evt.channel):
+          addSystemMessage(evt.serverId, evt.channel,
+            evt.nick & " has left " & evt.channel & reason)
 
     of uiUserQuit:
       # Remove user from all channels on this server where they were present,
@@ -3038,7 +3866,7 @@ const slashCommands = [
   "/debug", "/monitor", "/accept", "/decline", "/transfers", "/help",
   "/kick", "/ban", "/ctcp", "/list", "/invite", "/oper", "/scrollback",
   "/nickcolor", "/unnickcolor", "/query", "/mutejp", "/unmutejp",
-  "/smartfilter",
+  "/smartfilter", "/bouncer", "/detach", "/attach",
 ]
 
 proc computeCompletions() =
@@ -3346,6 +4174,7 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
   patch["actionServerId"] = %gActionServerId
   patch["actionNick"] = %gActionNick
   patch["actionColor"] = %gActionColor
+  patch["actionChannelName"] = %gActionChannelName
   patch["actionTransferId"] = %gActionTransferId
 
   # Nick color overrides (serialized as JSON string for Swift)
@@ -3356,6 +4185,24 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
 
   # Keybinds (serialized as JSON string for Swift shortcut monitor)
   patch["keybinds"] = %keybindsToJson()
+
+  # Settings state (always included so Swift shows current values)
+  patch["loggingEnabled"] = %gLoggingEnabled
+  patch["logDir"] = %gLogDir
+  patch["bouncerPassword"] = %gBouncerPassword
+  # Serialize lists as JSON strings for Swift
+  var ignArr = newJArray()
+  for n in gIgnoreList: ignArr.add(%n)
+  patch["ignoreListJson"] = %($ignArr)
+  var hlArr = newJArray()
+  for w in gHighlightWords: hlArr.add(%w)
+  patch["highlightWordsJson"] = %($hlArr)
+  var jpmArr = newJArray()
+  for n in gJoinPartMuteList: jpmArr.add(%n)
+  patch["joinPartMuteListJson"] = %($jpmArr)
+
+  # Server editor JSON (always included so Swift form sees Nim-populated data)
+  patch["editServerJson"] = %gEditServerJson
 
   # Fields only included when the bridge explicitly modifies them
   # (not during Poll, to avoid overwriting in-progress typing, sheet state,
@@ -3375,6 +4222,10 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
     patch["showTransfers"] = %gShowTransfers
     patch["smartFilterEnabled"] = %gSmartFilterEnabled
     patch["smartFilterTimeout"] = %gSmartFilterTimeout
+    patch["quitMessage"] = %gQuitMessage
+    patch["fontSize"] = %gFontSize
+    patch["messageDensity"] = %gMessageDensity
+    patch["timestampFormat"] = %gTimestampFormat
 
   toBytes($patch)
 
@@ -3399,12 +4250,26 @@ proc syncFromSnapshot(payload: ptr uint8, payloadLen: uint32) =
     gActionServerId = jsonInt(node, "actionServerId", gActionServerId)
     gActionNick = jsonString(node, "actionNick", gActionNick)
     gActionColor = jsonString(node, "actionColor", gActionColor)
+    gActionChannelName = jsonString(node, "actionChannelName", gActionChannelName)
     gActionTransferId = jsonInt(node, "actionTransferId", gActionTransferId)
     gJoinChannelText = jsonString(node, "joinChannelText", gJoinChannelText)
     gChannelSwitcherText = jsonString(node, "channelSwitcherText", gChannelSwitcherText)
     gCompletionSelectIndex = jsonInt(node, "completionSelectIndex", gCompletionSelectIndex)
     gSmartFilterEnabled = jsonBool(node, "smartFilterEnabled", gSmartFilterEnabled)
     gSmartFilterTimeout = jsonInt(node, "smartFilterTimeout", gSmartFilterTimeout)
+    gQuitMessage = jsonString(node, "quitMessage", gQuitMessage)
+    gFontSize = jsonInt(node, "fontSize", gFontSize)
+    gMessageDensity = jsonString(node, "messageDensity", gMessageDensity)
+    gTimestampFormat = jsonString(node, "timestampFormat", gTimestampFormat)
+    gLoggingEnabled = jsonBool(node, "loggingEnabled", gLoggingEnabled)
+    gLogDir = jsonString(node, "logDir", gLogDir)
+    gBouncerPassword = jsonString(node, "bouncerPassword", gBouncerPassword)
+    gIgnoreListJson = jsonString(node, "ignoreListJson", gIgnoreListJson)
+    gHighlightWordsJson = jsonString(node, "highlightWordsJson", gHighlightWordsJson)
+    gJoinPartMuteListJson = jsonString(node, "joinPartMuteListJson", gJoinPartMuteListJson)
+    gShowUserList = jsonBool(node, "showUserList", gShowUserList)
+    gEditingServerId = jsonInt(node, "editingServerId", gEditingServerId)
+    gEditServerJson = jsonString(node, "editServerJson", gEditServerJson)
 
     # Sync activeServerId and activeChannelName if provided
     let snapServerId = jsonInt(node, "activeServerId", gActiveServerId)
@@ -3431,6 +4296,7 @@ proc syncFromSnapshot(payload: ptr uint8, payloadLen: uint32) =
 proc ensureInit() =
   if not gInitialized:
     initLock(gLock)
+    initLock(gShutdownLock)
     # Create notification pipe (non-blocking)
     var fds: array[2, cint]
     if posix.pipe(fds) == 0:
@@ -3568,6 +4434,21 @@ proc actionName(tag: uint32): string =
   of tagHideKeybindSheet: "HideKeybindSheet"
   of tagUpdateKeybind: "UpdateKeybind"
   of tagResetKeybinds: "ResetKeybinds"
+  of tagSetQuitMessage: "SetQuitMessage"
+  of tagAppShutdown: "AppShutdown"
+  of tagSetLoggingEnabled: "SetLoggingEnabled"
+  of tagSetLogDir: "SetLogDir"
+  of tagSetBouncerPassword: "SetBouncerPassword"
+  of tagSetShowUserList: "SetShowUserList"
+  of tagUpdateIgnoreList: "UpdateIgnoreList"
+  of tagUpdateHighlightWords: "UpdateHighlightWords"
+  of tagUpdateJoinPartMuteList: "UpdateJoinPartMuteList"
+  of tagOpenKeyboardShortcuts: "OpenKeyboardShortcuts"
+  of tagEditServer: "EditServer"
+  of tagHideServerEditor: "HideServerEditor"
+  of tagSaveServerConfig: "SaveServerConfig"
+  of tagDeleteServer: "DeleteServer"
+  of tagDuplicateServer: "DuplicateServer"
   else: "Unknown"
 
 # ============================================================
@@ -3750,33 +4631,39 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
         gStatusText = "Enter a channel name (e.g., #nim)"
 
   of tagPartChannel:
-    if gActiveServerId >= 0 and gActiveChannelName.len > 0 and
-       gActiveChannelName != ServerChannel:
+    let targetChan = if gActionChannelName.len > 0: gActionChannelName
+                     else: gActiveChannelName
+    if gActiveServerId >= 0 and targetChan.len > 0 and
+       targetChan != ServerChannel:
       withLock gLock:
         gCommandQueue.add(BridgeCommand(kind: cmdPartChannel,
-          serverId: gActiveServerId, text: gActiveChannelName))
+          serverId: gActiveServerId, text: targetChan))
       syncAutoJoinChannels(gActiveServerId)
 
   of tagCloseChannel:
-    if gActiveServerId >= 0 and gActiveChannelName.len > 0 and
-       gActiveChannelName != ServerChannel:
-      if gActiveChannelName[0] == '#':
+    let targetChan = if gActionChannelName.len > 0: gActionChannelName
+                     else: gActiveChannelName
+    if gActiveServerId >= 0 and targetChan.len > 0 and
+       targetChan != ServerChannel:
+      if targetChan[0] == '#':
         withLock gLock:
           gCommandQueue.add(BridgeCommand(kind: cmdPartChannel,
-            serverId: gActiveServerId, text: gActiveChannelName))
+            serverId: gActiveServerId, text: targetChan))
       let sk = serverKey(gActiveServerId)
       if sk in gChannels:
         for i in countdown(gChannels[sk].len - 1, 0):
-          if gChannels[sk][i].name.toLowerAscii == gActiveChannelName.toLowerAscii:
+          if gChannels[sk][i].name.toLowerAscii == targetChan.toLowerAscii:
             gChannels[sk].delete(i)
             break
-      let ck = channelKey(gActiveServerId, gActiveChannelName)
+      let ck = channelKey(gActiveServerId, targetChan)
       gMessages.del(ck)
       gUsers.del(ck)
-      if sk in gChannels and gChannels[sk].len > 0:
-        gActiveChannelName = gChannels[sk][0].name
-      else:
-        gActiveChannelName = ServerChannel
+      # If we closed the active channel, switch to another
+      if gActiveChannelName.toLowerAscii == targetChan.toLowerAscii:
+        if sk in gChannels and gChannels[sk].len > 0:
+          gActiveChannelName = gChannels[sk][0].name
+        else:
+          gActiveChannelName = ServerChannel
       syncAutoJoinChannels(gActiveServerId)
       syncActiveChannelContext()
 
@@ -3822,6 +4709,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
 
   of tagToggleUserList:
     gShowUserList = not gShowUserList
+    saveConfig()
 
   of tagShowConnectForm:
     gShowConnectForm = true
@@ -4160,9 +5048,12 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
             if gActiveChannelName.len > 0: gActiveChannelName else: ServerChannel,
             "You have been marked as away")
 
-  of tagSetFontSize, tagSetMessageDensity, tagSetTimestampFormat,
-     tagUpdateSidebarFilter, tagUpdateSearch:
-    discard  # State handled by Swift reducer; future: persist to config
+  of tagSetFontSize, tagSetMessageDensity, tagSetTimestampFormat:
+    # Appearance values synced from snapshot; persist to config
+    saveConfig()
+
+  of tagUpdateSidebarFilter, tagUpdateSearch:
+    discard  # State handled by Swift reducer
 
   of tagShowSettings, tagHideSettings, tagShowChannelInfo, tagHideChannelInfo,
      tagToggleSearch, tagClearSearch, tagSelectNetwork:
@@ -4479,8 +5370,195 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
       gKeybinds.add(kb)
     saveConfig()
 
+  of tagSetQuitMessage:
+    # Quit message synced from snapshot (quitMessage).
+    # Live client configs are patched in cmdDisconnect/cmdShutdownAll
+    # (gConnections is only safe to access from the event loop thread).
+    saveConfig()
+
   of tagShowKeybindSheet, tagHideKeybindSheet:
     discard  # handled by Swift reducer
+
+  of tagSetLoggingEnabled:
+    # loggingEnabled synced from snapshot
+    if gLoggingEnabled and gLogDir.len > 0:
+      try:
+        if not dirExists(gLogDir):
+          createDir(gLogDir)
+      except CatchableError:
+        discard
+    saveConfig()
+
+  of tagSetLogDir:
+    # logDir synced from snapshot
+    if gLogDir.len > 0 and gLoggingEnabled:
+      try:
+        if not dirExists(gLogDir):
+          createDir(gLogDir)
+      except CatchableError:
+        discard
+    saveConfig()
+
+  of tagSetBouncerPassword:
+    # bouncerPassword synced from snapshot
+    saveConfig()
+
+  of tagSetShowUserList:
+    # showUserList synced from snapshot (via Swift reducer)
+    saveConfig()
+
+  of tagUpdateIgnoreList:
+    # ignoreListJson synced from snapshot; parse into gIgnoreList
+    gIgnoreList = @[]
+    try:
+      let arr = parseJson(gIgnoreListJson)
+      if arr.kind == JArray:
+        for item in arr.items:
+          if item.kind == JString and item.getStr().len > 0:
+            gIgnoreList.add(item.getStr().toLowerAscii)
+    except CatchableError:
+      discard
+    saveConfig()
+
+  of tagUpdateHighlightWords:
+    gHighlightWords = @[]
+    try:
+      let arr = parseJson(gHighlightWordsJson)
+      if arr.kind == JArray:
+        for item in arr.items:
+          if item.kind == JString and item.getStr().len > 0:
+            gHighlightWords.add(item.getStr().toLowerAscii)
+    except CatchableError:
+      discard
+    saveConfig()
+
+  of tagUpdateJoinPartMuteList:
+    gJoinPartMuteList = @[]
+    try:
+      let arr = parseJson(gJoinPartMuteListJson)
+      if arr.kind == JArray:
+        for item in arr.items:
+          if item.kind == JString and item.getStr().len > 0:
+            gJoinPartMuteList.add(item.getStr().toLowerAscii)
+    except CatchableError:
+      discard
+    saveConfig()
+
+  of tagOpenKeyboardShortcuts:
+    discard  # handled by Swift reducer
+
+  of tagEditServer:
+    let sid = gEditingServerId
+    let si = findServerIdx(sid)
+    if si >= 0:
+      let s = gServers[si]
+      var obj = newJObject()
+      obj["host"] = %s.host
+      obj["port"] = %s.port
+      obj["nick"] = %s.nick
+      obj["useTls"] = %s.useTls
+      obj["password"] = %s.password
+      obj["saslUser"] = %s.saslUser
+      obj["saslPass"] = %s.saslPass
+      var chArr = newJArray()
+      for ch in s.autoJoinChannels:
+        chArr.add(%ch)
+      obj["autoJoinChannels"] = chArr
+      obj["name"] = %s.name
+      gEditServerJson = $obj
+    else:
+      gEditServerJson = "{}"
+
+  of tagHideServerEditor:
+    discard  # handled by Swift reducer
+
+  of tagSaveServerConfig:
+    let sid = gActionServerId
+    try:
+      let node = parseJson(gEditServerJson)
+      let si = findServerIdx(sid)
+      if si >= 0:
+        gServers[si].name = jsonString(node, "name", gServers[si].name)
+        gServers[si].host = jsonString(node, "host", gServers[si].host)
+        gServers[si].port = jsonInt(node, "port", gServers[si].port)
+        gServers[si].nick = jsonString(node, "nick", gServers[si].nick)
+        gServers[si].useTls = jsonBool(node, "useTls", gServers[si].useTls)
+        gServers[si].password = jsonString(node, "password", gServers[si].password)
+        gServers[si].saslUser = jsonString(node, "saslUser", gServers[si].saslUser)
+        gServers[si].saslPass = jsonString(node, "saslPass", gServers[si].saslPass)
+        if "autoJoinChannels" in node and node["autoJoinChannels"].kind == JArray:
+          var channels: seq[string] = @[]
+          for ch in node["autoJoinChannels"].items:
+            if ch.kind == JString and ch.getStr().len > 0:
+              channels.add(ch.getStr())
+          gServers[si].autoJoinChannels = channels
+      saveConfig()
+    except CatchableError:
+      discard
+
+  of tagDeleteServer:
+    let sid = gActionServerId
+    if sid >= 0:
+      let si = findServerIdx(sid)
+      if si >= 0:
+        let name = gServers[si].name
+        if gServers[si].connected:
+          withLock gLock:
+            gCommandQueue.add(BridgeCommand(kind: cmdDisconnect, serverId: sid))
+        gServers.delete(si)
+        let sk = serverKey(sid)
+        if sk in gChannels:
+          for ch in gChannels[sk]:
+            let ck = channelKey(sid, ch.name)
+            gMessages.del(ck)
+            gUsers.del(ck)
+          gChannels.del(sk)
+        if gActiveServerId == sid:
+          if gServers.len > 0:
+            gActiveServerId = gServers[0].id
+            let newSk = serverKey(gActiveServerId)
+            if newSk in gChannels and gChannels[newSk].len > 0:
+              gActiveChannelName = gChannels[newSk][0].name
+            else:
+              gActiveChannelName = ""
+          else:
+            gActiveServerId = -1
+            gActiveChannelName = ""
+        saveConfig()
+        gStatusText = "Removed server: " & name
+
+  of tagDuplicateServer:
+    let sid = gActionServerId
+    let si = findServerIdx(sid)
+    if si >= 0:
+      let src = gServers[si]
+      let newId = gNextServerId
+      inc gNextServerId
+      gServers.add(ServerState(
+        id: newId,
+        name: src.name & " (copy)",
+        host: src.host,
+        port: src.port,
+        nick: src.nick,
+        useTls: src.useTls,
+        password: src.password,
+        saslUser: src.saslUser,
+        saslPass: src.saslPass,
+        autoJoinChannels: src.autoJoinChannels,
+        connected: false,
+        connecting: false,
+        lagMs: -1,
+        isAway: false,
+      ))
+      saveConfig()
+
+  of tagAppShutdown:
+    # Queue a shutdown-all command for the event loop thread.
+    # The event loop thread owns gConnections, so we must not access
+    # it here (dispatch runs on the Swift main thread).
+    ensureEventLoop()
+    withLock gLock:
+      gCommandQueue.add(BridgeCommand(kind: cmdShutdownAll))
 
   else:
     gStatusText = "Unknown action (" & $actionTag & ")"
@@ -4538,12 +5616,28 @@ proc bridgeGetNotifyFd(): int32 {.cdecl.} =
   ensureInit()
   gNotifyPipeRead.int32
 
+proc bridgeWaitShutdown(timeoutMs: int32): int32 {.cdecl.} =
+  ## Block until the event loop thread exits or timeout expires.
+  ## Returns 0 on success (thread exited), 1 on timeout.
+  if not gEventLoopRunning:
+    return 0  # Never started
+  let deadline = epochTime() + float(timeoutMs) / 1000.0
+  while epochTime() < deadline:
+    withLock gShutdownLock:
+      if gShutdownComplete:
+        joinThread(gEventLoopThread)
+        gEventLoopRunning = false
+        return 0
+    sleep(10)  # Poll every 10ms
+  return 1  # Timeout
+
 var gBridgeTable = GUIBridgeFunctionTable(
   abiVersion: guiBridgeAbiVersion,
   alloc: bridgeAlloc,
   free: bridgeFree,
   dispatch: bridgeDispatch,
-  getNotifyFd: bridgeGetNotifyFd
+  getNotifyFd: bridgeGetNotifyFd,
+  waitShutdown: bridgeWaitShutdown
 )
 
 proc gui_bridge_get_table(): ptr GUIBridgeFunctionTable {.cdecl, exportc, dynlib.} =

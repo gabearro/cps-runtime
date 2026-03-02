@@ -142,6 +142,7 @@ app CpsIrc {
     actionServerId: Int = -1
     actionNick: String = ""
     actionColor: String = ""
+    actionChannelName: String = ""
 
     nickColors: String = "{}"
 
@@ -179,11 +180,25 @@ app CpsIrc {
     smartFilterEnabled: Bool = true
     smartFilterTimeout: Int = 1800
 
+    quitMessage: String = "Goodbye"
+
     showChannelSwitcher: Bool = false
     channelSwitcherText: String = ""
 
     keybinds: String = "{}"
     showKeybindSheet: Bool = false
+
+    settingsTab: Int = 0
+    loggingEnabled: Bool = false
+    logDir: String = ""
+    ignoreListJson: String = "[]"
+    highlightWordsJson: String = "[]"
+    joinPartMuteListJson: String = "[]"
+    bouncerPassword: String = ""
+
+    showServerEditor: Bool = false
+    editingServerId: Int = -1
+    editServerJson: String = "{}"
 
     computed hasActiveServer: Bool = activeServerId >= 0
     computed hasActiveChannel: Bool = activeChannelName != ""
@@ -197,8 +212,8 @@ app CpsIrc {
   action Reconnect owner nim
   action SwitchChannel(channelName: String) owner both
   action JoinChannel owner nim
-  action PartChannel owner nim
-  action CloseChannel owner nim
+  action PartChannel(channelName: String) owner both
+  action CloseChannel(channelName: String) owner both
   action SendMessage owner nim
   action UpdateInput owner both
   action ToggleUserList owner both
@@ -266,6 +281,21 @@ app CpsIrc {
   action HideKeybindSheet owner swift
   action UpdateKeybind(id: String, key: String, modifiers: String) owner both
   action ResetKeybinds owner both
+  action SetQuitMessage owner both
+  action AppShutdown owner nim
+  action SetLoggingEnabled(enabled: Bool) owner both
+  action SetLogDir owner both
+  action SetBouncerPassword owner both
+  action SetShowUserList(enabled: Bool) owner both
+  action UpdateIgnoreList(json: String) owner both
+  action UpdateHighlightWords(json: String) owner both
+  action UpdateJoinPartMuteList(json: String) owner both
+  action OpenKeyboardShortcuts owner swift
+  action EditServer(serverId: Int) owner both
+  action HideServerEditor owner swift
+  action SaveServerConfig owner both
+  action DeleteServer(serverId: Int) owner both
+  action DuplicateServer(serverId: Int) owner both
 
   reducer {
     on StartPoll {
@@ -311,6 +341,14 @@ app CpsIrc {
 
     on RemoveServerById(serverId) {
       set actionServerId = serverId
+    }
+
+    on PartChannel(channelName) {
+      set actionChannelName = channelName
+    }
+
+    on CloseChannel(channelName) {
+      set actionChannelName = channelName
     }
 
     on WhoisUser(nick) {
@@ -480,6 +518,65 @@ app CpsIrc {
       set actionNick = ""
       set actionColor = ""
     }
+
+    on SetQuitMessage {
+    }
+
+    on SetLoggingEnabled(enabled) {
+      set loggingEnabled = enabled
+    }
+
+    on SetLogDir {
+    }
+
+    on SetBouncerPassword {
+    }
+
+    on SetShowUserList(enabled) {
+      set showUserList = enabled
+    }
+
+    on UpdateIgnoreList(json) {
+      set ignoreListJson = json
+    }
+
+    on UpdateHighlightWords(json) {
+      set highlightWordsJson = json
+    }
+
+    on UpdateJoinPartMuteList(json) {
+      set joinPartMuteListJson = json
+    }
+
+    on OpenKeyboardShortcuts {
+      set showSettings = false
+      set showKeybindSheet = true
+    }
+
+    on EditServer(serverId) {
+      set editingServerId = serverId
+      set showServerEditor = true
+      set showSettings = false
+    }
+
+    on HideServerEditor {
+      set showServerEditor = false
+      set editingServerId = -1
+    }
+
+    on SaveServerConfig {
+      set actionServerId = editingServerId
+      set showServerEditor = false
+      set editingServerId = -1
+    }
+
+    on DeleteServer(serverId) {
+      set actionServerId = serverId
+    }
+
+    on DuplicateServer(serverId) {
+      set actionServerId = serverId
+    }
   }
 
   escape swiftFile "swift/RichMessageText.swift"
@@ -487,6 +584,8 @@ app CpsIrc {
   escape swiftFile "swift/KeyInterceptingTextField.swift"
   escape swiftFile "swift/KeyboardShortcutMonitor.swift"
   escape swiftFile "swift/KeybindSheetView.swift"
+  escape swiftFile "swift/SettingsListsSection.swift"
+  escape swiftFile "swift/ServerEditorView.swift"
 
   bridge {
     nimEntry: "bridge.nim"

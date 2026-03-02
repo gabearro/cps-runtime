@@ -22,7 +22,7 @@ import ../tls/client as tlsclient
 import ./protocol
 import ./sasl
 import std/[times, base64, strutils, tables, options, sequtils, nativesockets]
-from std/posix import shutdown, SHUT_RDWR
+from std/posix import shutdown, SHUT_RDWR, SHUT_WR, setsockopt, SockLen
 
 export protocol
 
@@ -43,10 +43,14 @@ type
     password*: string          ## Server password (empty = none)
     proxies*: seq[ProxyConfig] ## Proxy chain (empty = direct)
     autoReconnect*: bool       ## Auto-reconnect on disconnect
-    reconnectDelayMs*: int     ## Delay between reconnect attempts
+    reconnectDelayMs*: int     ## Base delay between reconnect attempts
+    reconnectBackoffFactor*: float  ## Multiply delay on each failure (default: 2.0)
+    reconnectMaxDelayMs*: int  ## Cap on backoff delay (default: 300000 = 5 min)
+    reconnectJitterMs*: int    ## Random jitter range (default: 5000)
     maxReconnectAttempts*: int ## Max reconnect attempts (0 = unlimited)
     pingTimeoutMs*: int        ## PING timeout (default 120000)
     autoJoinChannels*: seq[string] ## Channels to join on connect
+    quitMessage*: string       ## QUIT reason shown to other users (default "Goodbye")
     ctcpVersion*: string       ## CTCP VERSION reply
     eventBufferSize*: int      ## Event channel buffer size (default 256)
     useTls*: bool              ## Use TLS/SSL (default false, port 6697)
@@ -101,8 +105,12 @@ proc newIrcClientConfig*(host: string, port: int = 6667,
     realname: realname,
     autoReconnect: true,
     reconnectDelayMs: 5000,
+    reconnectBackoffFactor: 2.0,
+    reconnectMaxDelayMs: 300_000,
+    reconnectJitterMs: 5000,
     maxReconnectAttempts: 0,
     pingTimeoutMs: 120_000,
+    quitMessage: "Goodbye",
     ctcpVersion: "CPS IRC Client 1.0",
     eventBufferSize: 256,
     useTls: false,
@@ -691,22 +699,46 @@ proc readLoop(client: IrcClient): CpsVoidFuture {.cps.} =
 # Internal: keep-alive / ping timeout
 # ============================================================
 
+proc getRawFd(client: IrcClient): SocketHandle =
+  ## Get the underlying raw TCP socket fd, regardless of stream type.
+  if client.stream == nil:
+    return osInvalidSocket
+  if client.stream of tlsclient.TlsStream:
+    return tlsclient.TlsStream(client.stream).tcpStream.fd
+  elif client.stream of ProxyStream:
+    let tcp = ProxyStream(client.stream).getUnderlyingTcpStream()
+    return tcp.fd
+  elif client.stream of TcpStream:
+    return TcpStream(client.stream).fd
+  return osInvalidSocket
+
 proc abortSocket(client: IrcClient) =
   ## Shutdown the underlying socket to force pending reads to return EOF.
   ## Unlike close(), shutdown() causes the selector to fire readable events
   ## so that blocked reads in readLoop get an EOF/error immediately.
-  if client.stream == nil:
-    return
-  var fd: SocketHandle = osInvalidSocket
-  if client.stream of tlsclient.TlsStream:
-    fd = tlsclient.TlsStream(client.stream).tcpStream.fd
-  elif client.stream of ProxyStream:
-    let tcp = ProxyStream(client.stream).getUnderlyingTcpStream()
-    fd = tcp.fd
-  elif client.stream of TcpStream:
-    fd = TcpStream(client.stream).fd
+  let fd = client.getRawFd()
   if fd != osInvalidSocket:
     discard shutdown(fd, SHUT_RDWR)
+
+const
+  IPPROTO_TCP_C {.importc: "IPPROTO_TCP", header: "<netinet/in.h>".}: cint = 6
+  TCP_NODELAY_C {.importc: "TCP_NODELAY", header: "<netinet/tcp.h>".}: cint = 1
+
+proc setTcpNoDelay(fd: SocketHandle) =
+  ## Enable TCP_NODELAY on the socket to disable Nagle's algorithm.
+  var yes: cint = 1
+  discard setsockopt(fd, IPPROTO_TCP_C, TCP_NODELAY_C,
+                     addr yes, sizeof(yes).SockLen)
+
+proc prepareGracefulClose(client: IrcClient) =
+  ## Prepare the socket for a graceful close that preserves the send buffer.
+  ## 1. Disables Nagle (TCP_NODELAY) so pending data is pushed immediately.
+  ## 2. Half-closes the write side (SHUT_WR) → kernel sends FIN *after*
+  ##    all pending send-buffer data has been transmitted.
+  let fd = client.getRawFd()
+  if fd != osInvalidSocket:
+    setTcpNoDelay(fd)
+    discard shutdown(fd, SHUT_WR)
 
 proc keepAliveLoop(client: IrcClient): CpsVoidFuture {.cps.} =
   ## Periodically send PINGs and detect dead connections.
@@ -824,10 +856,31 @@ proc run*(client: IrcClient): CpsVoidFuture {.cps.} =
       await client.emit(IrcEvent(kind: iekError, errMsg: "Max reconnect attempts reached"))
       break
 
-    # Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s max
-    let baseDelay = 1000
-    let maxDelay = 30000
-    let delay = min(maxDelay, baseDelay * (1 shl min(client.reconnectAttempts - 1, 4)))
+    # Exponential backoff with configurable factor, max delay, and jitter
+    let baseDelay = client.config.reconnectDelayMs
+    let factor = client.config.reconnectBackoffFactor
+    let maxDelay = client.config.reconnectMaxDelayMs
+    let jitterRange = client.config.reconnectJitterMs
+    var delay: int
+    if factor > 0.0 and client.reconnectAttempts > 1:
+      var scaledDelay = float(baseDelay)
+      var attempt = client.reconnectAttempts - 1
+      while attempt > 0 and scaledDelay < float(maxDelay):
+        scaledDelay = scaledDelay * factor
+        attempt -= 1
+      delay = min(maxDelay, int(scaledDelay))
+    else:
+      delay = baseDelay
+    # Add jitter using simple hash of attempt count + epochTime to avoid std/random
+    if jitterRange > 0:
+      let jitterSeed = uint32(client.reconnectAttempts * 31 + int(epochTime() * 1000) mod 65536)
+      var x = jitterSeed
+      x = x xor (x shl 13)
+      x = x xor (x shr 17)
+      x = x xor (x shl 5)
+      let jitter = int(x mod uint32(jitterRange))
+      delay = delay + jitter
+    delay = min(delay, maxDelay)
     await client.emit(IrcEvent(kind: iekError, errMsg: "Reconnecting in " & $(delay div 1000) & "s..."))
     await cpsSleep(delay)
 
@@ -836,12 +889,43 @@ proc run*(client: IrcClient): CpsVoidFuture {.cps.} =
 
 proc disconnect*(client: IrcClient): CpsVoidFuture {.cps.} =
   ## Gracefully disconnect from the server.
+  ##
+  ## IRC disconnect sequence:
+  ##   1. Send QUIT message to server
+  ##   2. Wait for server to process QUIT and send ERROR/close (via cpsSleep)
+  ##   3. Close the stream (tcpStreamClose does shutdown(SHUT_WR) + drain + close)
+  ##
+  ## We use cpsSleep (not blocking poll) to wait for the server response.
+  ## This keeps the event loop running so readLoop can process the server's
+  ## ERROR and close cleanly, and other concurrent tasks (like observer
+  ## clients) continue working.
+  ##
+  ## tcpStreamClose handles the actual cleanup: shutdown(SHUT_WR) sends FIN,
+  ## then drains the receive buffer so close(fd) sends FIN (not RST).
   client.config.autoReconnect = false
   if client.stream != nil and not client.stream.closed:
+    let msg = if client.config.quitMessage.len > 0: client.config.quitMessage
+              else: "Goodbye"
+    # Disable Nagle so the QUIT is pushed to the wire immediately.
+    let fd = client.getRawFd()
+    if fd != osInvalidSocket:
+      setTcpNoDelay(fd)
     try:
-      await client.quit("Goodbye")
+      await client.quit(msg)
     except CatchableError:
-      discard
-    client.stream.close()
+      if client.stream != nil and not client.stream.closed:
+        client.stream.close()
+      client.stream = nil
+      client.state = icsDisconnected
+      return
+    # Give the server time to read our QUIT, broadcast it, and send ERROR.
+    # cpsSleep yields to the event loop, so readLoop and other CPS tasks
+    # continue running. readLoop will see the server's ERROR or EOF and
+    # exit cleanly, which lets run() close the stream properly.
+    await cpsSleep(500)
+    # Close the stream if readLoop hasn't already.
+    # tcpStreamClose does: shutdown(SHUT_WR) → drain recv buffer → close(fd)
+    if client.stream != nil and not client.stream.closed:
+      client.stream.close()
     client.stream = nil
   client.state = icsDisconnected

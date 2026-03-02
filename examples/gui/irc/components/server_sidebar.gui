@@ -68,12 +68,16 @@ component ServerRow(server: IrcServer, isActive: Bool, isDark: Bool) {
       .stroke(isActive ? activeBorder : Color.clear, lineWidth: 0.5)
   )
   .contextMenu {
+    Button("Edit Server", action: EditServer(serverId: server.id))
+    Divider()
     if server.connected {
       Button("Disconnect", action: DisconnectServer(serverId: server.id))
       Button("Reconnect", action: ReconnectServer(serverId: server.id))
     } else {
       Button("Connect", action: ConnectServer(serverId: server.id))
     }
+    Divider()
+    Button("Duplicate", action: DuplicateServer(serverId: server.id))
     Divider()
     Button("Remove Server", action: RemoveServerById(serverId: server.id))
   }
@@ -340,9 +344,9 @@ component ServerSidebar(isDark: Bool) {
               )
               .padding(horizontal: 6)
               .contextMenu {
-                Button("Close", action: CloseChannel)
+                Button("Close", action: CloseChannel(channelName: channel.name))
                 if channel.isChannel {
-                  Button("Part Channel", action: PartChannel)
+                  Button("Part Channel", action: PartChannel(channelName: channel.name))
                 }
                 if channel.isChannel {
                   Divider()

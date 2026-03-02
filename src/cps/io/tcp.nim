@@ -4,6 +4,7 @@
 ## integrated with the CPS event loop.
 
 import std/[nativesockets, net, os]
+from std/posix import shutdown, SHUT_WR
 import ../runtime
 import ../eventloop
 import ../private/platform
@@ -166,6 +167,18 @@ proc tcpStreamClose(s: AsyncStream) =
     loop.unregister(ts.fd)
   except Exception:
     discard
+  # Half-close write side first: the kernel sends FIN *after* all pending
+  # send-buffer data has been transmitted. Without this, close() on a socket
+  # with unread receive-buffer data sends TCP RST, which causes the peer
+  # kernel to discard ALL unread data from its receive buffer — including
+  # data we just wrote (e.g. an IRC QUIT message).
+  discard shutdown(ts.fd, SHUT_WR)
+  # Drain the receive buffer so close() finds it empty and sends FIN
+  # instead of RST. Non-blocking socket: recv returns -1/EAGAIN when empty.
+  var drainBuf: array[4096, byte]
+  for i in 0 ..< 16:
+    if recv(ts.fd, addr drainBuf[0], 4096.cint, 0'i32) <= 0:
+      break
   ts.fd.close()
 
 proc newTcpStream*(fd: SocketHandle, domain: Domain = AF_INET): TcpStream =

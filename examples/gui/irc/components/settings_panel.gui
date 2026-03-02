@@ -102,6 +102,11 @@ component SettingsAppearanceSection(isDark: Bool) {
   let dividerColor = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
   let cardBg = isDark ? Color(red: 0.19, green: 0.19, blue: 0.20) : Color(red: 0.96, green: 0.96, blue: 0.97)
   let cardBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+  let fgShowUL = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let activeBgUL = token.color.accent.opacity(0.12)
+  let inactiveBgUL = isDark ? Color.white.opacity(0.05) : Color.black.opacity(0.03)
+  let activeBorderUL = token.color.accent.opacity(0.3)
+  let inactiveBorderUL = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
 
   VStack(alignment: HorizontalAlignment.leading, spacing: 12) {
     Text("APPEARANCE")
@@ -171,6 +176,58 @@ component SettingsAppearanceSection(isDark: Bool) {
               ? "Show date and time"
               : "Hide timestamps"
         )
+          .font(.system(size: 11))
+          .foregroundColor(fgTertiary)
+      }
+
+      Rectangle()
+        .fill(dividerColor)
+        .frame(height: 1)
+
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        HStack {
+          Text("Show User List")
+            .font(.system(size: 13, weight: Font.Weight.medium))
+            .foregroundColor(fg)
+
+          Spacer()
+
+          HStack(spacing: 6) {
+            Button(action: SetShowUserList(enabled: true)) {
+              Text("On")
+                .font(.system(size: 12, weight: showUserList ? Font.Weight.semibold : Font.Weight.regular))
+                .foregroundColor(showUserList ? token.color.accent : fgShowUL)
+                .padding(vertical: 5, horizontal: 12)
+                .background(
+                  RoundedRectangle(cornerRadius: 6)
+                    .fill(showUserList ? activeBgUL : inactiveBgUL)
+                )
+                .overlay(
+                  RoundedRectangle(cornerRadius: 6)
+                    .stroke(showUserList ? activeBorderUL : inactiveBorderUL, lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(BorderlessButtonStyle())
+
+            Button(action: SetShowUserList(enabled: false)) {
+              Text("Off")
+                .font(.system(size: 12, weight: !showUserList ? Font.Weight.semibold : Font.Weight.regular))
+                .foregroundColor(!showUserList ? token.color.accent : fgShowUL)
+                .padding(vertical: 5, horizontal: 12)
+                .background(
+                  RoundedRectangle(cornerRadius: 6)
+                    .fill(!showUserList ? activeBgUL : inactiveBgUL)
+                )
+                .overlay(
+                  RoundedRectangle(cornerRadius: 6)
+                    .stroke(!showUserList ? activeBorderUL : inactiveBorderUL, lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(BorderlessButtonStyle())
+          }
+        }
+
+        Text("Show the user list sidebar in channels")
           .font(.system(size: 11))
           .foregroundColor(fgTertiary)
       }
@@ -291,6 +348,224 @@ component SettingsNotificationsSection(isDark: Bool) {
   }
 }
 
+component SettingsConnectionSection(isDark: Bool) {
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgTertiary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.65) : token.color.textSubtle
+  let sectionLabelColor = isDark ? Color(red: 0.58, green: 0.58, blue: 0.61) : Color(red: 0.60, green: 0.60, blue: 0.63)
+  let dividerColor = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
+  let cardBg = isDark ? Color(red: 0.19, green: 0.19, blue: 0.20) : Color(red: 0.96, green: 0.96, blue: 0.97)
+  let cardBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+  let fieldBg = isDark ? Color.black.opacity(0.25) : Color.white
+  let fieldBorder = isDark ? Color.white.opacity(0.15) : Color.black.opacity(0.10)
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 12) {
+    Text("CONNECTION")
+      .font(.system(size: 11, weight: Font.Weight.semibold))
+      .foregroundColor(sectionLabelColor)
+      .tracking(0.6)
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 16) {
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        Text("Quit Message")
+          .font(.system(size: 13, weight: Font.Weight.medium))
+          .foregroundColor(fg)
+
+        TextField("Goodbye", text: quitMessage)
+          .textFieldStyle(PlainTextFieldStyle())
+          .font(.system(size: 13))
+          .padding(8)
+          .background(
+            RoundedRectangle(cornerRadius: 6)
+              .fill(fieldBg)
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 6)
+              .stroke(fieldBorder, lineWidth: 0.5)
+          )
+          .onSubmit(perform: SetQuitMessage)
+
+        Text("Shown to other users when you disconnect (press Enter to save)")
+          .font(.system(size: 11))
+          .foregroundColor(fgTertiary)
+      }
+
+      Rectangle()
+        .fill(dividerColor)
+        .frame(height: 1)
+
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        Text("Bouncer Password")
+          .font(.system(size: 13, weight: Font.Weight.medium))
+          .foregroundColor(fg)
+
+        SecureField("Password", text: bouncerPassword)
+          .textFieldStyle(PlainTextFieldStyle())
+          .font(.system(size: 13))
+          .padding(8)
+          .background(
+            RoundedRectangle(cornerRadius: 6)
+              .fill(fieldBg)
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 6)
+              .stroke(fieldBorder, lineWidth: 0.5)
+          )
+          .onSubmit(perform: SetBouncerPassword)
+
+        Text("Password for bouncer authentication (press Enter to save)")
+          .font(.system(size: 11))
+          .foregroundColor(fgTertiary)
+      }
+
+      Rectangle()
+        .fill(dividerColor)
+        .frame(height: 1)
+
+      HStack {
+        VStack(alignment: HorizontalAlignment.leading, spacing: 4) {
+          Text("Keyboard Shortcuts")
+            .font(.system(size: 13, weight: Font.Weight.medium))
+            .foregroundColor(fg)
+
+          Text("View and customize keybindings")
+            .font(.system(size: 11))
+            .foregroundColor(fgTertiary)
+        }
+
+        Spacer()
+
+        Button(action: OpenKeyboardShortcuts) {
+          Text("Configure")
+            .font(.system(size: 12, weight: Font.Weight.medium))
+            .foregroundColor(token.color.accent)
+        }
+        .buttonStyle(BorderlessButtonStyle())
+      }
+    }
+    .padding(16)
+    .background(
+      RoundedRectangle(cornerRadius: 10)
+        .fill(cardBg)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 10)
+        .stroke(cardBorder, lineWidth: 0.5)
+    )
+  }
+}
+
+component SettingsLoggingSection(isDark: Bool) {
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let fgTertiary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.65) : token.color.textSubtle
+  let sectionLabelColor = isDark ? Color(red: 0.58, green: 0.58, blue: 0.61) : Color(red: 0.60, green: 0.60, blue: 0.63)
+  let dividerColor = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
+  let cardBg = isDark ? Color(red: 0.19, green: 0.19, blue: 0.20) : Color(red: 0.96, green: 0.96, blue: 0.97)
+  let cardBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+  let fieldBg = isDark ? Color.black.opacity(0.25) : Color.white
+  let fieldBorder = isDark ? Color.white.opacity(0.15) : Color.black.opacity(0.10)
+  let activeBg = token.color.accent.opacity(0.12)
+  let inactiveBg = isDark ? Color.white.opacity(0.05) : Color.black.opacity(0.03)
+  let activeBorder = token.color.accent.opacity(0.3)
+  let inactiveBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 12) {
+    Text("LOGGING")
+      .font(.system(size: 11, weight: Font.Weight.semibold))
+      .foregroundColor(sectionLabelColor)
+      .tracking(0.6)
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 16) {
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        HStack {
+          Text("Enable Logging")
+            .font(.system(size: 13, weight: Font.Weight.medium))
+            .foregroundColor(fg)
+
+          Spacer()
+
+          HStack(spacing: 6) {
+            Button(action: SetLoggingEnabled(enabled: true)) {
+              Text("On")
+                .font(.system(size: 12, weight: loggingEnabled ? Font.Weight.semibold : Font.Weight.regular))
+                .foregroundColor(loggingEnabled ? token.color.accent : fgSecondary)
+                .padding(vertical: 5, horizontal: 12)
+                .background(
+                  RoundedRectangle(cornerRadius: 6)
+                    .fill(loggingEnabled ? activeBg : inactiveBg)
+                )
+                .overlay(
+                  RoundedRectangle(cornerRadius: 6)
+                    .stroke(loggingEnabled ? activeBorder : inactiveBorder, lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(BorderlessButtonStyle())
+
+            Button(action: SetLoggingEnabled(enabled: false)) {
+              Text("Off")
+                .font(.system(size: 12, weight: !loggingEnabled ? Font.Weight.semibold : Font.Weight.regular))
+                .foregroundColor(!loggingEnabled ? token.color.accent : fgSecondary)
+                .padding(vertical: 5, horizontal: 12)
+                .background(
+                  RoundedRectangle(cornerRadius: 6)
+                    .fill(!loggingEnabled ? activeBg : inactiveBg)
+                )
+                .overlay(
+                  RoundedRectangle(cornerRadius: 6)
+                    .stroke(!loggingEnabled ? activeBorder : inactiveBorder, lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(BorderlessButtonStyle())
+          }
+        }
+
+        Text("Save chat messages to disk")
+          .font(.system(size: 11))
+          .foregroundColor(fgTertiary)
+      }
+
+      if loggingEnabled {
+        Rectangle()
+          .fill(dividerColor)
+          .frame(height: 1)
+
+        VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+          Text("Log Directory")
+            .font(.system(size: 13, weight: Font.Weight.medium))
+            .foregroundColor(fg)
+
+          TextField("~/logs/irc", text: logDir)
+            .textFieldStyle(PlainTextFieldStyle())
+            .font(.system(size: 13))
+            .padding(8)
+            .background(
+              RoundedRectangle(cornerRadius: 6)
+                .fill(fieldBg)
+            )
+            .overlay(
+              RoundedRectangle(cornerRadius: 6)
+                .stroke(fieldBorder, lineWidth: 0.5)
+            )
+            .onSubmit(perform: SetLogDir)
+
+          Text("Directory where log files are saved (press Enter to save)")
+            .font(.system(size: 11))
+            .foregroundColor(fgTertiary)
+        }
+      }
+    }
+    .padding(16)
+    .background(
+      RoundedRectangle(cornerRadius: 10)
+        .fill(cardBg)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 10)
+        .stroke(cardBorder, lineWidth: 0.5)
+    )
+  }
+}
+
 component SettingsPanel(isDark: Bool) {
   let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
   let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
@@ -324,17 +599,107 @@ component SettingsPanel(isDark: Bool) {
     }
     .padding(vertical: 16, horizontal: 24)
 
+    Picker("", selection: settingsTab) {
+      Text("Appearance").tag(0)
+      Text("Filters").tag(1)
+      Text("Lists").tag(2)
+      Text("Logging").tag(3)
+      Text("Connection").tag(4)
+      Text("Servers").tag(5)
+    }
+    .pickerStyle(SegmentedPickerStyle())
+    .padding(horizontal: 24)
+    .padding(vertical: 8)
+
     Rectangle()
       .fill(dividerColor)
       .frame(height: 1)
 
-    ScrollView {
-      VStack(alignment: HorizontalAlignment.leading, spacing: 24) {
-        SettingsAppearanceSection(isDark: isDark)
-        SettingsNotificationsSection(isDark: isDark)
+    if settingsTab == 0 {
+      ScrollView {
+        VStack(alignment: HorizontalAlignment.leading, spacing: 24) {
+          SettingsAppearanceSection(isDark: isDark)
+        }
+        .padding(24)
       }
-      .padding(24)
     }
+
+    if settingsTab == 1 {
+      ScrollView {
+        VStack(alignment: HorizontalAlignment.leading, spacing: 24) {
+          SettingsNotificationsSection(isDark: isDark)
+        }
+        .padding(24)
+      }
+    }
+
+    if settingsTab == 2 {
+      SettingsListsSection(store: store, isDark: isDark)
+    }
+
+    if settingsTab == 3 {
+      ScrollView {
+        VStack(alignment: HorizontalAlignment.leading, spacing: 24) {
+          SettingsLoggingSection(isDark: isDark)
+        }
+        .padding(24)
+      }
+    }
+
+    if settingsTab == 4 {
+      ScrollView {
+        VStack(alignment: HorizontalAlignment.leading, spacing: 24) {
+          SettingsConnectionSection(isDark: isDark)
+        }
+        .padding(24)
+      }
+    }
+
+    if settingsTab == 5 {
+      ServerEditorView(store: store, isDark: isDark)
+    }
+  }
+  .frame(minWidth: 480, idealWidth: 520, minHeight: 500)
+}
+
+component ServerEditorPanel(isDark: Bool) {
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+  let dividerColor = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
+
+  VStack(spacing: 0) {
+    HStack {
+      HStack(spacing: 8) {
+        Image(systemName: "server.rack")
+          .font(.system(size: 14))
+          .foregroundColor(token.color.accent)
+
+        Text("Edit Server")
+          .font(.system(size: 17, weight: Font.Weight.semibold))
+          .foregroundColor(fg)
+      }
+
+      Spacer()
+
+      Button(action: HideServerEditor) {
+        Image(systemName: "xmark")
+          .font(.system(size: 10, weight: Font.Weight.medium))
+          .foregroundColor(fgSecondary)
+          .frame(width: 24, height: 24)
+          .background(
+            Circle()
+              .fill(isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.04))
+          )
+      }
+      .buttonStyle(BorderlessButtonStyle())
+    }
+    .padding(vertical: 16, horizontal: 24)
+
+    Rectangle()
+      .fill(dividerColor)
+      .frame(height: 1)
+
+    ServerEditorView(store: store, isDark: isDark)
   }
   .frame(minWidth: 480, idealWidth: 520, minHeight: 500)
 }
