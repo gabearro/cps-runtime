@@ -4,7 +4,7 @@ component IrcApp {
   let dividerColor = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.08)
 
   NavigationSplitView {
-    ServerSidebar(isDark: isDark)
+    ReorderableSidebar(store: store, isDark: isDark)
       .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
     HStack(spacing: 0) {
       ChatArea(isDark: isDark)

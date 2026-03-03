@@ -117,6 +117,8 @@ const
   tagSaveServerConfig = 87'u32
   tagDeleteServer = 88'u32
   tagDuplicateServer = 89'u32
+  tagMoveServer = 90'u32
+  tagMoveChannel = 91'u32
 
 # ============================================================
 # Bridge types
@@ -4449,6 +4451,8 @@ proc actionName(tag: uint32): string =
   of tagSaveServerConfig: "SaveServerConfig"
   of tagDeleteServer: "DeleteServer"
   of tagDuplicateServer: "DuplicateServer"
+  of tagMoveServer: "MoveServer"
+  of tagMoveChannel: "MoveChannel"
   else: "Unknown"
 
 # ============================================================
@@ -5551,6 +5555,29 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
         isAway: false,
       ))
       saveConfig()
+
+  of tagMoveServer:
+    let fromIdx = gActionServerId
+    let toIdx = gActionTransferId
+    if fromIdx >= 0 and fromIdx < gServers.len and
+       toIdx >= 0 and toIdx < gServers.len and fromIdx != toIdx:
+      let item = gServers[fromIdx]
+      gServers.delete(fromIdx)
+      gServers.insert(item, toIdx)
+      saveConfig()
+
+  of tagMoveChannel:
+    let fromIdx = gActionServerId
+    let toIdx = gActionTransferId
+    if gActiveServerId >= 0:
+      let sk = serverKey(gActiveServerId)
+      if sk in gChannels:
+        if fromIdx >= 0 and fromIdx < gChannels[sk].len and
+           toIdx >= 0 and toIdx < gChannels[sk].len and fromIdx != toIdx:
+          let item = gChannels[sk][fromIdx]
+          gChannels[sk].delete(fromIdx)
+          gChannels[sk].insert(item, toIdx)
+          saveConfig()
 
   of tagAppShutdown:
     # Queue a shutdown-all command for the event loop thread.

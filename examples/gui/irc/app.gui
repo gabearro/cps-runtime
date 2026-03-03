@@ -296,6 +296,8 @@ app CpsIrc {
   action SaveServerConfig owner both
   action DeleteServer(serverId: Int) owner both
   action DuplicateServer(serverId: Int) owner both
+  action MoveServer(fromIndex: Int, toIndex: Int) owner both
+  action MoveChannel(fromIndex: Int, toIndex: Int) owner both
 
   reducer {
     on StartPoll {
@@ -577,6 +579,16 @@ app CpsIrc {
     on DuplicateServer(serverId) {
       set actionServerId = serverId
     }
+
+    on MoveServer(fromIndex, toIndex) {
+      set actionServerId = fromIndex
+      set actionTransferId = toIndex
+    }
+
+    on MoveChannel(fromIndex, toIndex) {
+      set actionServerId = fromIndex
+      set actionTransferId = toIndex
+    }
   }
 
   escape swiftFile "swift/RichMessageText.swift"
@@ -586,6 +598,7 @@ app CpsIrc {
   escape swiftFile "swift/KeybindSheetView.swift"
   escape swiftFile "swift/SettingsListsSection.swift"
   escape swiftFile "swift/ServerEditorView.swift"
+  escape swiftFile "swift/ReorderableSidebar.swift"
 
   bridge {
     nimEntry: "bridge.nim"
