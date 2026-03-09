@@ -225,8 +225,11 @@ type
     selectedPiecesMask*: seq[bool]   ## true = piece selected for download
     highPriorityPiecesMask*: seq[bool] ## true = piece should be prioritized
     filePriorities*: Table[int, string]  ## index -> high | normal | skip
-    # Global bandwidth limiter
+    # Global bandwidth limiter (may be shared across torrents)
     bandwidthLimiter*: BandwidthLimiter
+    # Per-torrent wire byte counters (for accurate per-torrent rate display)
+    wireDownloaded*: int64
+    wireUploaded*: int64
     # MT synchronization
     mtx*: AsyncMutex              ## Protects shared mutable state across CPS tasks
     trackerLock*: SpinLock        ## Protects trackerRuntime table (non-suspending reads/writes)
@@ -288,7 +291,7 @@ proc defaultConfig*(): ClientConfig =
     enableHolepunch: true,
     encryptionMode: emPreferEncrypted,
     enableRacing: true,
-    maxRacersPerBlock: 3,
+    maxRacersPerBlock: 10,
     raceSlowPeerSec: 5.0
   )
 
@@ -861,6 +864,8 @@ proc addPeer(client: TorrentClient, ip: string, port: uint16,
   peer.source = source
   peer.localMetadataSize = client.rawInfoDict.len
   peer.bandwidthLimiter = client.bandwidthLimiter
+  peer.torrentWireDownloaded = addr client.wireDownloaded
+  peer.torrentWireUploaded = addr client.wireUploaded
   # Apply configured encryption mode (BEP 10/MSE policy).
   peer.encryptionMode = client.config.encryptionMode
   # Enable uTP with TCP fallback (BEP 29)
@@ -2769,8 +2774,10 @@ proc requestRefreshLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
 proc progressLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
   ## Periodically emit progress events.
   ## Rates use EMA smoothing over a ~2s window for stable display.
-  var lastDownloaded: int64 = if client.pieceMgr != nil: client.pieceMgr.downloaded else: 0
-  var lastUploaded: int64 = if client.pieceMgr != nil: client.pieceMgr.uploaded else: 0
+  ## Uses per-torrent wire-level byte counters so reported rates match what
+  ## network monitors observe and sum correctly across torrents.
+  var lastDownloaded: int64 = client.wireDownloaded
+  var lastUploaded: int64 = client.wireUploaded
   var lastTime = epochTime()
   var lastEmitTime = 0.0
   var lastCompleted = -1
@@ -2789,10 +2796,15 @@ proc progressLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
     let now = epochTime()
     let elapsed = now - lastTime
     if elapsed > 0 and client.pieceMgr != nil:
-      let instantDl = float(client.pieceMgr.downloaded - lastDownloaded) / elapsed
-      let instantUl = float(client.pieceMgr.uploaded - lastUploaded) / elapsed
-      lastDownloaded = client.pieceMgr.downloaded
-      lastUploaded = client.pieceMgr.uploaded
+      # Use per-torrent wire-level byte counters for rate display. These track
+      # all protocol bytes (framing, control messages, piece data) for this
+      # torrent only, so they sum correctly in the GUI status bar.
+      let currentDl: int64 = client.wireDownloaded
+      let currentUl: int64 = client.wireUploaded
+      let instantDl = float(currentDl - lastDownloaded) / elapsed
+      let instantUl = float(currentUl - lastUploaded) / elapsed
+      lastDownloaded = currentDl
+      lastUploaded = currentUl
       lastTime = now
 
       # EMA smoothing: alpha adapts to sample interval so the effective
@@ -3914,6 +3926,8 @@ proc handleIncomingPeer*(client: TorrentClient, stream: AsyncStream,
   peer.source = srcIncoming
   peer.localMetadataSize = client.rawInfoDict.len
   peer.bandwidthLimiter = client.bandwidthLimiter
+  peer.torrentWireDownloaded = addr client.wireDownloaded
+  peer.torrentWireUploaded = addr client.wireUploaded
   peer.encryptionMode = client.config.encryptionMode
   if client.utpMgr != nil and client.utpMgr.port > 0:
     peer.localUtpPort = client.utpMgr.port.uint16

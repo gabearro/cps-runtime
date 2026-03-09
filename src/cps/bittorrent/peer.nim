@@ -178,6 +178,9 @@ type
     connGeneration*: uint32 ## Monotonic generation counter to distinguish replaced peers
     # Global bandwidth limiter (shared across all peers)
     bandwidthLimiter*: BandwidthLimiter
+    # Per-torrent wire byte counters (points to TorrentClient fields)
+    torrentWireDownloaded*: ptr int64
+    torrentWireUploaded*: ptr int64
 
 proc newPeerConn*(ip: string, port: uint16, infoHash: array[20, byte],
                   peerId: array[20, byte],
@@ -217,10 +220,17 @@ proc emitEvent(peer: PeerConn, evt: PeerEvent): CpsVoidFuture {.cps.} =
 
 proc sendMessage(peer: PeerConn, msg: PeerMessage): CpsVoidFuture {.cps.} =
   let data = encodeMessage(msg)
-  # Throttle upload: wait for tokens before sending piece data
+  # Throttle upload: wait for tokens before sending piece data.
+  # Throttle on full wire bytes (data.len) not just payload, so protocol
+  # overhead is accounted for in the bandwidth budget.
   if msg.id == msgPiece:
     await consumeUpload(peer.bandwidthLimiter, data.len)
   await peer.stream.write(data)
+  # Track wire-level bytes for all messages (not just pieces)
+  if peer.bandwidthLimiter != nil:
+    peer.bandwidthLimiter.wireUploaded += data.len
+  if peer.torrentWireUploaded != nil:
+    peer.torrentWireUploaded[] += data.len
   if msg.id == msgPiece:
     peer.bytesUploaded += msg.blockData.len
 
@@ -230,13 +240,23 @@ proc readMessage(peer: PeerConn): CpsFuture[tuple[isKeepAlive: bool, msg: PeerMe
   let msgLen = readUint32BE(lenData, 0)
 
   if msgLen == 0:
-    # Keep-alive
+    # Keep-alive (4 bytes on wire)
+    if peer.bandwidthLimiter != nil:
+      peer.bandwidthLimiter.wireDownloaded += 4
+    if peer.torrentWireDownloaded != nil:
+      peer.torrentWireDownloaded[] += 4
     return (true, PeerMessage(id: msgChoke))  # dummy
 
   if msgLen > MaxMessageSize.uint32:
     raise newException(AsyncIoError, "message too large: " & $msgLen)
 
   let payload = await peer.reader.readExact(msgLen.int)
+  # Track all wire bytes: 4-byte length prefix + message payload
+  let wireBytes: int = 4 + msgLen.int
+  if peer.bandwidthLimiter != nil:
+    peer.bandwidthLimiter.wireDownloaded += wireBytes
+  if peer.torrentWireDownloaded != nil:
+    peer.torrentWireDownloaded[] += wireBytes
   let msg = decodeMessage(payload)
   return (false, msg)
 
@@ -245,9 +265,17 @@ proc performHandshake(peer: PeerConn): CpsFuture[string] {.cps.} =
   try:
     let hsData = encodeHandshake(peer.infoHash, peer.peerId)
     await peer.stream.write(hsData)
+    if peer.bandwidthLimiter != nil:
+      peer.bandwidthLimiter.wireUploaded += hsData.len
+    if peer.torrentWireUploaded != nil:
+      peer.torrentWireUploaded[] += hsData.len
 
     # Read handshake response (with timeout to prevent slot exhaustion)
     let respData = await withTimeout(peer.reader.readExact(HandshakeLength), 15000)
+    if peer.bandwidthLimiter != nil:
+      peer.bandwidthLimiter.wireDownloaded += HandshakeLength
+    if peer.torrentWireDownloaded != nil:
+      peer.torrentWireDownloaded[] += HandshakeLength
     let hs = decodeHandshake(respData)
 
     # Verify info hash matches
@@ -329,8 +357,9 @@ proc readLoop(peer: PeerConn): CpsVoidFuture {.cps.} =
       if msg.blockData.len > MaxBlockSize:
         raise newException(AsyncIoError, "piece block too large: " & $msg.blockData.len &
                            " > " & $MaxBlockSize)
-      # Throttle download: post-hoc delay proportional to bytes received
-      await consumeDownload(peer.bandwidthLimiter, msg.blockData.len)
+      # Throttle download: post-hoc delay proportional to full wire bytes
+      # (4-byte length + 1-byte id + 4-byte index + 4-byte begin + block data)
+      await consumeDownload(peer.bandwidthLimiter, 13 + msg.blockData.len)
       peer.bytesDownloaded += msg.blockData.len
       peer.lastPieceTime = epochTime()
       # Note: pendingRequests is decremented by client.nim when the block

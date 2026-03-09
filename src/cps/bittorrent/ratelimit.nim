@@ -41,6 +41,9 @@ type
     upload*: TokenBucket
     download*: TokenBucket
     percent*: int            ## Percentage of bandwidth to use (1-100)
+    # Wire-level byte counters (all protocol bytes, not just payload)
+    wireDownloaded*: int64   ## Total bytes read from network
+    wireUploaded*: int64     ## Total bytes written to network
 
 proc initTokenBucket*(bps: int, percent: int): TokenBucket =
   ## Create a token bucket for the given bandwidth (bytes/sec) and percentage.

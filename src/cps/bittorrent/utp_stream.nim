@@ -4,7 +4,7 @@
 ## AsyncStream, integrated with the CPS event loop via a shared UDP socket.
 ## UtpManager multiplexes multiple uTP connections over a single UDP port.
 
-import std/[nativesockets, strutils, times, deques]
+import std/[nativesockets, strutils, times, deques, atomics]
 import ../runtime
 import ../transform
 import ../eventloop
@@ -42,7 +42,7 @@ type
     port*: int                                    ## Local UDP port (for advertising in extension handshake)
     domain: Domain                                ## Socket domain (AF_INET or AF_INET6)
     connections: ConcurrentTable[string, UtpStream]  ## Key: "connId:ip:port" (thread-safe)
-    nextConnId: uint16
+    nextConnId: Atomic[uint16]  ## Atomic for thread-safe allocation from CPS workers
     closed*: bool
     acceptWaiter: CpsFuture[UtpStream]  ## Single accept waiter (one accept loop)
     acceptBacklog: Deque[UtpStream]     ## Pending connections awaiting accept (capped)
@@ -114,8 +114,7 @@ proc newUtpStream*(mgr: UtpManager, sock: UtpSocket, ip: string, port: int): Utp
   result.closeProc = utpStreamClose
 
 proc allocConnId(mgr: UtpManager): uint16 =
-  result = mgr.nextConnId
-  mgr.nextConnId += 2  # recv and send IDs differ by 1
+  result = mgr.nextConnId.fetchAdd(2, moRelaxed)  # recv and send IDs differ by 1
 
 proc sendPacket(mgr: UtpManager, data: string, ip: string, port: int) =
   ## Fire-and-forget UDP send.
@@ -385,11 +384,11 @@ proc newUtpManager*(listenPort: int = 0, domain: Domain = AF_INET): UtpManager =
   result = UtpManager(
     udpSock: newUdpSocket(domain),
     domain: domain,
-    nextConnId: 1000,
     closed: false,
     acceptBacklog: initDeque[UtpStream](),
     reactorLoop: nil
   )
+  result.nextConnId.store(1000, moRelaxed)
   initConcurrentTable(result.connections)
   # Dual-stack: allow IPv6 socket to handle IPv4 (as ::ffff:x.x.x.x) too
   if domain == AF_INET6:
