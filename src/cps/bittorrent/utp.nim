@@ -19,15 +19,19 @@ const
   StSyn* = 4'u8
 
   # Window and timing constants
-  DefaultWindowSize* = 1048576   ## 1 MiB default max window
+  DefaultWindowSize* = 1048576   ## 1 MiB default max window (used as initial ssthresh)
   MinPacketSize* = 150            ## Minimum packet size
   MaxPacketSize* = 1400           ## Max UDP payload (MTU-safe)
+  MinCwndBytes* = MaxPacketSize   ## Minimum congestion window = 1 MSS
+  MaxCwndIncrease* = 3000         ## Max cwnd increase per RTT in bytes (BEP 29)
   SynTimeout* = 3000              ## SYN timeout in ms
   ConnTimeout* = 5000             ## Connection timeout in ms
   MaxRetransmit* = 4              ## Max retransmission attempts
   PacketLossTimeout* = 500        ## ms before considering a packet lost
   DelayTarget* = 100_000          ## LEDBAT target delay in microseconds (100ms)
-  Gain* = 1.0                     ## LEDBAT gain factor
+  MaxDelayMicros* = 10_000_000'u32 ## Discard delay samples above 10s (clock anomaly)
+  BaseDelaySlots* = 13             ## ~2 min base delay history (libutp convention)
+  BaseDelayInterval* = 10.0       ## Seconds per base delay slot rotation
 
 type
   UtpState* = enum
@@ -72,6 +76,19 @@ type
     maxWindow*: int                ## Max send window (bytes)
     curWindow*: int                ## Current bytes in flight
     wndSize*: uint32               ## Peer's advertised window
+    slowStart*: bool               ## True until first congestion signal
+    ssthresh*: int                 ## Slow start threshold
+    # Delay measurement
+    lastPeerTimestamp*: uint32     ## Peer's timestamp from last received packet
+    hasPeerTimestamp*: bool        ## Whether we've received at least one packet
+    # Base delay tracking (LEDBAT)
+    baseDelays*: array[BaseDelaySlots, uint32]  ## Min delay per 10s window
+    baseDelayIdx*: int             ## Current slot index
+    baseDelayTime*: float          ## When current slot started (epochTime)
+    baseDelayValid*: int           ## Number of valid slots (0 until first sample)
+    # Loss event tracking
+    lastLossSeqNr*: uint16         ## seqNr at time of last loss halving
+    lastLossTime*: float           ## epochTime of last loss event
     # Timing
     rtt*: int                      ## Smoothed RTT in microseconds
     rttVar*: int                   ## RTT variance
@@ -97,15 +114,63 @@ proc newUtpSocket*(connId: uint16): UtpSocket =
     sendConnectionId: connId + 1,
     seqNr: 1,
     ackNr: 0,
-    maxWindow: DefaultWindowSize,
+    maxWindow: 2 * MaxPacketSize,  # Start small (slow start)
     curWindow: 0,
     wndSize: DefaultWindowSize.uint32,
+    slowStart: true,
+    ssthresh: DefaultWindowSize,
+    hasPeerTimestamp: false,
+    baseDelayValid: 0,
     rtt: 0,
     rttVar: 800_000,  # 800ms initial
     rto: 1000,
     outBuffer: initDeque[OutstandingPacket](),
     lastRecvTime: epochTime()
   )
+
+# Base delay tracking (LEDBAT)
+
+proc updateBaseDelay*(sock: UtpSocket, delaySample: uint32) =
+  ## Update the rolling base delay with a new one-way delay sample.
+  if delaySample > MaxDelayMicros:
+    return  # Discard anomalous samples
+  let now = epochTime()
+  if sock.baseDelayValid == 0:
+    # First sample ever
+    sock.baseDelays[0] = delaySample
+    sock.baseDelayIdx = 0
+    sock.baseDelayTime = now
+    sock.baseDelayValid = 1
+  else:
+    # Rotate slot if enough time has passed
+    if now - sock.baseDelayTime >= BaseDelayInterval:
+      sock.baseDelayIdx = (sock.baseDelayIdx + 1) mod BaseDelaySlots
+      sock.baseDelays[sock.baseDelayIdx] = delaySample
+      sock.baseDelayTime = now
+      if sock.baseDelayValid < BaseDelaySlots:
+        sock.baseDelayValid += 1
+    else:
+      # Update current slot with minimum
+      if delaySample < sock.baseDelays[sock.baseDelayIdx]:
+        sock.baseDelays[sock.baseDelayIdx] = delaySample
+
+proc getBaseDelay*(sock: UtpSocket): uint32 =
+  ## Return the minimum delay across all valid base delay slots.
+  if sock.baseDelayValid == 0:
+    return 0
+  result = high(uint32)
+  for i in 0 ..< sock.baseDelayValid:
+    let idx = (sock.baseDelayIdx - i + BaseDelaySlots) mod BaseDelaySlots
+    if sock.baseDelays[idx] < result:
+      result = sock.baseDelays[idx]
+
+proc computeTimestampDiff*(sock: UtpSocket): uint32 {.inline.} =
+  ## Compute timestampDiff for outgoing packets: nowMicros() - lastPeerTimestamp.
+  ## Tells the peer their one-way delay. Returns 0 before first recv.
+  if sock.hasPeerTimestamp:
+    nowMicros() - sock.lastPeerTimestamp  # uint32 wraps naturally
+  else:
+    0'u32
 
 # Packet encoding/decoding
 
@@ -195,6 +260,7 @@ proc makeSynPacket*(sock: UtpSocket): string =
     version: UtpVersion,
     connectionId: sock.connectionId,
     timestamp: nowMicros(),
+    timestampDiff: sock.computeTimestampDiff(),
     windowSize: sock.maxWindow.uint32,
     seqNr: sock.seqNr,
     ackNr: 0
@@ -210,6 +276,7 @@ proc makeStatePacket*(sock: UtpSocket): string =
     version: UtpVersion,
     connectionId: sock.sendConnectionId,
     timestamp: nowMicros(),
+    timestampDiff: sock.computeTimestampDiff(),
     windowSize: sock.maxWindow.uint32,
     seqNr: sock.seqNr,
     ackNr: sock.ackNr
@@ -223,6 +290,7 @@ proc makeDataPacket*(sock: UtpSocket, payload: string): string =
     version: UtpVersion,
     connectionId: sock.sendConnectionId,
     timestamp: nowMicros(),
+    timestampDiff: sock.computeTimestampDiff(),
     windowSize: sock.maxWindow.uint32,
     seqNr: sock.seqNr,
     ackNr: sock.ackNr
@@ -245,6 +313,7 @@ proc makeFinPacket*(sock: UtpSocket): string =
     version: UtpVersion,
     connectionId: sock.sendConnectionId,
     timestamp: nowMicros(),
+    timestampDiff: sock.computeTimestampDiff(),
     windowSize: sock.maxWindow.uint32,
     seqNr: sock.seqNr,
     ackNr: sock.ackNr
@@ -260,6 +329,7 @@ proc makeResetPacket*(sock: UtpSocket): string =
     version: UtpVersion,
     connectionId: sock.sendConnectionId,
     timestamp: nowMicros(),
+    timestampDiff: sock.computeTimestampDiff(),
     seqNr: sock.seqNr,
     ackNr: sock.ackNr
   )
@@ -267,16 +337,20 @@ proc makeResetPacket*(sock: UtpSocket): string =
   return encodeHeader(hdr)
 
 proc processAck(sock: UtpSocket, ackNr: uint16, timestampDiff: uint32) =
-  ## Process an ACK - remove ack'd packets from outBuffer and update RTT.
+  ## Process an ACK - remove ack'd packets from outBuffer, update RTT, run LEDBAT.
+  var totalBytesAcked = 0
+
   while sock.outBuffer.len > 0:
     let front = sock.outBuffer.peekFirst()
     # Check if this packet is ack'd (handling wraparound)
     let diff = cast[int16](ackNr - front.seqNr)
     if diff >= 0:
       let acked = sock.outBuffer.popFirst()
+      let payloadBytes = acked.data.len - UtpHeaderSize
       let rttSample = int((epochTime() - acked.sentAt) * 1_000_000)
-      sock.curWindow -= (acked.data.len - UtpHeaderSize)
-      sock.bytesAcked += (acked.data.len - UtpHeaderSize)
+      sock.curWindow -= payloadBytes
+      sock.bytesAcked += payloadBytes
+      totalBytesAcked += payloadBytes
 
       # Update RTT estimates (RFC 6298)
       if sock.rtt == 0:
@@ -292,11 +366,35 @@ proc processAck(sock: UtpSocket, ackNr: uint16, timestampDiff: uint32) =
       break
 
   # LEDBAT congestion control
-  if timestampDiff > 0:
-    let delay = timestampDiff.int  # one-way delay in microseconds
-    let offTarget = (DelayTarget - delay).float / DelayTarget.float
-    let windowIncrease = offTarget * Gain * MaxPacketSize.float
-    sock.maxWindow = max(MinPacketSize, sock.maxWindow + int(windowIncrease))
+  # timestampDiff is the peer's measurement of our one-way delay (uint32 microseconds).
+  if timestampDiff > 0 and timestampDiff <= MaxDelayMicros and totalBytesAcked > 0:
+    let ourDelay = timestampDiff  # uint32 microseconds
+    sock.updateBaseDelay(ourDelay)
+
+    if sock.baseDelayValid > 0:
+      let baseDelay = sock.getBaseDelay()
+      let queuingDelay = ourDelay - baseDelay  # uint32 wraps correctly
+
+      if sock.slowStart:
+        # Slow start: exponential growth until congestion signal
+        if queuingDelay > DelayTarget.uint32:
+          # Congestion detected — exit slow start
+          sock.ssthresh = sock.maxWindow
+          sock.slowStart = false
+        elif sock.maxWindow >= sock.ssthresh:
+          # Reached threshold — exit slow start
+          sock.slowStart = false
+        else:
+          sock.maxWindow += totalBytesAcked  # ~doubles per RTT
+
+      if not sock.slowStart:
+        # LEDBAT: cwnd += MAX_CWND_INCREASE * (TARGET - qdelay) / TARGET * bytes_acked / cwnd
+        let offTarget = clamp(
+          (DelayTarget.float - queuingDelay.float) / DelayTarget.float,
+          -1.0, 1.0)
+        let scaledGain = MaxCwndIncrease.float * offTarget *
+                         totalBytesAcked.float / max(1, sock.maxWindow).float
+        sock.maxWindow = max(MinCwndBytes, sock.maxWindow + int(scaledGain))
 
 proc processIncoming*(sock: UtpSocket, data: string): tuple[
     response: string, payload: string, stateChanged: bool] =
@@ -306,6 +404,8 @@ proc processIncoming*(sock: UtpSocket, data: string): tuple[
   let hdr = pkt.header
 
   sock.lastRecvTime = epochTime()
+  sock.lastPeerTimestamp = hdr.timestamp
+  sock.hasPeerTimestamp = true
   sock.wndSize = hdr.windowSize
 
   case sock.state
@@ -421,9 +521,11 @@ proc checkTimeouts*(sock: UtpSocket): seq[string] =
   ## being eligible again. This allows multiple retransmission attempts until
   ## MaxRetransmit is reached, unlike the previous needsResend guard which
   ## permanently blocked re-retransmission after the first attempt.
+  ## Window is halved at most once per loss event (not per timed-out packet).
   let now = epochTime()
   let timeoutSec = sock.rto.float / 1000.0
   let maxRetx = if sock.maxRetransmit > 0: sock.maxRetransmit else: MaxRetransmit
+  var halvedThisRound = false
 
   for pkt in sock.outBuffer.mitems:
     if now - pkt.sentAt > timeoutSec:
@@ -433,5 +535,16 @@ proc checkTimeouts*(sock: UtpSocket): seq[string] =
         return @[]
       pkt.sentAt = now
       result.add(pkt.data)
-      # Halve the window on timeout (congestion response)
-      sock.maxWindow = max(MinPacketSize, sock.maxWindow div 2)
+
+      # Halve the window once per loss event
+      if not halvedThisRound:
+        # Check if this is a new loss event (packet was sent after last loss)
+        let sinceLastLoss = cast[int16](pkt.seqNr - sock.lastLossSeqNr)
+        if sinceLastLoss > 0 or sock.lastLossTime == 0:
+          sock.maxWindow = max(MinCwndBytes, sock.maxWindow div 2)
+          sock.lastLossSeqNr = sock.seqNr - 1  # Highest sent seqNr; future packets are new events
+          sock.lastLossTime = now
+          if sock.slowStart:
+            sock.ssthresh = sock.maxWindow
+            sock.slowStart = false
+          halvedThisRound = true

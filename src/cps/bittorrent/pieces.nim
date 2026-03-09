@@ -60,7 +60,7 @@ type
     uploaded*: int64
     raceTracker*: BlockRaceTracker
 
-proc newPieceManager*(info: TorrentInfo, maxRacers: int = 2): PieceManager =
+proc newPieceManager*(info: TorrentInfo, maxRacers: int = 3): PieceManager =
   let numPieces = info.pieceCount
   result = PieceManager(
     info: info,
@@ -349,6 +349,7 @@ proc getEndgameBlocks*(pm: PieceManager, peerBitfield: seq[byte],
                        maxBlocks: int = 5): seq[tuple[pieceIdx: int, offset: int, length: int]] =
   ## In endgame mode, return blocks that are requested but not yet received.
   ## These will be sent as duplicate requests to speed up the final pieces.
+  ## Respects maxRacers limit to avoid excessive duplicate traffic.
   for i in 0 ..< pm.totalPieces:
     if result.len >= maxBlocks:
       return
@@ -359,6 +360,10 @@ proc getEndgameBlocks*(pm: PieceManager, peerBitfield: seq[byte],
       continue
     for blk in piece.blocks:
       if blk.state == bsRequested:
+        let key: BlockKey = (i, blk.offset)
+        if key in pm.raceTracker.raced:
+          if pm.raceTracker.raced[key].requesters.len >= pm.raceTracker.maxRacers:
+            continue
         result.add((i, blk.offset, blk.length))
         if result.len >= maxBlocks:
           return

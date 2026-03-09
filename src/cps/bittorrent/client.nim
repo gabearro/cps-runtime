@@ -128,7 +128,7 @@ type
     sharedLsdSock*: UdpSocket       ## Shared LSD socket (nil = create own)
     sharedNatMgr*: NatManager       ## Shared NAT manager (nil = create own)
     enableRacing*: bool              ## Enable block racing (request from multiple peers)
-    maxRacersPerBlock*: int          ## Max concurrent requesters per block (default 2)
+    maxRacersPerBlock*: int          ## Max concurrent requesters per block (default 3)
     raceSlowPeerSec*: float          ## Race blocks from peers silent > N seconds (default 5.0)
 
   PendingPeer = tuple[ip: string, port: uint16, source: PeerSource, pexFlags: uint8]
@@ -283,7 +283,7 @@ proc defaultConfig*(): ClientConfig =
     enableHolepunch: true,
     encryptionMode: emPreferEncrypted,
     enableRacing: true,
-    maxRacersPerBlock: 20,
+    maxRacersPerBlock: 3,
     raceSlowPeerSec: 5.0
   )
 
@@ -1425,8 +1425,9 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
         btDebug "[UTP-RECON] Peer ID mismatch after uTP reconnect for ", key, " — treating as new peer"
     if key in client.peers:
       let peer = client.peers[key]
-      if key in client.holepunchBackoff or key in client.holepunchInFlight or
-         peer.source == srcHolepunch:
+      if peer.source == srcHolepunch or
+         (peer.transport == ptUtp and
+          (key in client.holepunchBackoff or key in client.holepunchInFlight)):
         client.holepunchSuccesses += 1
         if peer.source != srcHolepunch:
           peer.source = srcHolepunch
@@ -2152,7 +2153,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
                   # Mark it as holepunch if it came in as incoming.
                   if hpKey in client.peers:
                     let ep = client.peers[hpKey]
-                    if ep.source == srcIncoming:
+                    if ep.source == srcIncoming and ep.transport == ptUtp:
                       btDebug "[HP] Already connected (incoming→holepunch): ", hpKey
                       ep.source = srcHolepunch
                       client.holepunchSuccesses += 1
@@ -2183,7 +2184,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
                     # simultaneous-open), mark it as holepunch and count success.
                     if hpKey in client.peers:
                       let existingPeer = client.peers[hpKey]
-                      if existingPeer.source == srcIncoming:
+                      if existingPeer.source == srcIncoming and existingPeer.transport == ptUtp:
                         btDebug "[HP] Incoming peer already connected (simultaneous-open won by incoming): ", hpKey
                         existingPeer.source = srcHolepunch
                         client.holepunchSuccesses += 1
@@ -2723,7 +2724,7 @@ proc requestRefreshLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
                 if raceKey in client.pieceMgr.raceTracker.raced:
                   if client.pieceMgr.raceTracker.raced[raceKey].requesters.len >=
                      client.pieceMgr.raceTracker.maxRacers:
-                    break  # Can't add more racers for this block
+                    continue  # Can't add more racers for this block, try next fast peer
                 # Send duplicate request via trySend (non-blocking)
                 let blkLen = client.pieceMgr.blockLength(slowReq.pieceIdx, slowReq.offset)
                 if blkLen > 0 and fastPeer.commands.trySend(
@@ -3905,8 +3906,10 @@ proc handleIncomingPeer*(client: TorrentClient, stream: AsyncStream,
   # Check if this incoming connection is from a holepunch target we're expecting.
   # This survives the outgoing peer's disconnect cleanup.
   if key in client.holepunchExpected and epochTime() < client.holepunchExpected[key]:
-    peer.source = srcHolepunch
-    btDebug "[HP] Incoming peer matched holepunchExpected: ", key
+    # BEP 55 holepunch is uTP-only; only mark as holepunch if transport matches.
+    if transport == ptUtp:
+      peer.source = srcHolepunch
+      btDebug "[HP] Incoming peer matched holepunchExpected: ", key
     client.holepunchExpected.del(key)
   if key in client.peers:
     let existing = client.peers[key]
@@ -3917,7 +3920,8 @@ proc handleIncomingPeer*(client: TorrentClient, stream: AsyncStream,
       existing.state = psDisconnected
       client.halfOpenCount = max(0, client.halfOpenCount - 1)
       client.peers.del(key)
-      peer.source = srcHolepunch
+      if transport == ptUtp:
+        peer.source = srcHolepunch
     else:
       stream.close()
       return

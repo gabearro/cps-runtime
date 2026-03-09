@@ -144,6 +144,7 @@ proc drainAll[T](mb: var Mailbox[T]): seq[T] =
 # ============================================================
 
 var gLogBuffer: Mailbox[string]
+var gPendingSessionSave: Mailbox[string]
 
 proc flushLogBuffer*() =
   ## Flush buffered log messages to disk. Called from timer callback or shutdown.
@@ -274,7 +275,8 @@ type
   BridgeCommandKind = enum
     cmdAddTorrentFile, cmdAddTorrentMagnet, cmdRemoveTorrent,
     cmdPauseTorrent, cmdResumeTorrent,
-    cmdSaveSettings, cmdSetFilePriority, cmdRecheckTorrent, cmdShutdown
+    cmdSaveSettings, cmdSetFilePriority, cmdRecheckTorrent, cmdExecuteEffect,
+    cmdShutdown
 
   BridgeCommand = object
     kind: BridgeCommandKind
@@ -731,50 +733,70 @@ const
   sessionDir = "~/Library/Application Support/CpsTorrent"
   sessionFile = sessionDir / "session.json"
 
-proc saveSession() =
-  ## Save current torrents and settings to disk for session resume.
+proc buildSessionJson(): string =
+  ## Serialize current session state to a JSON string (in-memory, no I/O).
+  ## Called on the main thread where gTorrents/gSettings are owned.
+  var data = newJObject()
+
+  var settings = newJObject()
+  settings["downloadDir"] = %gDownloadDir
+  settings["listenPort"] = %gListenPort
+  settings["maxDownloadRate"] = %gMaxDownloadRate
+  settings["maxUploadRate"] = %gMaxUploadRate
+  settings["maxPeers"] = %gMaxPeers
+  settings["dhtEnabled"] = %gDhtEnabled
+  settings["pexEnabled"] = %gPexEnabled
+  settings["lsdEnabled"] = %gLsdEnabled
+  settings["utpEnabled"] = %gUtpEnabled
+  settings["webSeedEnabled"] = %gWebSeedEnabled
+  settings["trackerScrapeEnabled"] = %gTrackerScrapeEnabled
+  settings["holepunchEnabled"] = %gHolepunchEnabled
+  settings["encryptionMode"] = %gEncryptionMode
+  data["settings"] = settings
+
+  var torrents = newJArray()
+  for ts in gTorrents:
+    if ts.torrentFilePath.len > 0 or ts.magnetUri.len > 0:
+      var entry = newJObject()
+      entry["path"] = %ts.torrentFilePath
+      entry["magnetUri"] = %ts.magnetUri
+      entry["paused"] = %(ts.paused or ts.status == tsPaused)
+      entry["downloadDir"] = %gDownloadDir
+      entry["addedDate"] = %ts.addedDate
+      entry["name"] = %ts.name
+      torrents.add(entry)
+  data["torrents"] = torrents
+  result = $data
+
+proc writeSessionToDisk(jsonStr: string) =
+  ## Write serialized session JSON to disk. Called from blocking pool thread
+  ## or synchronously during shutdown.
   try:
     let dir = sessionDir.expandTilde
     if not dirExists(dir):
       createDir(dir)
+    writeFile(sessionFile.expandTilde, jsonStr)
+  except CatchableError as e:
+    logBridge "[SESSION] Write error: " & e.msg
 
-    var data = newJObject()
-
-    # Save settings
-    var settings = newJObject()
-    settings["downloadDir"] = %gDownloadDir
-    settings["listenPort"] = %gListenPort
-    settings["maxDownloadRate"] = %gMaxDownloadRate
-    settings["maxUploadRate"] = %gMaxUploadRate
-    settings["maxPeers"] = %gMaxPeers
-    settings["dhtEnabled"] = %gDhtEnabled
-    settings["pexEnabled"] = %gPexEnabled
-    settings["lsdEnabled"] = %gLsdEnabled
-    settings["utpEnabled"] = %gUtpEnabled
-    settings["webSeedEnabled"] = %gWebSeedEnabled
-    settings["trackerScrapeEnabled"] = %gTrackerScrapeEnabled
-    settings["holepunchEnabled"] = %gHolepunchEnabled
-    settings["encryptionMode"] = %gEncryptionMode
-    data["settings"] = settings
-
-    # Save torrent entries (both .torrent file and magnet link based)
-    var torrents = newJArray()
-    for ts in gTorrents:
-      if ts.torrentFilePath.len > 0 or ts.magnetUri.len > 0:
-        var entry = newJObject()
-        entry["path"] = %ts.torrentFilePath
-        entry["magnetUri"] = %ts.magnetUri
-        entry["paused"] = %(ts.paused or ts.status == tsPaused)
-        entry["downloadDir"] = %gDownloadDir
-        entry["addedDate"] = %ts.addedDate
-        entry["name"] = %ts.name
-        torrents.add(entry)
-    data["torrents"] = torrents
-
-    writeFile(sessionFile.expandTilde, $data)
-    logBridge "[SESSION] Saved " & $torrents.len & " torrents"
+proc saveSession() =
+  ## Queue session data for async write to disk.
+  ## JSON serialization happens here on the main thread (fast, in-memory).
+  ## Disk I/O is deferred to the event loop's sessionSaveLoop via Mailbox.
+  ## Multiple rapid saves coalesce — only the latest is written.
+  try:
+    let jsonStr = buildSessionJson()
+    discard gPendingSessionSave.send(jsonStr)
+    logBridge "[SESSION] Queued save (" & $gTorrents.len & " torrents)"
   except CatchableError as e:
     logBridge "[SESSION] Save error: " & e.msg
+
+proc flushSessionSave() =
+  ## Synchronous flush of any pending session save. Called during shutdown
+  ## when the event loop may no longer be running.
+  let pending = gPendingSessionSave.drainAll()
+  if pending.len > 0:
+    writeSessionToDisk(pending[^1])
 
 proc loadSession() =
   ## Load saved session and re-add torrents.
@@ -1768,11 +1790,13 @@ proc buildConfig(): ClientConfig =
 proc startClientFromFile(torrentId: int, path: string): CpsVoidFuture {.cps.} =
   ## Parse a .torrent file, create a client, register it, notify the UI,
   ## and spawn CPS tasks. Called on the event loop thread.
-  ## File I/O is offloaded to the blocking pool to avoid stalling the reactor.
-  let fileData: string = await spawnBlocking(proc(): string {.gcsafe.} =
-    readFile(path)
+  ## File I/O and bencode parsing are offloaded to the blocking pool to avoid
+  ## stalling the reactor. TorrentMetainfo is a value type — safe to move
+  ## across threads under --mm:atomicArc.
+  let metainfo: TorrentMetainfo = await spawnBlocking(proc(): TorrentMetainfo =
+    {.cast(gcsafe).}:
+      parseTorrent(readFile(path))
   )
-  let metainfo = parseTorrent(fileData)
   logBridge "[EVENT LOOP] Parsed torrent: " & metainfo.info.name &
     " pieces=" & $metainfo.info.pieceCount &
     " totalSize=" & $metainfo.info.totalLength
@@ -1975,6 +1999,19 @@ proc logFlushLoop(): CpsVoidFuture {.cps.} =
     await cpsSleep(500)
     flushLogBuffer()
 
+proc sessionSaveLoop(): CpsVoidFuture {.cps.} =
+  ## Periodically drain pending session saves and write to disk.
+  ## Multiple rapid saveSession() calls coalesce — only the latest is written.
+  ## Disk I/O runs on the blocking pool via spawnBlocking.
+  while true:
+    await cpsSleep(1000)
+    let pending = gPendingSessionSave.drainAll()
+    if pending.len > 0:
+      let jsonStr = pending[^1]
+      await spawnBlocking(proc() {.gcsafe.} =
+        writeSessionToDisk(jsonStr)
+      )
+
 proc recheckTask(torrentId: int, tc: TorrentClient): CpsVoidFuture {.cps.} =
   ## Recheck all pieces as an independent task so the command processor isn't blocked.
   await tc.recheckAllPieces()
@@ -1983,6 +2020,22 @@ proc setFilePriorityTask(fileIdx: int, priority: string,
                          tc: TorrentClient): CpsVoidFuture {.cps.} =
   ## Set file priority as an independent task so the command processor isn't blocked.
   await tc.setFilePriority(fileIdx, priority)
+
+proc runEffect(kindOrd: int, payload: string) =
+  ## Execute a shell-based side effect. Called from blocking pool thread.
+  ## kindOrd: 0 = copy text to clipboard, 1 = open path in Finder.
+  if kindOrd == 0:
+    discard execShellCmd("printf %s " & quoteShell(payload) & " | pbcopy")
+  elif kindOrd == 1:
+    discard execShellCmd("open " & quoteShell(payload))
+
+proc executeEffectTask(kindOrd: int, payload: string): CpsVoidFuture {.cps.} =
+  ## Execute a shell-based side effect (copy to clipboard, open in Finder)
+  ## on the blocking pool so the main thread isn't stalled by process fork+wait.
+  await spawnBlocking(proc() =
+    {.cast(gcsafe).}:
+      runEffect(kindOrd, payload)
+  )
 
 proc resumeTorrentDelayed(torrentId: int, path: string): CpsVoidFuture {.cps.} =
   ## Resume a torrent after a delay for old client cleanup.
@@ -2068,6 +2121,9 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
   # Start periodic log flusher (batches disk writes every 500ms)
   when enableBridgeLog:
     discard spawn logFlushLoop()
+
+  # Start periodic session saver (drains mailbox every 1s, writes via spawnBlocking)
+  discard spawn sessionSaveLoop()
 
   if gCmdPipeRead >= 0:
     # Keep the command notify pipe armed for the whole processor lifetime.
@@ -2209,6 +2265,9 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
         if tc != nil and tc.pieceMgr != nil:
           discard spawn recheckTask(cmd.intParam, tc)
         pushEvent(UiEvent(kind: uiRechecking, torrentId: cmd.intParam))
+
+      of cmdExecuteEffect:
+        discard spawn executeEffectTask(cmd.intParam, cmd.text)
 
       of cmdShutdown:
         # Stop all clients and exit event loop
@@ -2894,103 +2953,190 @@ proc addPatchFloatField(fields: var seq[PatchField], fieldId: uint16, value: flo
 proc addPatchStringField(fields: var seq[PatchField], fieldId: uint16, value: string) =
   addPatchField(fields, fieldId, bridgeTypeString, bytesFromString(value))
 
-proc addPatchJsonField(fields: var seq[PatchField], fieldId: uint16, value: JsonNode) =
-  addPatchField(fields, fieldId, bridgeTypeJson, bytesFromString($value))
+# ============================================================
+# Streaming JSON writer — builds JSON strings directly without
+# intermediate JsonNode allocations. Eliminates ~1200 heap allocs
+# per poll cycle compared to newJObject/newJArray/% approach.
+# ============================================================
+
+type
+  JsonWriter = object
+    buf: string
+    needsComma: bool  # track whether next value needs a leading comma
+
+proc initJsonWriter(capacity: int = 4096): JsonWriter =
+  result.buf = newStringOfCap(capacity)
+  result.needsComma = false
+
+proc sep(w: var JsonWriter) {.inline.} =
+  if w.needsComma: w.buf.add ','
+  w.needsComma = true
+
+proc beginArray(w: var JsonWriter) {.inline.} =
+  w.sep()
+  w.buf.add '['
+  w.needsComma = false
+
+proc endArray(w: var JsonWriter) {.inline.} =
+  w.buf.add ']'
+  w.needsComma = true
+
+proc beginObject(w: var JsonWriter) {.inline.} =
+  w.sep()
+  w.buf.add '{'
+  w.needsComma = false
+
+proc endObject(w: var JsonWriter) {.inline.} =
+  w.buf.add '}'
+  w.needsComma = true
+
+proc key(w: var JsonWriter, k: string) {.inline.} =
+  w.sep()
+  w.buf.add '"'
+  w.buf.add k  # keys are all ASCII literals — no escaping needed
+  w.buf.add '"'
+  w.buf.add ':'
+  w.needsComma = false
+
+proc writeString(w: var JsonWriter, v: string) {.inline.} =
+  w.sep()
+  w.buf.add '"'
+  for c in v:
+    case c
+    of '"': w.buf.add "\\\""
+    of '\\': w.buf.add "\\\\"
+    of '\n': w.buf.add "\\n"
+    of '\r': w.buf.add "\\r"
+    of '\t': w.buf.add "\\t"
+    of '\0'..'\x08', '\x0b', '\x0c', '\x0e'..'\x1f':
+      w.buf.add "\\u00"
+      const hexChars = "0123456789abcdef"
+      w.buf.add hexChars[c.ord shr 4]
+      w.buf.add hexChars[c.ord and 0xf]
+    else:
+      w.buf.add c
+  w.buf.add '"'
+
+proc writeInt(w: var JsonWriter, v: int) {.inline.} =
+  w.sep()
+  w.buf.addInt v
+
+proc writeFloat(w: var JsonWriter, v: float) {.inline.} =
+  w.sep()
+  w.buf.addFloat v
+
+proc writeBool(w: var JsonWriter, v: bool) {.inline.} =
+  w.sep()
+  w.buf.add(if v: "true" else: "false")
+
+proc finish(w: var JsonWriter): string {.inline.} =
+  move w.buf
+
+proc addPatchJsonStringField(fields: var seq[PatchField], fieldId: uint16, value: string) =
+  addPatchField(fields, fieldId, bridgeTypeJson, bytesFromString(value))
 
 proc buildPatchBinary(includeEditableFields: bool, dirtyMask: uint32): seq[byte] =
   var fields: seq[PatchField] = @[]
 
   if (dirtyMask and dmTorrents) != 0:
-    var torrentsArr = newJArray()
+    var w = initJsonWriter(gTorrents.len * 512)
+    w.beginArray()
     for ts in gTorrents:
-      var obj = newJObject()
-      obj["id"] = %ts.id
-      obj["name"] = %ts.name
-      obj["infoHash"] = %ts.infoHash
-      obj["state"] = %($ts.status)
-      obj["progress"] = %ts.progress
-      obj["downloadRate"] = %ts.downloadRate
-      obj["uploadRate"] = %ts.uploadRate
-      obj["downloaded"] = %ts.downloaded
-      obj["uploaded"] = %ts.uploaded
-      obj["totalSize"] = %ts.totalSize
-      obj["peerCount"] = %ts.peerCount
-      obj["seedCount"] = %ts.seedCount
-      obj["eta"] = %ts.eta
-      obj["addedDate"] = %ts.addedDate
-      obj["completedDate"] = %ts.completedDate
-      obj["errorText"] = %ts.errorText
-      obj["ratio"] = %ts.ratio
-      obj["pieceCount"] = %ts.pieceCount
-      obj["verifiedPieces"] = %ts.verifiedPieces
-      obj["trackerCount"] = %ts.trackerCount
-      obj["protocolPrivate"] = %ts.protocolPrivate
-      obj["protocolDhtEnabled"] = %ts.protocolDhtEnabled
-      obj["protocolPexEnabled"] = %ts.protocolPexEnabled
-      obj["protocolLsdEnabled"] = %ts.protocolLsdEnabled
-      obj["protocolUtpEnabled"] = %ts.protocolUtpEnabled
-      obj["protocolWebSeedEnabled"] = %ts.protocolWebSeedEnabled
-      obj["protocolScrapeEnabled"] = %ts.protocolScrapeEnabled
-      obj["protocolHolepunchEnabled"] = %ts.protocolHolepunchEnabled
-      obj["protocolEncryptionMode"] = %ts.protocolEncryptionMode
-      obj["protocolUtpPeers"] = %ts.protocolUtpPeers
-      obj["protocolTcpPeers"] = %ts.protocolTcpPeers
-      obj["protocolLsdAnnounces"] = %ts.protocolLsdAnnounces
-      obj["protocolLsdPeers"] = %ts.protocolLsdPeers
-      obj["protocolLsdLastError"] = %ts.protocolLsdLastError
-      obj["protocolWebSeedBytes"] = %ts.protocolWebSeedBytes
-      obj["protocolWebSeedFailures"] = %ts.protocolWebSeedFailures
-      obj["protocolWebSeedActiveUrl"] = %ts.protocolWebSeedActiveUrl
-      obj["protocolHolepunchAttempts"] = %ts.protocolHolepunchAttempts
-      obj["protocolHolepunchSuccesses"] = %ts.protocolHolepunchSuccesses
-      obj["protocolHolepunchLastError"] = %ts.protocolHolepunchLastError
-      torrentsArr.add(obj)
-    addPatchJsonField(fields, fldTorrents, torrentsArr)
+      w.beginObject()
+      w.key("id"); w.writeInt(ts.id)
+      w.key("name"); w.writeString(ts.name)
+      w.key("infoHash"); w.writeString(ts.infoHash)
+      w.key("state"); w.writeString($ts.status)
+      w.key("progress"); w.writeFloat(ts.progress)
+      w.key("downloadRate"); w.writeFloat(ts.downloadRate)
+      w.key("uploadRate"); w.writeFloat(ts.uploadRate)
+      w.key("downloaded"); w.writeFloat(ts.downloaded)
+      w.key("uploaded"); w.writeFloat(ts.uploaded)
+      w.key("totalSize"); w.writeFloat(ts.totalSize)
+      w.key("peerCount"); w.writeInt(ts.peerCount)
+      w.key("seedCount"); w.writeInt(ts.seedCount)
+      w.key("eta"); w.writeString(ts.eta)
+      w.key("addedDate"); w.writeString(ts.addedDate)
+      w.key("completedDate"); w.writeString(ts.completedDate)
+      w.key("errorText"); w.writeString(ts.errorText)
+      w.key("ratio"); w.writeFloat(ts.ratio)
+      w.key("pieceCount"); w.writeInt(ts.pieceCount)
+      w.key("verifiedPieces"); w.writeInt(ts.verifiedPieces)
+      w.key("trackerCount"); w.writeInt(ts.trackerCount)
+      w.key("protocolPrivate"); w.writeBool(ts.protocolPrivate)
+      w.key("protocolDhtEnabled"); w.writeBool(ts.protocolDhtEnabled)
+      w.key("protocolPexEnabled"); w.writeBool(ts.protocolPexEnabled)
+      w.key("protocolLsdEnabled"); w.writeBool(ts.protocolLsdEnabled)
+      w.key("protocolUtpEnabled"); w.writeBool(ts.protocolUtpEnabled)
+      w.key("protocolWebSeedEnabled"); w.writeBool(ts.protocolWebSeedEnabled)
+      w.key("protocolScrapeEnabled"); w.writeBool(ts.protocolScrapeEnabled)
+      w.key("protocolHolepunchEnabled"); w.writeBool(ts.protocolHolepunchEnabled)
+      w.key("protocolEncryptionMode"); w.writeString(ts.protocolEncryptionMode)
+      w.key("protocolUtpPeers"); w.writeInt(ts.protocolUtpPeers)
+      w.key("protocolTcpPeers"); w.writeInt(ts.protocolTcpPeers)
+      w.key("protocolLsdAnnounces"); w.writeInt(ts.protocolLsdAnnounces)
+      w.key("protocolLsdPeers"); w.writeInt(ts.protocolLsdPeers)
+      w.key("protocolLsdLastError"); w.writeString(ts.protocolLsdLastError)
+      w.key("protocolWebSeedBytes"); w.writeFloat(ts.protocolWebSeedBytes)
+      w.key("protocolWebSeedFailures"); w.writeInt(ts.protocolWebSeedFailures)
+      w.key("protocolWebSeedActiveUrl"); w.writeString(ts.protocolWebSeedActiveUrl)
+      w.key("protocolHolepunchAttempts"); w.writeInt(ts.protocolHolepunchAttempts)
+      w.key("protocolHolepunchSuccesses"); w.writeInt(ts.protocolHolepunchSuccesses)
+      w.key("protocolHolepunchLastError"); w.writeString(ts.protocolHolepunchLastError)
+      w.endObject()
+    w.endArray()
+    addPatchJsonStringField(fields, fldTorrents, w.finish())
 
   if (dirtyMask and dmFiles) != 0:
-    var filesArr = newJArray()
+    var w = initJsonWriter(gFiles.len * 128)
+    w.beginArray()
     for f in gFiles:
-      var obj = newJObject()
-      obj["index"] = %f.index
-      obj["path"] = %f.path
-      obj["size"] = %f.size
-      obj["progress"] = %f.progress
-      obj["priority"] = %f.priority
-      filesArr.add(obj)
-    addPatchJsonField(fields, fldFiles, filesArr)
+      w.beginObject()
+      w.key("index"); w.writeInt(f.index)
+      w.key("path"); w.writeString(f.path)
+      w.key("size"); w.writeFloat(f.size)
+      w.key("progress"); w.writeFloat(f.progress)
+      w.key("priority"); w.writeString(f.priority)
+      w.endObject()
+    w.endArray()
+    addPatchJsonStringField(fields, fldFiles, w.finish())
 
   if (dirtyMask and dmPeers) != 0:
-    var peersArr = newJArray()
+    var w = initJsonWriter(gPeers.len * 192)
+    w.beginArray()
     for p in gPeers:
-      var obj = newJObject()
-      obj["address"] = %p.address
-      obj["client"] = %p.client
-      obj["downloadRate"] = %p.downloadRate
-      obj["uploadRate"] = %p.uploadRate
-      obj["progress"] = %p.progress
-      obj["flags"] = %p.flags
-      obj["flagsTooltip"] = %p.flagsTooltip
-      obj["source"] = %p.source
-      obj["transport"] = %p.transport
-      peersArr.add(obj)
-    addPatchJsonField(fields, fldPeers, peersArr)
+      w.beginObject()
+      w.key("address"); w.writeString(p.address)
+      w.key("client"); w.writeString(p.client)
+      w.key("downloadRate"); w.writeFloat(p.downloadRate)
+      w.key("uploadRate"); w.writeFloat(p.uploadRate)
+      w.key("progress"); w.writeFloat(p.progress)
+      w.key("flags"); w.writeString(p.flags)
+      w.key("flagsTooltip"); w.writeString(p.flagsTooltip)
+      w.key("source"); w.writeString(p.source)
+      w.key("transport"); w.writeString(p.transport)
+      w.endObject()
+    w.endArray()
+    addPatchJsonStringField(fields, fldPeers, w.finish())
 
   if (dirtyMask and dmTrackers) != 0:
-    var trackersArr = newJArray()
+    var w = initJsonWriter(gTrackers.len * 256)
+    w.beginArray()
     for t in gTrackers:
-      var obj = newJObject()
-      obj["url"] = %t.url
-      obj["status"] = %t.status
-      obj["seeders"] = %t.seeders
-      obj["leechers"] = %t.leechers
-      obj["completed"] = %t.completed
-      obj["lastAnnounce"] = %t.lastAnnounce
-      obj["nextAnnounce"] = %t.nextAnnounce
-      obj["lastScrape"] = %t.lastScrape
-      obj["nextScrape"] = %t.nextScrape
-      obj["errorText"] = %t.errorText
-      trackersArr.add(obj)
-    addPatchJsonField(fields, fldTrackers, trackersArr)
+      w.beginObject()
+      w.key("url"); w.writeString(t.url)
+      w.key("status"); w.writeString(t.status)
+      w.key("seeders"); w.writeInt(t.seeders)
+      w.key("leechers"); w.writeInt(t.leechers)
+      w.key("completed"); w.writeInt(t.completed)
+      w.key("lastAnnounce"); w.writeString(t.lastAnnounce)
+      w.key("nextAnnounce"); w.writeString(t.nextAnnounce)
+      w.key("lastScrape"); w.writeString(t.lastScrape)
+      w.key("nextScrape"); w.writeString(t.nextScrape)
+      w.key("errorText"); w.writeString(t.errorText)
+      w.endObject()
+    w.endArray()
+    addPatchJsonStringField(fields, fldTrackers, w.finish())
 
   if (dirtyMask and dmPieceMap) != 0:
     addPatchStringField(fields, fldPieceMapData, gPieceMapData)
@@ -3071,6 +3217,7 @@ proc ensureInit() =
     initMailbox[UiEvent](gEventQueue)
     initMailbox[BridgeCommand](gCommandQueue)
     initMailbox[string](gLogBuffer)
+    initMailbox[string](gPendingSessionSave)
     gCommandWakePtr.store(nil, moRelaxed)
     # Create notification pipe (non-blocking)
     var fds: array[2, cint]
@@ -3123,9 +3270,13 @@ proc eventLoopMain() {.thread.} =
         if crashCount >= 5:
           logBridge "[EVENT LOOP] Too many crashes, giving up"
           break
-        # Brief pause before retrying
-        sleep(500)
+        # Brief pause before retrying. Uses os.sleep (not cpsSleep) because the
+        # CPS event loop is not running during crash recovery — there is no
+        # selector or timer infrastructure to drive cpsSleep. 100ms is enough
+        # to prevent tight crash loops while allowing fast recovery.
+        sleep(100)
     shutdownMtRuntime(loop)
+    flushSessionSave()  # Write any pending session data before thread exits
     flushLogBuffer()  # Drain remaining log messages before thread exits
     gEventLoopRunning = false
     gShutdownComplete.store(true, moRelease)
@@ -3231,22 +3382,6 @@ type
     effectIntents: seq[BridgeEffectIntent]
     diagnostics: seq[string]
 
-proc executeEffect(intent: BridgeEffectIntent): string =
-  case intent.kind
-  of effCopyText:
-    let rc = execShellCmd("printf %s " & quoteShell(intent.payload) & " | pbcopy")
-    if rc == 0: ""
-    else: "EffectError(copy) rc=" & $rc
-  of effOpenPath:
-    let rc = execShellCmd("open " & quoteShell(intent.payload))
-    if rc == 0: ""
-    else: "EffectError(open) rc=" & $rc
-
-proc executeEffects(effects: openArray[BridgeEffectIntent], diagnostics: var seq[string]) =
-  for intent in effects:
-    let effectError = executeEffect(intent)
-    if effectError.len > 0:
-      diagnostics.add(effectError)
 
 # ============================================================
 # Dispatch (runs on main thread, called by Swift)
@@ -3522,7 +3657,11 @@ proc dispatch*(runtime: var BridgeRuntime, payload: ptr uint8, payloadLen: uint3
   # Build response
   var patchBytes: seq[byte] = @[]
   var dirtyEmitted = 0'u32
-  executeEffects(domain.effectIntents, domain.diagnostics)
+  # Enqueue effects to event loop for async execution on blocking pool.
+  # This avoids blocking the main thread on process fork+wait.
+  for intent in domain.effectIntents:
+    enqueueCommand(BridgeCommand(kind: cmdExecuteEffect,
+      intParam: intent.kind.ord, text: intent.payload))
 
   if not domain.pollSkipped and gDirtyMask != 0'u32:
     dirtyEmitted = gDirtyMask
@@ -3566,6 +3705,7 @@ proc bridgeGetNotifyFd(): int32 {.cdecl.} =
 
 proc bridgeWaitShutdown(timeoutMs: int32): int32 {.cdecl.} =
   if not gEventLoopRunning:
+    flushSessionSave()
     flushLogBuffer()
     return 0
   let deadline = epochTime() + float(timeoutMs) / 1000.0
@@ -3573,9 +3713,11 @@ proc bridgeWaitShutdown(timeoutMs: int32): int32 {.cdecl.} =
     if gShutdownComplete.load(moAcquire):
       joinThread(gEventLoopThread)
       gEventLoopRunning = false
+      flushSessionSave()
       flushLogBuffer()
       return 0
     sleep(10)
+  flushSessionSave()
   flushLogBuffer()
   return 1
 
