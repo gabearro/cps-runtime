@@ -25,6 +25,7 @@ import cps/transform
 import cps/eventloop
 import cps/mt/mtruntime
 import cps/bittorrent/client
+import cps/bittorrent/ratelimit
 import cps/bittorrent/metainfo
 import cps/bittorrent/metadata
 import cps/bittorrent/pieces
@@ -200,6 +201,9 @@ const
   tagRecheckTorrent = 27'u32
   tagDropTorrentFile = 28'u32
   tagAppShutdown = 29'u32
+  tagSetBandwidth50 = 30'u32
+  tagSetBandwidth80 = 31'u32
+  tagSetBandwidth100 = 32'u32
 
 const
   bridgeTypeBool = 1'u8
@@ -209,6 +213,8 @@ const
   bridgeTypeJson = 5'u8
 
 const
+  # Field IDs must match the positional order in app.gui state block.
+  # The Swift codegen assigns sequential IDs starting from 1.
   fldTorrents = 1'u16
   fldSelectedTorrentId = 2'u16
   fldFiles = 3'u16
@@ -224,34 +230,37 @@ const
   fldListenPort = 13'u16
   fldMaxDownloadRate = 14'u16
   fldMaxUploadRate = 15'u16
-  fldMaxPeers = 16'u16
-  fldDhtEnabled = 17'u16
-  fldPexEnabled = 18'u16
-  fldLsdEnabled = 19'u16
-  fldUtpEnabled = 20'u16
-  fldWebSeedEnabled = 21'u16
-  fldTrackerScrapeEnabled = 22'u16
-  fldHolepunchEnabled = 23'u16
-  fldEncryptionMode = 24'u16
-  fldActionPriority = 25'u16
-  fldSettingsTab = 26'u16
-  fldStatusDownRate = 27'u16
-  fldStatusUpRate = 28'u16
-  fldStatusDhtNodes = 29'u16
-  fldPollActive = 30'u16
-  fldStatusText = 31'u16
-  fldShowRemoveConfirm = 32'u16
-  fldRemoveDeleteFiles = 33'u16
-  fldActionTorrentId = 34'u16
-  fldNatProtocol = 35'u16
-  fldNatExternalIp = 36'u16
-  fldNatGatewayIp = 37'u16
-  fldNatLocalIp = 38'u16
-  fldNatDoubleNat = 39'u16
-  fldNatOuterProtocol = 40'u16
-  fldNatOuterGatewayIp = 41'u16
-  fldNatPortsForwarded = 42'u16
-  fldNatActiveMappings = 43'u16
+  fldDownloadBandwidthUnit = 16'u16
+  fldUploadBandwidthUnit = 17'u16
+  fldBandwidthPercent = 18'u16
+  fldMaxPeers = 19'u16
+  fldDhtEnabled = 20'u16
+  fldPexEnabled = 21'u16
+  fldLsdEnabled = 22'u16
+  fldUtpEnabled = 23'u16
+  fldWebSeedEnabled = 24'u16
+  fldTrackerScrapeEnabled = 25'u16
+  fldHolepunchEnabled = 26'u16
+  fldEncryptionMode = 27'u16
+  fldActionPriority = 28'u16
+  fldSettingsTab = 29'u16
+  fldStatusDownRate = 30'u16
+  fldStatusUpRate = 31'u16
+  fldStatusDhtNodes = 32'u16
+  fldPollActive = 33'u16
+  fldStatusText = 34'u16
+  fldShowRemoveConfirm = 35'u16
+  fldRemoveDeleteFiles = 36'u16
+  fldActionTorrentId = 37'u16
+  fldNatProtocol = 38'u16
+  fldNatExternalIp = 39'u16
+  fldNatGatewayIp = 40'u16
+  fldNatLocalIp = 41'u16
+  fldNatDoubleNat = 42'u16
+  fldNatOuterProtocol = 43'u16
+  fldNatOuterGatewayIp = 44'u16
+  fldNatPortsForwarded = 45'u16
+  fldNatActiveMappings = 46'u16
 
 const
   dmTorrents = 1'u32 shl 0
@@ -265,7 +274,10 @@ const
   dmSettings = 1'u32 shl 8
   dmNat = 1'u32 shl 9
   dmAll = dmTorrents or dmFiles or dmPeers or dmTrackers or dmPieceMap or
-          dmStatus or dmSelection or dmDialogs or dmSettings or dmNat
+          dmStatus or dmSelection or dmDialogs or dmNat
+          ## Note: dmSettings is NOT in dmAll — settings are only pushed when
+          ## Nim explicitly changes them (init, session restore). This prevents
+          ## Nim from overwriting Swift-side edits (e.g. bandwidth preset buttons).
 
 # ============================================================
 # Types
@@ -502,8 +514,11 @@ type
     showSettings: bool
     downloadDir: string
     listenPort: string
-    maxDownloadRate: string
-    maxUploadRate: string
+    downloadBandwidth: string
+    uploadBandwidth: string
+    downloadBandwidthUnit: string
+    uploadBandwidthUnit: string
+    bandwidthPercent: string
     maxPeers: string
     dhtEnabled: bool
     pexEnabled: bool
@@ -563,8 +578,11 @@ proc initRuntimeDefaults*(runtime: var BridgeRuntime) =
   runtime.showSettings = false
   runtime.downloadDir = "~/Downloads"
   runtime.listenPort = "6881"
-  runtime.maxDownloadRate = "0"
-  runtime.maxUploadRate = "0"
+  runtime.downloadBandwidth = "0"
+  runtime.uploadBandwidth = "0"
+  runtime.downloadBandwidthUnit = "MiB"
+  runtime.uploadBandwidthUnit = "MiB"
+  runtime.bandwidthPercent = "80"
   runtime.maxPeers = "50"
   runtime.dhtEnabled = true
   runtime.pexEnabled = true
@@ -593,7 +611,7 @@ proc initRuntimeDefaults*(runtime: var BridgeRuntime) =
   runtime.showRemoveConfirm = false
   runtime.removeDeleteFiles = false
   runtime.actionTorrentId = -1
-  runtime.dirtyMask = dmAll
+  runtime.dirtyMask = dmAll or dmSettings
   runtime.lastSaveTime = 0.0
   runtime.notifyPipeRead = -1
   runtime.notifyPipeWrite = -1
@@ -629,8 +647,11 @@ template gAddTorrentPath: untyped = gRuntime.addTorrentPath
 template gShowSettings: untyped = gRuntime.showSettings
 template gDownloadDir: untyped = gRuntime.downloadDir
 template gListenPort: untyped = gRuntime.listenPort
-template gMaxDownloadRate: untyped = gRuntime.maxDownloadRate
-template gMaxUploadRate: untyped = gRuntime.maxUploadRate
+template gDownloadBandwidth: untyped = gRuntime.downloadBandwidth
+template gUploadBandwidth: untyped = gRuntime.uploadBandwidth
+template gDownloadBandwidthUnit: untyped = gRuntime.downloadBandwidthUnit
+template gUploadBandwidthUnit: untyped = gRuntime.uploadBandwidthUnit
+template gBandwidthPercent: untyped = gRuntime.bandwidthPercent
 template gMaxPeers: untyped = gRuntime.maxPeers
 template gDhtEnabled: untyped = gRuntime.dhtEnabled
 template gPexEnabled: untyped = gRuntime.pexEnabled
@@ -684,6 +705,7 @@ var
   gSharedListener: TcpListener
   gSharedUtpMgr: UtpManager
   gSharedLsdSock: UdpSocket
+  gSharedBandwidthLimiter: BandwidthLimiter
   gNatMgr: NatManager
 
   # Command-wake handshake between reactor I/O callback and CPS worker.
@@ -741,8 +763,11 @@ proc buildSessionJson(): string =
   var settings = newJObject()
   settings["downloadDir"] = %gDownloadDir
   settings["listenPort"] = %gListenPort
-  settings["maxDownloadRate"] = %gMaxDownloadRate
-  settings["maxUploadRate"] = %gMaxUploadRate
+  settings["downloadBandwidth"] = %gDownloadBandwidth
+  settings["uploadBandwidth"] = %gUploadBandwidth
+  settings["downloadBandwidthUnit"] = %gDownloadBandwidthUnit
+  settings["uploadBandwidthUnit"] = %gUploadBandwidthUnit
+  settings["bandwidthPercent"] = %gBandwidthPercent
   settings["maxPeers"] = %gMaxPeers
   settings["dhtEnabled"] = %gDhtEnabled
   settings["pexEnabled"] = %gPexEnabled
@@ -819,8 +844,11 @@ proc loadSession() =
       let s = data["settings"]
       gDownloadDir = jStr(s, "downloadDir", gDownloadDir)
       gListenPort = jStr(s, "listenPort", gListenPort)
-      gMaxDownloadRate = jStr(s, "maxDownloadRate", gMaxDownloadRate)
-      gMaxUploadRate = jStr(s, "maxUploadRate", gMaxUploadRate)
+      gDownloadBandwidth = jStr(s, "downloadBandwidth", gDownloadBandwidth)
+      gUploadBandwidth = jStr(s, "uploadBandwidth", gUploadBandwidth)
+      gDownloadBandwidthUnit = jStr(s, "downloadBandwidthUnit", gDownloadBandwidthUnit)
+      gUploadBandwidthUnit = jStr(s, "uploadBandwidthUnit", gUploadBandwidthUnit)
+      gBandwidthPercent = jStr(s, "bandwidthPercent", gBandwidthPercent)
       gMaxPeers = jStr(s, "maxPeers", gMaxPeers)
       gDhtEnabled = jBool(s, "dhtEnabled", gDhtEnabled)
       gPexEnabled = jBool(s, "pexEnabled", gPexEnabled)
@@ -1757,6 +1785,22 @@ proc encryptionModeLabel(mode: EncryptionMode): string =
   of emForceRc4: "force_rc4"
   of emPreferEncrypted: "prefer_encrypted"
 
+proc bandwidthUnitMultiplier(unit: string): int =
+  ## Convert a unit string to bytes/sec multiplier.
+  case unit
+  of "GiB": 1024 * 1024 * 1024
+  of "MiB": 1024 * 1024
+  else: 1024  # KiB default
+
+proc parseBandwidth(value, unit: string): int =
+  ## Parse a bandwidth value string with unit to bytes/sec. Returns 0 for unlimited.
+  try:
+    let n = parseFloat(value)
+    if n <= 0: return 0
+    int(n * float(bandwidthUnitMultiplier(unit)))
+  except:
+    0
+
 proc buildConfig(): ClientConfig =
   ## Build a ClientConfig from the current (snapshot-synced) settings.
   ## Settings are read-only from the event loop's perspective — they're
@@ -1767,8 +1811,9 @@ proc buildConfig(): ClientConfig =
     downloadDir: gDownloadDir.expandTilde,
     listenPort: (try: parseUInt(gListenPort).uint16 except: 6881'u16),
     maxPeers: (try: parseInt(gMaxPeers) except: 50),
-    maxDownloadRate: (try: parseInt(gMaxDownloadRate) * 1024 except: 0),
-    maxUploadRate: (try: parseInt(gMaxUploadRate) * 1024 except: 0),
+    downloadBandwidth: parseBandwidth(gDownloadBandwidth, gDownloadBandwidthUnit),
+    uploadBandwidth: parseBandwidth(gUploadBandwidth, gUploadBandwidthUnit),
+    bandwidthPercent: (try: parseInt(gBandwidthPercent) except: 80),
     enableDht: gDhtEnabled,
     enablePex: gPexEnabled,
     enableLsd: gLsdEnabled,
@@ -1802,6 +1847,11 @@ proc startClientFromFile(torrentId: int, path: string): CpsVoidFuture {.cps.} =
     " totalSize=" & $metainfo.info.totalLength
   let config = buildConfig()
   let tc = newTorrentClient(metainfo, config)
+  # Use the shared global bandwidth limiter so all torrents are rate-limited together.
+  if gSharedBandwidthLimiter == nil:
+    gSharedBandwidthLimiter = tc.bandwidthLimiter
+  else:
+    tc.bandwidthLimiter = gSharedBandwidthLimiter
   gClients[torrentId] = tc
 
   var trackerCount = metainfo.announceList.len
@@ -2186,6 +2236,10 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
           let config = buildConfig()
           let tc = newMagnetClient(parsed.infoHash, parsed.trackers,
                                    parsed.displayName, config, parsed.selectedFiles)
+          if gSharedBandwidthLimiter == nil:
+            gSharedBandwidthLimiter = tc.bandwidthLimiter
+          else:
+            tc.bandwidthLimiter = gSharedBandwidthLimiter
 
           let torrentId = cmd.intParam
           gClients[torrentId] = tc
@@ -2239,6 +2293,15 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
 
       of cmdSaveSettings:
         # Apply live protocol toggles/encryption to active clients.
+        # Update the shared global bandwidth limiter so all torrents see the new limits.
+        let dlBps = parseBandwidth(gDownloadBandwidth, gDownloadBandwidthUnit)
+        let ulBps = parseBandwidth(gUploadBandwidth, gUploadBandwidthUnit)
+        let bwPct = (try: parseInt(gBandwidthPercent) except: 80)
+        if gSharedBandwidthLimiter != nil:
+          gSharedBandwidthLimiter.updateLimits(
+            uploadBps = if ulBps > 0: ulBps else: -1,
+            downloadBps = if dlBps > 0: dlBps else: -1,
+            percent = bwPct)
         let ids = snapshotClientIds()
         var idi = 0
         while idi < ids.len:
@@ -2695,8 +2758,8 @@ proc bridgeResetForTest*() =
   gShowSettings = false
   gDownloadDir = "~/Downloads"
   gListenPort = "6881"
-  gMaxDownloadRate = "0"
-  gMaxUploadRate = "0"
+  gDownloadBandwidth = "0"
+  gUploadBandwidth = "0"
   gMaxPeers = "50"
   gDhtEnabled = true
   gPexEnabled = true
@@ -2882,10 +2945,19 @@ proc syncFromRequestFields(payload: ptr uint8, payloadLen: uint32) =
         gListenPort = decodeStringBytes(field.payload)
     of fldMaxDownloadRate:
       if field.valueType == bridgeTypeString:
-        gMaxDownloadRate = decodeStringBytes(field.payload)
+        gDownloadBandwidth = decodeStringBytes(field.payload)
     of fldMaxUploadRate:
       if field.valueType == bridgeTypeString:
-        gMaxUploadRate = decodeStringBytes(field.payload)
+        gUploadBandwidth = decodeStringBytes(field.payload)
+    of fldBandwidthPercent:
+      if field.valueType == bridgeTypeString:
+        gBandwidthPercent = decodeStringBytes(field.payload)
+    of fldDownloadBandwidthUnit:
+      if field.valueType == bridgeTypeString:
+        gDownloadBandwidthUnit = decodeStringBytes(field.payload)
+    of fldUploadBandwidthUnit:
+      if field.valueType == bridgeTypeString:
+        gUploadBandwidthUnit = decodeStringBytes(field.payload)
     of fldMaxPeers:
       if field.valueType == bridgeTypeString:
         gMaxPeers = decodeStringBytes(field.payload)
@@ -3167,8 +3239,11 @@ proc buildPatchBinary(includeEditableFields: bool, dirtyMask: uint32): seq[byte]
   if (dirtyMask and dmSettings) != 0:
     addPatchStringField(fields, fldDownloadDir, gDownloadDir)
     addPatchStringField(fields, fldListenPort, gListenPort)
-    addPatchStringField(fields, fldMaxDownloadRate, gMaxDownloadRate)
-    addPatchStringField(fields, fldMaxUploadRate, gMaxUploadRate)
+    addPatchStringField(fields, fldMaxDownloadRate, gDownloadBandwidth)
+    addPatchStringField(fields, fldMaxUploadRate, gUploadBandwidth)
+    addPatchStringField(fields, fldDownloadBandwidthUnit, gDownloadBandwidthUnit)
+    addPatchStringField(fields, fldUploadBandwidthUnit, gUploadBandwidthUnit)
+    addPatchStringField(fields, fldBandwidthPercent, gBandwidthPercent)
     addPatchStringField(fields, fldMaxPeers, gMaxPeers)
     addPatchBoolField(fields, fldDhtEnabled, gDhtEnabled)
     addPatchBoolField(fields, fldPexEnabled, gPexEnabled)
@@ -3243,7 +3318,7 @@ proc ensureInit() =
     gDroppedEventCount.store(0'u64, moRelaxed)
     gDroppedCommandCount.store(0'u64, moRelaxed)
     gDirty.store(true, moRelaxed)
-    gDirtyMask = dmAll
+    gDirtyMask = dmAll or dmSettings
     gInitialized = true
 
 # ============================================================
@@ -3322,6 +3397,9 @@ proc actionName(tag: uint32): string =
   of tagRecheckTorrent: "RecheckTorrent"
   of tagDropTorrentFile: "DropTorrentFile"
   of tagAppShutdown: "AppShutdown"
+  of tagSetBandwidth50: "SetBandwidth50"
+  of tagSetBandwidth80: "SetBandwidth80"
+  of tagSetBandwidth100: "SetBandwidth100"
   else: "Unknown"
 
 # ============================================================
@@ -3472,6 +3550,7 @@ proc dispatch*(runtime: var BridgeRuntime, payload: ptr uint8, payloadLen: uint3
       gPollActive = true
       ensureEventLoop()
       loadSession()
+      markDirty(dmSettings)  # Push restored settings to Swift
     else:
       ensureEventLoop()
 
@@ -3587,6 +3666,13 @@ proc dispatch*(runtime: var BridgeRuntime, payload: ptr uint8, payloadLen: uint3
     enqueueCommand(BridgeCommand(kind: cmdSaveSettings))
     gShowSettings = false
     gStatusText = "Settings saved"
+
+  of tagSetBandwidth50:
+    gBandwidthPercent = "50"
+  of tagSetBandwidth80:
+    gBandwidthPercent = "80"
+  of tagSetBandwidth100:
+    gBandwidthPercent = "100"
 
   of tagDropTorrentFile:
     # Direct drop — path comes from snapshot (set by reducer)

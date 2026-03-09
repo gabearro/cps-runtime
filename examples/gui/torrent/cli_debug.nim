@@ -16,6 +16,7 @@ import cps/transform
 import cps/eventloop
 import cps/mt/mtruntime
 import cps/bittorrent/client
+import cps/bittorrent/ratelimit
 import cps/bittorrent/metainfo
 import cps/bittorrent/metadata
 import cps/bittorrent/pieces
@@ -270,6 +271,7 @@ var gNatMgr: NatManager
 
 # Client table (event loop thread only)
 var gClients: Table[int, TorrentClient]
+var gSharedBandwidthLimiter: BandwidthLimiter
 
 # Settings (loaded from session.json — same as GUI)
 var gDownloadDir = "~/Downloads"
@@ -283,8 +285,11 @@ var gWebSeedEnabled = true
 var gTrackerScrapeEnabled = true
 var gHolepunchEnabled = true
 var gEncryptionMode = "prefer_encrypted"
-var gMaxDownloadRate = "0"
-var gMaxUploadRate = "0"
+var gDownloadBandwidth = "0"
+var gUploadBandwidth = "0"
+var gDownloadBandwidthUnit = "MiB"
+var gUploadBandwidthUnit = "MiB"
+var gBandwidthPercent = "80"
 
 # Torrent tracking (main thread)
 var gNextTorrentId = 0
@@ -396,8 +401,11 @@ proc loadSettings() =
       let s = data["settings"]
       gDownloadDir = jStr(s, "downloadDir", gDownloadDir)
       gListenPort = jStr(s, "listenPort", gListenPort)
-      gMaxDownloadRate = jStr(s, "maxDownloadRate", gMaxDownloadRate)
-      gMaxUploadRate = jStr(s, "maxUploadRate", gMaxUploadRate)
+      gDownloadBandwidth = jStr(s, "downloadBandwidth", gDownloadBandwidth)
+      gUploadBandwidth = jStr(s, "uploadBandwidth", gUploadBandwidth)
+      gDownloadBandwidthUnit = jStr(s, "downloadBandwidthUnit", gDownloadBandwidthUnit)
+      gUploadBandwidthUnit = jStr(s, "uploadBandwidthUnit", gUploadBandwidthUnit)
+      gBandwidthPercent = jStr(s, "bandwidthPercent", gBandwidthPercent)
       gMaxPeers = jStr(s, "maxPeers", gMaxPeers)
       gDhtEnabled = jBool(s, "dhtEnabled", gDhtEnabled)
       gPexEnabled = jBool(s, "pexEnabled", gPexEnabled)
@@ -538,14 +546,29 @@ proc ensureSharedResources() =
       except CatchableError:
         discard
 
+proc bandwidthUnitMultiplier(unit: string): int =
+  case unit
+  of "GiB": 1024 * 1024 * 1024
+  of "MiB": 1024 * 1024
+  else: 1024
+
+proc parseBandwidth(value, unit: string): int =
+  try:
+    let n = parseFloat(value)
+    if n <= 0: return 0
+    int(n * float(bandwidthUnitMultiplier(unit)))
+  except:
+    0
+
 proc buildConfig(): ClientConfig =
   ensureSharedResources()
   ClientConfig(
     downloadDir: gDownloadDir.expandTilde,
     listenPort: (try: parseUInt(gListenPort).uint16 except: 6881'u16),
     maxPeers: (try: parseInt(gMaxPeers) except: 50),
-    maxDownloadRate: (try: parseInt(gMaxDownloadRate) * 1024 except: 0),
-    maxUploadRate: (try: parseInt(gMaxUploadRate) * 1024 except: 0),
+    downloadBandwidth: parseBandwidth(gDownloadBandwidth, gDownloadBandwidthUnit),
+    uploadBandwidth: parseBandwidth(gUploadBandwidth, gUploadBandwidthUnit),
+    bandwidthPercent: (try: parseInt(gBandwidthPercent) except: 80),
     enableDht: gDhtEnabled,
     enablePex: gPexEnabled,
     enableLsd: gLsdEnabled,
@@ -770,6 +793,10 @@ proc startClientFromFile(torrentId: int, path: string) =
     $metainfo.info.pieceCount & " pieces)"
   let config = buildConfig()
   let tc = newTorrentClient(metainfo, config)
+  if gSharedBandwidthLimiter == nil:
+    gSharedBandwidthLimiter = tc.bandwidthLimiter
+  else:
+    tc.bandwidthLimiter = gSharedBandwidthLimiter
   gClients[torrentId] = tc
 
   var aUrls: seq[string]

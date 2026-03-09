@@ -38,6 +38,7 @@ import utils
 import mse
 import sha1 as sha1mod
 import peer_priority
+import ratelimit
 
 const
   IPPROTO_IPV6_C {.importc: "IPPROTO_IPV6", header: "<netinet/in.h>".}: cint = 0
@@ -113,8 +114,9 @@ type
     downloadDir*: string
     listenPort*: uint16
     maxPeers*: int
-    maxUploadRate*: int        ## bytes/sec, 0 = unlimited
-    maxDownloadRate*: int      ## bytes/sec, 0 = unlimited
+    uploadBandwidth*: int      ## Total upload bandwidth in bytes/sec (0 = auto-detect)
+    downloadBandwidth*: int    ## Total download bandwidth in bytes/sec (0 = auto-detect)
+    bandwidthPercent*: int     ## Percentage of bandwidth to use (1-100, default 80)
     enableDht*: bool
     enablePex*: bool
     enableLsd*: bool
@@ -223,6 +225,8 @@ type
     selectedPiecesMask*: seq[bool]   ## true = piece selected for download
     highPriorityPiecesMask*: seq[bool] ## true = piece should be prioritized
     filePriorities*: Table[int, string]  ## index -> high | normal | skip
+    # Global bandwidth limiter
+    bandwidthLimiter*: BandwidthLimiter
     # MT synchronization
     mtx*: AsyncMutex              ## Protects shared mutable state across CPS tasks
     trackerLock*: SpinLock        ## Protects trackerRuntime table (non-suspending reads/writes)
@@ -272,8 +276,9 @@ proc defaultConfig*(): ClientConfig =
     downloadDir: getCurrentDir(),
     listenPort: 6881,
     maxPeers: MaxPeers,
-    maxUploadRate: 0,
-    maxDownloadRate: 0,
+    uploadBandwidth: 0,
+    downloadBandwidth: 0,
+    bandwidthPercent: 80,
     enableDht: true,
     enablePex: true,
     enableLsd: true,
@@ -338,6 +343,11 @@ proc newTorrentClient*(metainfo: TorrentMetainfo,
     utpReconnectInProgress: initHashSet[string](),
     utpReconnectState: initTable[string, UtpReconnectSnapshot]()
   )
+  result.bandwidthLimiter = newBandwidthLimiter(
+    uploadBps = config.uploadBandwidth,
+    downloadBps = config.downloadBandwidth,
+    percent = config.bandwidthPercent
+  )
   result.mtx = newAsyncMutex()
   initSpinLock(result.trackerLock)
   initSpinLock(result.dhtSpinLock)
@@ -388,6 +398,11 @@ proc newMagnetClient*(infoHash: array[20, byte],
     utpReconnectCooldown: initTable[string, float](),
     utpReconnectInProgress: initHashSet[string](),
     utpReconnectState: initTable[string, UtpReconnectSnapshot]()
+  )
+  result.bandwidthLimiter = newBandwidthLimiter(
+    uploadBps = config.uploadBandwidth,
+    downloadBps = config.downloadBandwidth,
+    percent = config.bandwidthPercent
   )
   result.mtx = newAsyncMutex()
   initSpinLock(result.trackerLock)
@@ -845,6 +860,7 @@ proc addPeer(client: TorrentClient, ip: string, port: uint16,
   peer.connGeneration = client.nextConnGeneration
   peer.source = source
   peer.localMetadataSize = client.rawInfoDict.len
+  peer.bandwidthLimiter = client.bandwidthLimiter
   # Apply configured encryption mode (BEP 10/MSE policy).
   peer.encryptionMode = client.config.encryptionMode
   # Enable uTP with TCP fallback (BEP 29)
@@ -2753,8 +2769,8 @@ proc requestRefreshLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
 proc progressLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
   ## Periodically emit progress events.
   ## Rates use EMA smoothing over a ~2s window for stable display.
-  var lastDownloaded: int64 = 0
-  var lastUploaded: int64 = 0
+  var lastDownloaded: int64 = if client.pieceMgr != nil: client.pieceMgr.downloaded else: 0
+  var lastUploaded: int64 = if client.pieceMgr != nil: client.pieceMgr.uploaded else: 0
   var lastTime = epochTime()
   var lastEmitTime = 0.0
   var lastCompleted = -1
@@ -3897,6 +3913,7 @@ proc handleIncomingPeer*(client: TorrentClient, stream: AsyncStream,
   peer.transport = transport
   peer.source = srcIncoming
   peer.localMetadataSize = client.rawInfoDict.len
+  peer.bandwidthLimiter = client.bandwidthLimiter
   peer.encryptionMode = client.config.encryptionMode
   if client.utpMgr != nil and client.utpMgr.port > 0:
     peer.localUtpPort = client.utpMgr.port.uint16

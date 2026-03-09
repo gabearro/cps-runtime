@@ -64,6 +64,10 @@ type
     upnpServiceType: string
     upnpHost: string
     upnpPort: int
+    # NAT-PMP epoch tracking (RFC 6886 Section 3.6)
+    lastPmpEpoch: uint32         ## Last observed SSSOE from gateway
+    epochInitialized: bool       ## True after first response
+    mappingsStale*: bool         ## Set true on epoch regression (gateway rebooted)
     # Renewal
     renewalRunning: bool
     shutdownFlag: bool
@@ -100,6 +104,15 @@ proc ensureRng() =
     gNatRng = initXorShift32(seed)
     gNatRngInitialized = true
 
+proc jitteredTimeout(baseMs: int): int =
+  ## Apply RFC 6887 Section 8.1.1 jitter: RAND in [-0.1, +0.1].
+  ## Returns baseMs * (1.0 + RAND).
+  ensureRng()
+  # Map next() (0..2^32-1) to [-0.1, +0.1]: (val / 2^32) * 0.2 - 0.1
+  let r = gNatRng.next()
+  let factor = 1.0 + (float(r) / float(uint32.high) * 0.2 - 0.1)
+  result = max(1, int(float(baseMs) * factor))
+
 # ============================================================
 # Big-endian encoding/decoding helpers
 # ============================================================
@@ -122,6 +135,32 @@ proc getU32BE*(data: string, offset: int): uint32 =
            (uint32(data[offset + 1].byte) shl 16) or
            (uint32(data[offset + 2].byte) shl 8) or
            uint32(data[offset + 3].byte)
+
+proc checkPmpEpoch*(mgr: NatManager, epoch: uint32) =
+  ## RFC 6886 Section 3.6: detect gateway reboot via epoch regression.
+  ## If the gateway's Seconds Since Start of Epoch goes backwards,
+  ## all existing mappings are presumed lost and flagged stale.
+  if not mgr.epochInitialized:
+    mgr.lastPmpEpoch = epoch
+    mgr.epochInitialized = true
+    return
+  if epoch < mgr.lastPmpEpoch:
+    # Epoch regressed — gateway rebooted, mappings invalidated
+    mgr.mappingsStale = true
+    for m in mgr.mappings:
+      m.createdAt = 0.0  # force immediate renewal
+  mgr.lastPmpEpoch = epoch
+
+proc sockaddrToIp(sa: Sockaddr_storage, addrLen: SockLen): string =
+  ## Extract the IP string from a Sockaddr_storage. Returns "" on failure.
+  var host: array[46, char]
+  let rc = getnameinfo(cast[ptr SockAddr](unsafeAddr sa), addrLen,
+                        cast[cstring](addr host[0]), 46.SockLen,
+                        nil, 0.SockLen, NI_NUMERICHOST.cint)
+  if rc == 0:
+    result = $cast[cstring](addr host[0])
+  else:
+    result = ""
 
 # ============================================================
 # Gateway Detection
@@ -427,28 +466,42 @@ proc parseSsdpResponse*(data: string): tuple[location: string, server: string, s
 proc parseUpnpControlUrl*(xml: string): tuple[controlUrl: string, serviceType: string] =
   ## Extract the controlURL and serviceType from a UPnP device description XML.
   ## Uses simple string scanning (no XML library dependency).
-  ## Looks for WANIPConnection or WANPPPConnection service types.
+  ## Searches within each <service>...</service> block for the matching
+  ## serviceType and its controlURL, regardless of element ordering.
   const serviceTypes = [
     "urn:schemas-upnp-org:service:WANIPConnection:1",
     "urn:schemas-upnp-org:service:WANIPConnection:2",
     "urn:schemas-upnp-org:service:WANPPPConnection:1"
   ]
 
-  for st in serviceTypes:
-    let stIdx = xml.find(st)
-    if stIdx < 0:
-      continue
+  # Iterate over all <service> blocks
+  var searchPos = 0
+  while searchPos < xml.len:
+    let blockStart = xml.find("<service>", searchPos)
+    if blockStart < 0:
+      # Also try case-insensitive / self-closing variants won't apply here
+      break
+    let blockEnd = xml.find("</service>", blockStart)
+    if blockEnd < 0:
+      break
+    let blockSlice = xml[blockStart .. blockEnd + "</service>".len - 1]
 
-    # Find controlURL within the same <service> block
-    let controlStart = xml.find("<controlURL>", stIdx)
-    if controlStart < 0:
-      continue
-    let urlStart = controlStart + "<controlURL>".len
-    let controlEnd = xml.find("</controlURL>", urlStart)
-    if controlEnd < 0:
-      continue
+    # Check if this block contains a matching serviceType
+    for st in serviceTypes:
+      if blockSlice.find(st) < 0:
+        continue
 
-    return (controlUrl: xml[urlStart ..< controlEnd].strip(), serviceType: st)
+      # Extract controlURL from within this same block
+      let ctrlStart = blockSlice.find("<controlURL>")
+      if ctrlStart < 0:
+        continue
+      let urlStart = ctrlStart + "<controlURL>".len
+      let ctrlEnd = blockSlice.find("</controlURL>", urlStart)
+      if ctrlEnd < 0:
+        continue
+      return (controlUrl: blockSlice[urlStart ..< ctrlEnd].strip(), serviceType: st)
+
+    searchPos = blockEnd + "</service>".len
 
   return (controlUrl: "", serviceType: "")
 
@@ -629,11 +682,16 @@ proc ensureNatSocket(mgr: NatManager) =
     if data.len < 2:
       return
 
+    # Validate source: responses must come from the configured gateway.
+    let srcIp = sockaddrToIp(srcAddr, addrLen)
+    if srcIp != mgr.gatewayIp:
+      return
+
     let version = data[0].byte
     if version == 0:
-      # NAT-PMP response
+      # NAT-PMP response: opcode high bit must be set (>= 128)
       let opcode = data[1].byte
-      if data.len >= 8:
+      if opcode >= 128 and data.len >= 8:
         var port: uint16 = 0
         if opcode == NatPmpOpExternalAddr + 128:
           port = 0
@@ -645,8 +703,8 @@ proc ensureNatSocket(mgr: NatManager) =
           mgr.pendingPmp.del(key)
           fut.complete(data)
     elif version == 2:
-      # PCP response
-      if data.len >= 60:
+      # PCP response: R-bit (bit 7 of byte 1) must be set (RFC 6887 Section 7.2)
+      if (data[1].byte and 0x80) != 0 and data.len >= 60:
         var nonce: array[12, byte]
         copyMem(addr nonce[0], unsafeAddr data[24], 12)
         let key = nonceToHex(nonce)
@@ -684,7 +742,8 @@ proc natPmpRequest(mgr: NatManager, request: string, opcode: byte,
 
 proc pcpRequest(mgr: NatManager, request: string,
                  nonce: array[12, byte], maxRetries: int = 6): CpsFuture[string] {.cps.} =
-  ## Send a PCP request with exponential retry (3s initial, max 1024s).
+  ## Send a PCP request with exponential retry (3s initial, MRT 1024s).
+  ## Jittered per RFC 6887 Section 8.1.1: RT = 2*RT_prev + RAND*RT_prev.
   ensureNatSocket(mgr)
 
   let key: string = nonceToHex(nonce)
@@ -695,7 +754,8 @@ proc pcpRequest(mgr: NatManager, request: string,
   var attempt: int = 0
   while attempt < maxRetries:
     discard mgr.sock.trySendToAddr(request, mgr.gatewayIp, NatPmpPort, AF_INET)
-    let timeoutMs: int = PcpBaseTimeoutMs * (1 shl attempt)
+    let baseMs: int = min(PcpBaseTimeoutMs * (1 shl attempt), 1024_000)
+    let timeoutMs: int = jitteredTimeout(baseMs)
     let timedOut: bool = await withTimeoutBool(responseFut, timeoutMs)
     if not timedOut:
       let data: string = responseFut.read()
@@ -918,6 +978,7 @@ proc discoverInner(mgr: NatManager): CpsVoidFuture {.cps.} =
     let request: string = natPmpBuildExternalAddrRequest()
     let data: string = await natPmpRequest(mgr, request, NatPmpOpExternalAddr, 0, 4)
     let pmpResp = natPmpParseResponse(data)
+    mgr.checkPmpEpoch(pmpResp.epoch)
     if pmpResp.resultCode == 0:
       mgr.protocol = npNatPmp
       mgr.externalIp = pmpResp.externalIp
@@ -1008,6 +1069,7 @@ proc addMappingSingle(mgr: NatManager, proto: MappingProto, internalPort: uint16
     let request: string = natPmpBuildMappingRequest(proto, internalPort, requestedExtPort, lifetime)
     let data: string = await natPmpRequest(mgr, request, opcode, internalPort)
     let pmpAddResp = natPmpParseResponse(data)
+    mgr.checkPmpEpoch(pmpAddResp.epoch)
     if pmpAddResp.resultCode != 0:
       raise newException(NatError, "NAT-PMP mapping failed, result code: " & $pmpAddResp.resultCode)
     let mapping = NatMapping(
@@ -1042,23 +1104,41 @@ proc addMappingSingle(mgr: NatManager, proto: MappingProto, internalPort: uint16
     return mapping
 
   of npUpnpIgd:
-    let soapBody: string = soapAddPortMapping(mgr.upnpServiceType, requestedExtPort,
-      proto, internalPort, mgr.localIp, "CPS BitTorrent", lifetime)
-    let respBody: string = await upnpSoapRequest(mgr, "AddPortMapping", soapBody)
-    if respBody.find("<UPnPError>") >= 0 or respBody.find("s:Fault") >= 0:
+    var actualLifetime: uint32 = lifetime
+    var actualExtPort: uint16 = requestedExtPort
+    var attempt: int = 0
+    while attempt < 3:
+      let soapBody: string = soapAddPortMapping(mgr.upnpServiceType, actualExtPort,
+        proto, internalPort, mgr.localIp, "CPS BitTorrent", actualLifetime)
+      let respBody: string = await upnpSoapRequest(mgr, "AddPortMapping", soapBody)
+      if respBody.find("<UPnPError>") < 0 and respBody.find("s:Fault") < 0:
+        # Success
+        let mapping = NatMapping(
+          proto: proto,
+          internalPort: internalPort,
+          externalPort: actualExtPort,
+          lifetime: actualLifetime,
+          createdAt: epochTime(),
+          natProto: npUpnpIgd,
+        )
+        mgr.mappings.add(mapping)
+        return mapping
+
       let errCode = parseSoapResponse(respBody, "errorCode")
-      let errDesc = parseSoapResponse(respBody, "errorDescription")
-      raise newException(NatError, "UPnP AddPortMapping failed: " & errCode & " " & errDesc)
-    let mapping = NatMapping(
-      proto: proto,
-      internalPort: internalPort,
-      externalPort: requestedExtPort,
-      lifetime: lifetime,
-      createdAt: epochTime(),
-      natProto: npUpnpIgd,
-    )
-    mgr.mappings.add(mapping)
-    return mapping
+      if errCode == "725":
+        # OnlyPermanentLeasesSupported: retry with lifetime=0 (permanent)
+        actualLifetime = 0
+        attempt += 1
+      elif errCode == "718":
+        # ConflictInMappingEntry: try a different external port
+        ensureRng()
+        actualExtPort = uint16(49152 + (gNatRng.next() mod 16384))
+        attempt += 1
+      else:
+        let errDesc = parseSoapResponse(respBody, "errorDescription")
+        raise newException(NatError, "UPnP AddPortMapping failed: " & errCode & " " & errDesc)
+
+    raise newException(NatError, "UPnP AddPortMapping failed after " & $attempt & " retries")
 
   of npNone:
     raise newException(NatError, "No NAT protocol available")
@@ -1093,6 +1173,7 @@ proc deleteMappingSingle(mgr: NatManager, mapping: NatMapping): CpsVoidFuture {.
                                                      mapping.externalPort, 0)
     let data: string = await natPmpRequest(mgr, request, opcode, mapping.internalPort, 4)
     let pmpDelResp = natPmpParseResponse(data)
+    mgr.checkPmpEpoch(pmpDelResp.epoch)
     if pmpDelResp.resultCode != 0:
       raise newException(NatError, "NAT-PMP delete failed, result code: " & $pmpDelResp.resultCode)
 
@@ -1157,22 +1238,24 @@ proc renewMapping(mgr: NatManager, mapping: NatMapping): CpsVoidFuture {.cps.} =
                                                      mapping.externalPort, mapping.lifetime)
     let data: string = await natPmpRequest(mgr, request, opcode, mapping.internalPort, 4)
     let pmpRenewResp = natPmpParseResponse(data)
+    mgr.checkPmpEpoch(pmpRenewResp.epoch)
     if pmpRenewResp.resultCode == 0:
       mapping.externalPort = pmpRenewResp.externalPort
       mapping.lifetime = pmpRenewResp.lifetime
       mapping.createdAt = epochTime()
 
   of npPcp:
-    let nonce = generateNonce()
+    # RFC 6887 Section 11.1: mapping nonce MUST be the same for all MAP
+    # requests for a given mapping (create, renew, delete).
     let request: string = pcpBuildMapRequest(mgr.localIp, mapping.proto, mapping.internalPort,
-                                              mapping.externalPort, mapping.lifetime, nonce)
-    let data: string = await pcpRequest(mgr, request, nonce, 4)
+                                              mapping.externalPort, mapping.lifetime,
+                                              mapping.pcpNonce)
+    let data: string = await pcpRequest(mgr, request, mapping.pcpNonce, 4)
     let pcpRenewResp = pcpParseResponse(data)
     if pcpRenewResp.resultCode == 0:
       mapping.externalPort = pcpRenewResp.externalPort
       mapping.lifetime = pcpRenewResp.lifetime
       mapping.createdAt = epochTime()
-      mapping.pcpNonce = nonce
 
   of npUpnpIgd:
     let soapBody: string = soapAddPortMapping(mgr.upnpServiceType, mapping.externalPort,
@@ -1185,29 +1268,36 @@ proc renewMapping(mgr: NatManager, mapping: NatMapping): CpsVoidFuture {.cps.} =
 
 proc renewAllDue(mgr: NatManager): CpsVoidFuture {.cps.} =
   ## Renew all mappings that have passed half their lifetime.
+  ## If mappingsStale is set (epoch regression), renews all immediately.
   let now: float = epochTime()
+  let forceAll: bool = mgr.mappingsStale
   var i: int = 0
   while i < mgr.mappings.len:
     let m = mgr.mappings[i]
     let elapsed: float = now - m.createdAt
-    if elapsed > float(m.lifetime) / 2.0:
+    if forceAll or elapsed > float(m.lifetime) / 2.0:
       try:
         await renewMapping(mgr, m)
       except CatchableError:
         discard
     i += 1
+  if forceAll:
+    mgr.mappingsStale = false
   # Also renew outer mappings if double-NAT
   if mgr.outerMgr != nil:
+    let forceOuter: bool = mgr.outerMgr.mappingsStale
     var oi: int = 0
     while oi < mgr.outerMgr.mappings.len:
       let om = mgr.outerMgr.mappings[oi]
       let outerElapsed: float = now - om.createdAt
-      if outerElapsed > float(om.lifetime) / 2.0:
+      if forceOuter or outerElapsed > float(om.lifetime) / 2.0:
         try:
           await renewMapping(mgr.outerMgr, om)
         except CatchableError:
           discard
       oi += 1
+    if forceOuter:
+      mgr.outerMgr.mappingsStale = false
 
 proc startRenewal*(mgr: NatManager): CpsVoidFuture {.cps.} =
   ## Start a background renewal loop that renews mappings at lifetime/2.

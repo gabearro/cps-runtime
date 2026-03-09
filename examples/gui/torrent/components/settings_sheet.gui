@@ -138,6 +138,101 @@ component SettingsGeneralTab(isDark: Bool) {
           .tracking(0.8)
 
         VStack(alignment: HorizontalAlignment.leading, spacing: 14) {
+
+          // ── Bandwidth usage percentage ──
+          VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+            HStack(spacing: 10) {
+              ZStack {
+                RoundedRectangle(cornerRadius: 5)
+                  .fill(isDark ? Color(token.color.accent).opacity(0.10) : Color(token.color.accent).opacity(0.06))
+                Image(systemName: "gauge.with.dots.needle.33percent")
+                  .font(.system(size: 10, weight: Font.Weight.bold))
+                  .foregroundColor(Color(token.color.accent))
+              }
+              .frame(width: 24, height: 24)
+
+              VStack(alignment: HorizontalAlignment.leading, spacing: 2) {
+                Text("Usage Limit")
+                  .font(.system(size: 12, weight: Font.Weight.medium))
+                  .foregroundColor(fg)
+                Text("Percentage of connection bandwidth allocated to torrents")
+                  .font(.system(size: 10))
+                  .foregroundColor(fgTertiary)
+              }
+            }
+
+            HStack(spacing: 8) {
+              TextField("80", text: bandwidthPercent)
+                .textFieldStyle(PlainTextFieldStyle())
+                .font(.system(size: 13, weight: Font.Weight.semibold, design: Font.Design.monospaced))
+                .foregroundColor(fg)
+                .frame(width: 48)
+                .multilineTextAlignment(TextAlignment.center)
+                .padding(vertical: 5, horizontal: 6)
+                .background(
+                  RoundedRectangle(cornerRadius: 6)
+                    .fill(isDark ? Color.black.opacity(0.30) : Color.white)
+                )
+                .overlay(
+                  RoundedRectangle(cornerRadius: 6)
+                    .stroke(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.10), lineWidth: 0.5)
+                )
+              Text("%")
+                .font(.system(size: 12, weight: Font.Weight.medium))
+                .foregroundColor(fgTertiary)
+
+              Spacer()
+
+              // Preset buttons
+              HStack(spacing: 4) {
+                Button(action: SetBandwidth50) {
+                  Text("50%")
+                    .font(.system(size: 10, weight: Font.Weight.medium))
+                    .foregroundColor(bandwidthPercent == "50" ? Color.white : fgTertiary)
+                    .padding(vertical: 3, horizontal: 8)
+                    .background(
+                      RoundedRectangle(cornerRadius: 4)
+                        .fill(bandwidthPercent == "50"
+                          ? Color(token.color.accent).opacity(0.8)
+                          : isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
+                    )
+                }
+                .buttonStyle(BorderlessButtonStyle())
+
+                Button(action: SetBandwidth80) {
+                  Text("80%")
+                    .font(.system(size: 10, weight: Font.Weight.medium))
+                    .foregroundColor(bandwidthPercent == "80" ? Color.white : fgTertiary)
+                    .padding(vertical: 3, horizontal: 8)
+                    .background(
+                      RoundedRectangle(cornerRadius: 4)
+                        .fill(bandwidthPercent == "80"
+                          ? Color(token.color.accent).opacity(0.8)
+                          : isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
+                    )
+                }
+                .buttonStyle(BorderlessButtonStyle())
+
+                Button(action: SetBandwidth100) {
+                  Text("100%")
+                    .font(.system(size: 10, weight: Font.Weight.medium))
+                    .foregroundColor(bandwidthPercent == "100" ? Color.white : fgTertiary)
+                    .padding(vertical: 3, horizontal: 8)
+                    .background(
+                      RoundedRectangle(cornerRadius: 4)
+                        .fill(bandwidthPercent == "100"
+                          ? Color(token.color.accent).opacity(0.8)
+                          : isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
+                    )
+                }
+                .buttonStyle(BorderlessButtonStyle())
+              }
+            }
+          }
+
+          Rectangle().fill(divider).frame(height: 0.5)
+
+          // ── Download / Upload limits ──
           HStack(spacing: 16) {
             // Download limit
             HStack(spacing: 8) {
@@ -159,7 +254,7 @@ component SettingsGeneralTab(isDark: Bool) {
                     .textFieldStyle(PlainTextFieldStyle())
                     .font(.system(size: 12, design: Font.Design.monospaced))
                     .foregroundColor(fg)
-                    .frame(width: 60)
+                    .frame(width: 56)
                     .padding(vertical: 4, horizontal: 8)
                     .background(
                       RoundedRectangle(cornerRadius: 5)
@@ -169,9 +264,14 @@ component SettingsGeneralTab(isDark: Bool) {
                       RoundedRectangle(cornerRadius: 5)
                         .stroke(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.10), lineWidth: 0.5)
                     )
-                  Text("KB/s")
-                    .font(.system(size: 10))
-                    .foregroundColor(fgTertiary)
+                  Picker("", selection: downloadBandwidthUnit) {
+                    Text("KiB/s").tag("KiB")
+                    Text("MiB/s").tag("MiB")
+                    Text("GiB/s").tag("GiB")
+                  }
+                  .pickerStyle(MenuPickerStyle())
+                  .font(.system(size: 10))
+                  .frame(width: 78)
                 }
               }
             }
@@ -200,7 +300,7 @@ component SettingsGeneralTab(isDark: Bool) {
                     .textFieldStyle(PlainTextFieldStyle())
                     .font(.system(size: 12, design: Font.Design.monospaced))
                     .foregroundColor(fg)
-                    .frame(width: 60)
+                    .frame(width: 56)
                     .padding(vertical: 4, horizontal: 8)
                     .background(
                       RoundedRectangle(cornerRadius: 5)
@@ -210,15 +310,20 @@ component SettingsGeneralTab(isDark: Bool) {
                       RoundedRectangle(cornerRadius: 5)
                         .stroke(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.10), lineWidth: 0.5)
                     )
-                  Text("KB/s")
-                    .font(.system(size: 10))
-                    .foregroundColor(fgTertiary)
+                  Picker("", selection: uploadBandwidthUnit) {
+                    Text("KiB/s").tag("KiB")
+                    Text("MiB/s").tag("MiB")
+                    Text("GiB/s").tag("GiB")
+                  }
+                  .pickerStyle(MenuPickerStyle())
+                  .font(.system(size: 10))
+                  .frame(width: 78)
                 }
               }
             }
           }
 
-          Text("Set to 0 for unlimited")
+          Text("Set to 0 for unlimited. The percentage above applies to these limits.")
             .font(.system(size: 10))
             .foregroundColor(fgTertiary)
             .padding(leading: 2)

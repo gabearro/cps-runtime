@@ -1241,7 +1241,8 @@ proc isBridgeRequestCandidate(name: string): bool =
   let n = swiftIdent(name)
   n in [
     "selectedTorrentId", "detailTab", "showAddTorrent", "addMagnetLink", "addTorrentPath",
-    "showSettings", "downloadDir", "listenPort", "maxDownloadRate", "maxUploadRate",
+    "showSettings", "downloadDir", "listenPort", "downloadBandwidth", "uploadBandwidth",
+    "downloadBandwidthUnit", "uploadBandwidthUnit", "bandwidthPercent",
     "maxPeers", "dhtEnabled", "pexEnabled", "lsdEnabled", "utpEnabled", "webSeedEnabled",
     "trackerScrapeEnabled", "holepunchEnabled", "encryptionMode", "actionPriority",
     "showRemoveConfirm", "removeDeleteFiles", "actionTorrentId", "pollActive"

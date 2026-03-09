@@ -133,6 +133,9 @@ app CpsTorrent {
     listenPort: String = "6881"
     maxDownloadRate: String = "0"
     maxUploadRate: String = "0"
+    downloadBandwidthUnit: String = "MiB"
+    uploadBandwidthUnit: String = "MiB"
+    bandwidthPercent: String = "80"
     maxPeers: String = "50"
     dhtEnabled: Bool = true
     pexEnabled: Bool = true
@@ -187,6 +190,9 @@ app CpsTorrent {
   action HideRemoveConfirm owner swift
   action ConfirmRemove owner both
   action SaveSettings owner nim
+  action SetBandwidth50 owner swift
+  action SetBandwidth80 owner swift
+  action SetBandwidth100 owner swift
   action SetDownloadDir owner both
   action SetDhtEnabled(enabled: Bool) owner both
   action SetFilePriority(index: Int, priority: String) owner both
@@ -225,6 +231,15 @@ app CpsTorrent {
     }
     on HideSettings {
       set showSettings = false
+    }
+    on SetBandwidth50 {
+      set bandwidthPercent = "50"
+    }
+    on SetBandwidth80 {
+      set bandwidthPercent = "80"
+    }
+    on SetBandwidth100 {
+      set bandwidthPercent = "100"
     }
     on PauseTorrent(torrentId) {
       set actionTorrentId = torrentId

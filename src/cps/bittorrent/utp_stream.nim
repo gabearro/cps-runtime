@@ -4,7 +4,7 @@
 ## AsyncStream, integrated with the CPS event loop via a shared UDP socket.
 ## UtpManager multiplexes multiple uTP connections over a single UDP port.
 
-import std/[tables, nativesockets, strutils, times, deques]
+import std/[nativesockets, strutils, times, deques]
 import ../runtime
 import ../transform
 import ../eventloop
@@ -12,6 +12,7 @@ import ../io/streams
 import ../io/udp
 import ../io/timeouts
 import ../private/platform
+import ../private/concurrent_table
 import utp
 
 const
@@ -40,7 +41,7 @@ type
     udpSock*: UdpSocket
     port*: int                                    ## Local UDP port (for advertising in extension handshake)
     domain: Domain                                ## Socket domain (AF_INET or AF_INET6)
-    connections: Table[string, UtpStream]          ## Key: "connId:ip:port"
+    connections: ConcurrentTable[string, UtpStream]  ## Key: "connId:ip:port" (thread-safe)
     nextConnId: uint16
     closed*: bool
     acceptWaiter: CpsFuture[UtpStream]  ## Single accept waiter (one accept loop)
@@ -158,8 +159,7 @@ proc utpConnKey*(connId: uint16, ip: string, port: int): string =
 proc removeConnection(mgr: UtpManager, connId: uint16, ip: string, port: int) {.inline.} =
   if mgr != nil:
     let key = utpConnKey(connId, ip, port)
-    if key in mgr.connections:
-      mgr.connections.del(key)
+    mgr.connections.del(key)
 
 # ============================================================
 # Packet dispatch
@@ -251,8 +251,8 @@ proc dispatchPacket(mgr: UtpManager, data: string, srcIp: string, srcPort: int) 
 
   # Look up by (connectionId, srcIp, srcPort) to prevent cross-peer collision
   let connKey = utpConnKey(hdr.connectionId, srcIp, srcPort)
-  if connKey in mgr.connections:
-    let stream = mgr.connections[connKey]
+  var stream: UtpStream
+  if mgr.connections.tryGet(connKey, stream):
     let prevState = stream.sock.state
     var res: tuple[response: string, payload: string, stateChanged: bool]
     try:
@@ -330,7 +330,7 @@ proc dispatchPacket(mgr: UtpManager, data: string, srcIp: string, srcPort: int) 
     # outgoing entry so that `utpConnect` unblocks on the incoming stream.
     var existingOutgoing: UtpStream = nil
     var existingKey: string = ""
-    for k, s in mgr.connections:
+    for (k, s) in mgr.connections.snapshotPairs():
       if s.remoteIp == srcIp and s.remotePort == srcPort and
          s.connectWaiter != nil and s.sock.state == usSynSent:
         existingOutgoing = s
@@ -385,12 +385,12 @@ proc newUtpManager*(listenPort: int = 0, domain: Domain = AF_INET): UtpManager =
   result = UtpManager(
     udpSock: newUdpSocket(domain),
     domain: domain,
-    connections: initTable[string, UtpStream](),
     nextConnId: 1000,
     closed: false,
     acceptBacklog: initDeque[UtpStream](),
     reactorLoop: nil
   )
+  initConcurrentTable(result.connections)
   # Dual-stack: allow IPv6 socket to handle IPv4 (as ::ffff:x.x.x.x) too
   if domain == AF_INET6:
     var no: cint = 0
@@ -421,8 +421,17 @@ proc start*(mgr: UtpManager) =
   proc checkTimeouts() {.closure.} =
     if mgr.closed:
       return
+    # Snapshot keys atomically — worker threads may call utpConnect/
+    # removeConnection concurrently via CPS continuations.
+    let keys = mgr.connections.snapshotKeys()
     var toRemove: seq[string]
-    for cKey, stream in mgr.connections:
+    var ki = 0
+    while ki < keys.len:
+      let cKey = keys[ki]
+      inc ki
+      var stream: UtpStream
+      if not mgr.connections.tryGet(cKey, stream):
+        continue  # Removed concurrently
       let retransmits = stream.sock.checkTimeouts()
       if retransmits.len > 0:
         utpLog("TIMEOUT retransmit " & $retransmits.len & " pkts to " &
@@ -433,6 +442,8 @@ proc start*(mgr: UtpManager) =
           " maxWnd=" & $stream.sock.maxWindow)
       for pkt in retransmits:
         mgr.sendPacket(pkt, stream.remoteIp, stream.remotePort)
+      if not mgr.connections.contains(cKey):
+        continue
       if stream.sock.state in {usReset, usDestroyed}:
         stream.closed = true
         stream.failConnectWaiter("uTP timeout reset")
@@ -457,7 +468,11 @@ proc close*(mgr: UtpManager) =
     mgr.acceptWaiter.fail(newException(AsyncIoError, "uTP manager closed"))
     mgr.acceptWaiter = nil
   mgr.acceptBacklog.clear()
-  for cKey, stream in mgr.connections:
+  let closeKeys = mgr.connections.snapshotKeys()
+  for cKey in closeKeys:
+    var stream: UtpStream
+    if not mgr.connections.tryGet(cKey, stream):
+      continue
     if stream.sock.state == usConnected:
       let fin = stream.sock.makeFinPacket()
       mgr.sendPacket(fin, stream.remoteIp, stream.remotePort)

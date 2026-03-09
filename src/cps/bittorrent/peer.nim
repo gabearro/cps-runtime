@@ -17,6 +17,7 @@ import pieces
 import extensions
 import utp_stream
 import mse
+import ratelimit
 import utils
 
 const
@@ -175,6 +176,8 @@ type
     markedSeedAt*: float   ## When peer was marked as seeder for eviction (0 = not marked)
     pexCountAtMark*: int   ## PEX peers received at time of marking (for conditional eviction)
     connGeneration*: uint32 ## Monotonic generation counter to distinguish replaced peers
+    # Global bandwidth limiter (shared across all peers)
+    bandwidthLimiter*: BandwidthLimiter
 
 proc newPeerConn*(ip: string, port: uint16, infoHash: array[20, byte],
                   peerId: array[20, byte],
@@ -214,6 +217,9 @@ proc emitEvent(peer: PeerConn, evt: PeerEvent): CpsVoidFuture {.cps.} =
 
 proc sendMessage(peer: PeerConn, msg: PeerMessage): CpsVoidFuture {.cps.} =
   let data = encodeMessage(msg)
+  # Throttle upload: wait for tokens before sending piece data
+  if msg.id == msgPiece:
+    await consumeUpload(peer.bandwidthLimiter, data.len)
   await peer.stream.write(data)
   if msg.id == msgPiece:
     peer.bytesUploaded += msg.blockData.len
@@ -276,6 +282,12 @@ proc performHandshake(peer: PeerConn): CpsFuture[string] {.cps.} =
 proc readLoop(peer: PeerConn): CpsVoidFuture {.cps.} =
   ## Read messages from peer until disconnected.
   while peer.state == psActive:
+    # Pre-read throttle: if the download bucket is in debt (we've been reading
+    # faster than the limit), wait before issuing the next network read.
+    # Without this, every peer reads one full block at wire speed before
+    # post-hoc throttling kicks in, causing aggregate overshoot proportional
+    # to the number of active peers.
+    await waitForBudget(peer.bandwidthLimiter, download = true)
     let readResult = await peer.readMessage()
     peer.lastActivity = epochTime()
 
@@ -317,6 +329,8 @@ proc readLoop(peer: PeerConn): CpsVoidFuture {.cps.} =
       if msg.blockData.len > MaxBlockSize:
         raise newException(AsyncIoError, "piece block too large: " & $msg.blockData.len &
                            " > " & $MaxBlockSize)
+      # Throttle download: post-hoc delay proportional to bytes received
+      await consumeDownload(peer.bandwidthLimiter, msg.blockData.len)
       peer.bytesDownloaded += msg.blockData.len
       peer.lastPieceTime = epochTime()
       # Note: pendingRequests is decremented by client.nim when the block
