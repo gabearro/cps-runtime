@@ -70,11 +70,31 @@ assert fileExists(bridgeScriptPath)
 assert fileExists(bridgeImplPath)
 
 let mainSwift = readFile(mainSwiftPath)
+let runtimeSwift = readFile(runtimeSwiftPath)
+let bridgeHeader = readFile(bridgeHeaderPath)
+let bridgeNim = readFile(bridgeNimPath)
 assert mainSwift.contains("case .swiftInc: return .swift")
 assert mainSwift.contains("case .nimInc: return .nim")
 assert mainSwift.contains("case .hybrid: return .both")
 assert mainSwift.contains("name: \"bridge.dispatch\"")
 assert not mainSwift.contains("state.count = (state.count + 2)")
+assert mainSwift.contains("let guiBridgeValueTypeJSON: UInt8 = 5")
+assert mainSwift.contains("func guiBridgeEncodeRequestFields(actionTag: UInt32, state: GUIState?) -> [GUIBridgeFieldValue]")
+assert mainSwift.contains("func guiBridgeApplyPatchField(state: inout GUIState, fieldId: UInt16, valueType: UInt8, payload: Data) -> Bool")
+
+assert runtimeSwift.contains("private var dispatchInFlight = false")
+assert runtimeSwift.contains("private var pollQueued = false")
+assert runtimeSwift.contains("var fieldCount = UInt16(fields.count).littleEndian")
+assert runtimeSwift.contains("if guiBridgeApplyPatchField(state: &nextState, fieldId: fieldId, valueType: valueType, payload: payload)")
+assert not runtimeSwift.contains("JSONSerialization.jsonObject(with: patchData")
+
+assert bridgeHeader.contains("enum { GUI_BRIDGE_ABI_VERSION = 5u };")
+
+assert bridgeNim.contains("GuiBridgeFieldValue* = object")
+assert bridgeNim.contains("fields*: seq[GuiBridgeFieldValue]")
+assert bridgeNim.contains("appendLeU16(result, count)")
+assert bridgeNim.contains("result.fields.add GuiBridgeFieldValue(fieldId: fieldId, valueType: valueType, payload: payloadBytes)")
+assert not bridgeNim.contains("stateBlob*: seq[byte]")
 
 let customMarker = "# custom bridge impl marker"
 writeFile(bridgeImplPath, customMarker & "\n")

@@ -348,6 +348,164 @@ component SettingsNotificationsSection(isDark: Bool) {
   }
 }
 
+component NatStatusRow(label: String, value: String, isDark: Bool) {
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgSecondary = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : token.color.textMuted
+
+  HStack {
+    Text(label)
+      .font(.system(size: 12))
+      .foregroundColor(fgSecondary)
+      .frame(width: 110, alignment: Alignment.leading)
+
+    Text(value)
+      .font(.system(size: 12, design: Font.Design.monospaced))
+      .foregroundColor(fg)
+      .textSelection(TextSelectability.enabled)
+
+    Spacer()
+  }
+}
+
+component SettingsNatSection(isDark: Bool) {
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
+  let fgTertiary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.65) : token.color.textSubtle
+  let sectionLabelColor = isDark ? Color(red: 0.58, green: 0.58, blue: 0.61) : Color(red: 0.60, green: 0.60, blue: 0.63)
+  let dividerColor = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
+  let cardBg = isDark ? Color(red: 0.19, green: 0.19, blue: 0.20) : Color(red: 0.96, green: 0.96, blue: 0.97)
+  let cardBorder = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+
+  let statusColor = natProtocol == "Not available"
+    ? token.color.danger
+    : natProtocol == "Discovering..."
+      ? token.color.warning
+      : token.color.success
+  let statusIcon = natProtocol == "Not available"
+    ? "xmark.circle.fill"
+    : natProtocol == "Discovering..."
+      ? "arrow.triangle.2.circlepath"
+      : "checkmark.circle.fill"
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 12) {
+    Text("NAT / PORT FORWARDING")
+      .font(.system(size: 11, weight: Font.Weight.semibold))
+      .foregroundColor(sectionLabelColor)
+      .tracking(0.6)
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 12) {
+      HStack(spacing: 8) {
+        Image(systemName: statusIcon)
+          .font(.system(size: 14))
+          .foregroundColor(statusColor)
+
+        VStack(alignment: HorizontalAlignment.leading, spacing: 2) {
+          HStack(spacing: 6) {
+            Text(natProtocol)
+              .font(.system(size: 13, weight: Font.Weight.semibold))
+              .foregroundColor(fg)
+
+            if natDoubleNat {
+              Text("Double NAT")
+                .font(.system(size: 10, weight: Font.Weight.medium))
+                .foregroundColor(token.color.warning)
+                .padding(vertical: 2, horizontal: 6)
+                .background(
+                  RoundedRectangle(cornerRadius: 4)
+                    .fill(token.color.warning.opacity(0.15))
+                )
+            }
+          }
+
+          Text(
+            natProtocol == "Not available"
+              ? "DCC file transfers will use direct IP only"
+              : natProtocol == "Discovering..."
+                ? "Detecting NAT gateway..."
+                : "Port forwarding available for DCC transfers"
+          )
+            .font(.system(size: 11))
+            .foregroundColor(fgTertiary)
+        }
+      }
+
+      if natProtocol != "Not available" && natProtocol != "Discovering..." {
+        Rectangle()
+          .fill(dividerColor)
+          .frame(height: 1)
+
+        VStack(alignment: HorizontalAlignment.leading, spacing: 6) {
+          if natExternalIp != "" {
+            NatStatusRow(label: "External IP", value: natExternalIp, isDark: isDark)
+          }
+
+          NatStatusRow(label: "Gateway", value: natGatewayIp, isDark: isDark)
+          NatStatusRow(label: "Local IP", value: natLocalIp, isDark: isDark)
+          NatStatusRow(label: "Protocol", value: natProtocol, isDark: isDark)
+
+          if natActiveMappings > 0 {
+            NatStatusRow(
+              label: "Active Ports",
+              value: natActiveMappings == 1
+                ? "1 mapping"
+                : String(natActiveMappings) + " mappings",
+              isDark: isDark
+            )
+          }
+        }
+
+        if natDoubleNat {
+          Rectangle()
+            .fill(dividerColor)
+            .frame(height: 1)
+
+          VStack(alignment: HorizontalAlignment.leading, spacing: 6) {
+            HStack(spacing: 6) {
+              Text("Outer NAT Layer")
+                .font(.system(size: 12, weight: Font.Weight.medium))
+                .foregroundColor(fg)
+
+              if natOuterProtocol != "" && natOuterProtocol != "Not available" {
+                Image(systemName: "checkmark.circle.fill")
+                  .font(.system(size: 10))
+                  .foregroundColor(token.color.success)
+              } else {
+                Image(systemName: "exclamationmark.triangle.fill")
+                  .font(.system(size: 10))
+                  .foregroundColor(token.color.warning)
+              }
+            }
+
+            if natOuterProtocol != "" && natOuterProtocol != "Not available" {
+              NatStatusRow(label: "Protocol", value: natOuterProtocol, isDark: isDark)
+
+              if natOuterGatewayIp != "" {
+                NatStatusRow(label: "Gateway", value: natOuterGatewayIp, isDark: isDark)
+              }
+
+              Text("Both NAT layers can be forwarded automatically")
+                .font(.system(size: 11))
+                .foregroundColor(token.color.success)
+            } else {
+              Text("Outer gateway unreachable — DCC may not work from outside your network")
+                .font(.system(size: 11))
+                .foregroundColor(token.color.warning)
+            }
+          }
+        }
+      }
+    }
+    .padding(16)
+    .background(
+      RoundedRectangle(cornerRadius: 10)
+        .fill(cardBg)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 10)
+        .stroke(cardBorder, lineWidth: 0.5)
+    )
+  }
+}
+
 component SettingsConnectionSection(isDark: Bool) {
   let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : token.color.textPrimary
   let fgTertiary = isDark ? Color(red: 0.62, green: 0.62, blue: 0.65) : token.color.textSubtle
@@ -649,6 +807,7 @@ component SettingsPanel(isDark: Bool) {
     if settingsTab == 4 {
       ScrollView {
         VStack(alignment: HorizontalAlignment.leading, spacing: 24) {
+          SettingsNatSection(isDark: isDark)
           SettingsConnectionSection(isDark: isDark)
         }
         .padding(24)

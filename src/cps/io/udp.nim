@@ -42,6 +42,11 @@ proc newUdpSocket*(domain: Domain = AF_INET): UdpSocket =
 
 proc bindAddr*(sock: UdpSocket, host: string, port: int) =
   ## Bind the UDP socket to a local address.
+  # Set SO_REUSEADDR to allow quick rebind after stop/restart
+  var optval: cint = 1
+  discard setsockopt(sock.fd, SOL_SOCKET.cint, SO_REUSEADDR.cint,
+                     addr optval, sizeof(optval).SockLen)
+
   let aiList = getAddrInfo(host, Port(port), sock.domain, SOCK_DGRAM, IPPROTO_UDP)
   if aiList == nil:
     raise newException(streams.AsyncIoError, "Could not resolve bind address: " & host)
@@ -142,6 +147,7 @@ proc recvFrom*(sock: UdpSocket, maxSize: int = 65535): CpsFuture[Datagram] =
   fut.pinFutureRuntime()
   let loop = getEventLoop()
   var buf = newString(maxSize)
+  var registered = false  ## Track whether we have a pending selector registration
 
   proc tryRecv() =
     var srcAddr: Sockaddr_storage
@@ -152,8 +158,10 @@ proc recvFrom*(sock: UdpSocket, maxSize: int = 65535): CpsFuture[Datagram] =
     if n < 0:
       let err = osLastError()
       if err.isWouldBlock():
+        registered = true
         loop.registerRead(sock.fd, proc() =
           loop.unregister(sock.fd)
+          registered = false
           tryRecv()
         )
         return
@@ -182,6 +190,18 @@ proc recvFrom*(sock: UdpSocket, maxSize: int = 65535): CpsFuture[Datagram] =
       port: parseInt(senderPort)
     ))
 
+  # When the future is cancelled (e.g. by withTimeout), clean up the
+  # selector registration to prevent orphaned read callbacks that hold
+  # references to the socket.
+  fut.addCallback(proc() =
+    if fut.isCancelled() and registered:
+      try:
+        loop.unregister(sock.fd)
+      except Exception:
+        discard
+      registered = false
+  )
+
   tryRecv()
   result = fut
 
@@ -194,8 +214,10 @@ proc trySendToAddr*(sock: UdpSocket, data: string, ip: string, port: int,
   ## Fire-and-forget send to a pre-resolved IP address.
   ## Returns true on success, false on EAGAIN/EWOULDBLOCK.
   ## Raises AsyncIoError on hard errors.
+  ## Auto-detects IPv6 when `ip` contains a colon.
+  let actualDomain = if ':' in ip: AF_INET6 else: domain
   var sa: Sockaddr_storage
-  let saLen = fillSockaddrIp(ip, port, domain, sa)
+  let saLen = fillSockaddrIp(ip, port, actualDomain, sa)
   let n = sendto(sock.fd, unsafeAddr data[0], data.len.cint, 0'i32,
                  cast[ptr SockAddr](addr sa), saLen)
   if n < 0:
@@ -209,12 +231,14 @@ proc trySendToAddr*(sock: UdpSocket, data: string, ip: string, port: int,
 proc sendToAddr*(sock: UdpSocket, data: string, ip: string, port: int,
                  domain: Domain = AF_INET): CpsVoidFuture =
   ## Async send to a pre-resolved IP address with write-readiness waiting.
+  ## Auto-detects IPv6 when `ip` contains a colon.
+  let actualDomain = if ':' in ip: AF_INET6 else: domain
   let fut = newCpsVoidFuture()
   fut.pinFutureRuntime()
   let loop = getEventLoop()
 
   var sa: Sockaddr_storage
-  let saLen = fillSockaddrIp(ip, port, domain, sa)
+  let saLen = fillSockaddrIp(ip, port, actualDomain, sa)
 
   proc trySend() =
     let n = sendto(sock.fd, unsafeAddr data[0], data.len.cint, 0'i32,
@@ -259,6 +283,7 @@ proc onRecv*(sock: UdpSocket, maxSize: int, callback: UdpRecvCallback) =
       discard
 
     # Drain all available datagrams
+    var drainCount = 0
     while not sock.closed:
       var srcAddr: Sockaddr_storage
       var addrLen: SockLen = sizeof(srcAddr).SockLen
@@ -267,9 +292,15 @@ proc onRecv*(sock: UdpSocket, maxSize: int, callback: UdpRecvCallback) =
                        cast[ptr SockAddr](addr srcAddr), addr addrLen)
       if n <= 0:
         break
+      inc drainCount
       # Copy data out so the shared buffer can be reused
       let data = buf[0 ..< n]
-      callback(data, srcAddr, addrLen)
+      # Catch all exceptions from callback to prevent readHandler from being
+      # permanently de-registered by processIo's exception handler.
+      try:
+        callback(data, srcAddr, addrLen)
+      except Exception:
+        discard
 
     # Re-register for next read event (if socket not closed)
     if not sock.closed:
@@ -288,6 +319,23 @@ proc cancelOnRecv*(sock: UdpSocket) =
 # ============================================================
 # Close
 # ============================================================
+
+proc localPort*(sock: UdpSocket): int =
+  ## Get the local port the socket is bound to (useful for ephemeral ports).
+  var sa: Sockaddr_storage
+  var saLen: SockLen = sizeof(sa).SockLen
+  if getsockname(sock.fd, cast[ptr SockAddr](addr sa), addr saLen) != 0:
+    raise newException(streams.AsyncIoError, "getsockname failed")
+  var host = newString(256)
+  var portStr = newString(32)
+  let rc = getnameinfo(cast[ptr SockAddr](addr sa), saLen,
+                       cstring(host), 256.SockLen,
+                       cstring(portStr), 32.SockLen,
+                       (NI_NUMERICHOST or NI_NUMERICSERV).cint)
+  if rc != 0:
+    raise newException(streams.AsyncIoError, "getnameinfo failed in localPort")
+  portStr.setLen(portStr.cstring.len)
+  return parseInt(portStr)
 
 proc close*(sock: UdpSocket) =
   ## Close the UDP socket.

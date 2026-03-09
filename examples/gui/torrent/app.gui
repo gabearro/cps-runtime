@@ -1,0 +1,278 @@
+include "components/*.gui"
+
+app CpsTorrent {
+
+  window {
+    title: "CPS Torrent"
+    width: 1100
+    height: 700
+    minWidth: 800
+    minHeight: 500
+    closeAppOnLastWindowClose: true
+  }
+
+  tokens {
+    color.accent = "#0A84FF"
+    color.success = "#30D158"
+    color.warning = "#FFD60A"
+    color.danger = "#FF453A"
+    color.downloading = "#5E5CE6"
+    color.seeding = "#30D158"
+
+    color.textPrimary = "#F5F5F7"
+    color.textSecondary = "#A1A1A6"
+    color.textMuted = "#6E6E73"
+    color.textSubtle = "#48484A"
+
+    color.surface = "#1C1C1E"
+    color.surfaceSecondary = "#2C2C2E"
+    color.surfaceElevated = "#3A3A3C"
+    color.border = "#38383A"
+    color.borderSubtle = "#2C2C2E"
+
+    spacing.xs = 4
+    spacing.sm = 6
+    spacing.md = 10
+    spacing.lg = 16
+    spacing.xl = 24
+  }
+
+  model Torrent {
+    id: Int,
+    name: String,
+    infoHash: String,
+    state: String,
+    progress: Double,
+    downloadRate: Double,
+    uploadRate: Double,
+    downloaded: Double,
+    uploaded: Double,
+    totalSize: Double,
+    peerCount: Int,
+    seedCount: Int,
+    eta: String,
+    addedDate: String,
+    completedDate: String,
+    errorText: String,
+    ratio: Double,
+    pieceCount: Int,
+    verifiedPieces: Int,
+    trackerCount: Int,
+    protocolPrivate: Bool,
+    protocolDhtEnabled: Bool,
+    protocolPexEnabled: Bool,
+    protocolLsdEnabled: Bool,
+    protocolUtpEnabled: Bool,
+    protocolWebSeedEnabled: Bool,
+    protocolScrapeEnabled: Bool,
+    protocolHolepunchEnabled: Bool,
+    protocolEncryptionMode: String,
+    protocolUtpPeers: Int,
+    protocolTcpPeers: Int,
+    protocolLsdAnnounces: Int,
+    protocolLsdPeers: Int,
+    protocolLsdLastError: String,
+    protocolWebSeedBytes: Double,
+    protocolWebSeedFailures: Int,
+    protocolWebSeedActiveUrl: String,
+    protocolHolepunchAttempts: Int,
+    protocolHolepunchSuccesses: Int,
+    protocolHolepunchLastError: String
+  }
+
+  model TorrentFile {
+    index: Int,
+    path: String,
+    size: Double,
+    progress: Double,
+    priority: String
+  }
+
+  model PeerInfo {
+    address: String,
+    client: String,
+    downloadRate: Double,
+    uploadRate: Double,
+    progress: Double,
+    flags: String,
+    flagsTooltip: String,
+    source: String,
+    transport: String
+  }
+
+  model TrackerInfo {
+    url: String,
+    status: String,
+    seeders: Int,
+    leechers: Int,
+    completed: Int,
+    lastAnnounce: String,
+    nextAnnounce: String,
+    lastScrape: String,
+    nextScrape: String,
+    errorText: String
+  }
+
+  state {
+    torrents: Torrent[] = []
+    selectedTorrentId: Int = -1
+
+    files: TorrentFile[] = []
+    peers: PeerInfo[] = []
+    trackers: TrackerInfo[] = []
+
+    detailTab: Int = 0
+    pieceMapData: String = ""
+
+    showAddTorrent: Bool = false
+    addMagnetLink: String = ""
+    addTorrentPath: String = ""
+
+    showSettings: Bool = false
+    downloadDir: String = "~/Downloads"
+    listenPort: String = "6881"
+    maxDownloadRate: String = "0"
+    maxUploadRate: String = "0"
+    maxPeers: String = "50"
+    dhtEnabled: Bool = true
+    pexEnabled: Bool = true
+    lsdEnabled: Bool = true
+    utpEnabled: Bool = true
+    webSeedEnabled: Bool = true
+    trackerScrapeEnabled: Bool = true
+    holepunchEnabled: Bool = true
+    encryptionMode: String = "prefer_encrypted"
+    actionPriority: String = "normal"
+    settingsTab: Int = 0
+
+    statusDownRate: Double = 0.0
+    statusUpRate: Double = 0.0
+    statusDhtNodes: Int = 0
+    pollActive: Bool = false
+    statusText: String = ""
+
+    showRemoveConfirm: Bool = false
+    removeDeleteFiles: Bool = false
+    actionTorrentId: Int = -1
+
+    natProtocol: String = "Discovering..."
+    natExternalIp: String = ""
+    natGatewayIp: String = ""
+    natLocalIp: String = ""
+    natDoubleNat: Bool = false
+    natOuterProtocol: String = ""
+    natOuterGatewayIp: String = ""
+    natPortsForwarded: Bool = false
+    natActiveMappings: Int = 0
+
+    computed hasSelection: Bool = selectedTorrentId >= 0
+  }
+
+  action Poll owner nim
+  action StartPoll owner both
+  action AddTorrentFromFile owner nim
+  action AddTorrentFromMagnet owner nim
+  action RemoveTorrent owner nim
+  action PauseTorrent(torrentId: Int) owner both
+  action ResumeTorrent(torrentId: Int) owner both
+  action PauseAll owner nim
+  action ResumeAll owner nim
+  action SelectTorrent(torrentId: Int) owner both
+  action SetDetailTab(tab: Int) owner both
+  action ShowAddTorrent owner swift
+  action HideAddTorrent owner swift
+  action ShowSettings owner swift
+  action HideSettings owner swift
+  action ShowRemoveConfirm(torrentId: Int) owner both
+  action HideRemoveConfirm owner swift
+  action ConfirmRemove owner both
+  action SaveSettings owner nim
+  action SetDownloadDir owner both
+  action SetDhtEnabled(enabled: Bool) owner both
+  action SetFilePriority(index: Int, priority: String) owner both
+  action TorrentFileSelected(path: String) owner both
+  action MagnetLinkChanged owner both
+  action ToggleRemoveFiles owner both
+  action CopyMagnetLink(torrentId: Int) owner both
+  action OpenInFinder(torrentId: Int) owner nim
+  action RecheckTorrent(torrentId: Int) owner both
+  action DropTorrentFile(path: String) owner both
+  action AppShutdown owner nim
+
+  reducer {
+    on StartPoll {
+      set pollActive = true
+      emit timer.once(id: "poll_init", ms: 0, action: Poll)
+      emit timer.interval(id: "poll_watchdog", ms: 1000, action: Poll)
+    }
+    on SelectTorrent(torrentId) {
+      set selectedTorrentId = torrentId
+      set detailTab = 0
+    }
+    on SetDetailTab(tab) {
+      set detailTab = tab
+    }
+    on ShowAddTorrent {
+      set showAddTorrent = true
+      set addMagnetLink = ""
+      set addTorrentPath = ""
+    }
+    on HideAddTorrent {
+      set showAddTorrent = false
+    }
+    on ShowSettings {
+      set showSettings = true
+    }
+    on HideSettings {
+      set showSettings = false
+    }
+    on PauseTorrent(torrentId) {
+      set actionTorrentId = torrentId
+    }
+    on ResumeTorrent(torrentId) {
+      set actionTorrentId = torrentId
+    }
+    on ShowRemoveConfirm(torrentId) {
+      set actionTorrentId = torrentId
+      set showRemoveConfirm = true
+      set removeDeleteFiles = false
+    }
+    on HideRemoveConfirm {
+      set showRemoveConfirm = false
+    }
+    on ConfirmRemove {
+      set showRemoveConfirm = false
+    }
+    on ToggleRemoveFiles {
+      set removeDeleteFiles = !removeDeleteFiles
+    }
+    on SetDhtEnabled(enabled) {
+      set dhtEnabled = enabled
+    }
+    on TorrentFileSelected(path) {
+      set addTorrentPath = path
+    }
+    on SetFilePriority(index, priority) {
+      set actionTorrentId = index
+      set actionPriority = priority
+    }
+    on CopyMagnetLink(torrentId) {
+      set actionTorrentId = torrentId
+    }
+    on RecheckTorrent(torrentId) {
+      set actionTorrentId = torrentId
+    }
+    on DropTorrentFile(path) {
+      set addTorrentPath = path
+    }
+  }
+
+  escape swiftFile "swift/PieceMapView.swift"
+  escape swiftFile "swift/TorrentFilePickerButton.swift"
+  escape swiftFile "swift/RateFormatter.swift"
+  escape swiftFile "swift/TorrentDropModifier.swift"
+
+  bridge {
+    nimEntry: "bridge.nim"
+  }
+}

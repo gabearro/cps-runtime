@@ -1,0 +1,258 @@
+component DetailPeers(isDark: Bool) {
+  let headerBg = isDark ? Color.white.opacity(0.03) : Color.black.opacity(0.02)
+  let rowFg = isDark ? Color(red: 0.88, green: 0.88, blue: 0.90) : Color.black.opacity(0.80)
+  let mutedFg = isDark ? Color(red: 0.58, green: 0.58, blue: 0.61) : Color.black.opacity(0.40)
+  let fgTertiary = isDark ? Color(red: 0.44, green: 0.44, blue: 0.47) : Color.gray
+  let dividerColor = isDark ? Color.white.opacity(0.05) : Color.black.opacity(0.04)
+
+  // Accent colors
+  let dlColor = Color(red: 0.04, green: 0.52, blue: 1.0)
+  let ulColor = Color(red: 0.19, green: 0.82, blue: 0.35)
+  let seedColor = Color(red: 1.0, green: 0.76, blue: 0.03)
+  let encColor = Color(red: 0.58, green: 0.58, blue: 0.61)
+
+  // Transport colors
+  let utpColor = Color(red: 0.65, green: 0.40, blue: 0.92)
+  let tcpColor = isDark ? Color(red: 0.46, green: 0.46, blue: 0.49) : Color.gray
+
+  // Source colors
+  let trackerColor = Color(red: 0.04, green: 0.52, blue: 1.0)
+  let dhtColor = Color(red: 0.45, green: 0.44, blue: 0.92)
+  let pexColor = Color(red: 0.19, green: 0.75, blue: 0.35)
+  let lsdColor = Color(red: 0.92, green: 0.76, blue: 0.04)
+  let incomingColor = Color(red: 1.0, green: 0.35, blue: 0.30)
+  let holepunchColor = Color(red: 1.0, green: 0.55, blue: 0.0)
+
+  // Status icon colors
+  let dlActiveColor = Color(red: 0.04, green: 0.52, blue: 1.0)
+  let dlChokedColor = Color(red: 0.04, green: 0.52, blue: 1.0).opacity(0.35)
+  let ulActiveColor = Color(red: 0.19, green: 0.82, blue: 0.35)
+  let ulChokedColor = Color(red: 0.19, green: 0.82, blue: 0.35).opacity(0.35)
+  let inactiveColor = isDark ? Color.white.opacity(0.18) : Color.black.opacity(0.12)
+
+  if peers.count == 0 {
+    VStack(spacing: 16) {
+      Spacer()
+      ZStack {
+        Circle()
+          .fill(isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
+          .frame(width: 64, height: 64)
+        Image(systemName: "person.2")
+          .font(.system(size: 24, weight: Font.Weight.light))
+          .foregroundColor(isDark ? Color(red: 0.44, green: 0.44, blue: 0.47) : Color.black.opacity(0.15))
+      }
+      VStack(spacing: 4) {
+        Text("No Peers")
+          .font(.system(size: 14, weight: Font.Weight.medium))
+          .foregroundColor(isDark ? Color(red: 0.66, green: 0.66, blue: 0.69) : Color.black.opacity(0.35))
+        Text("Waiting for peer connections")
+          .font(.system(size: 12))
+          .foregroundColor(fgTertiary)
+      }
+      Spacer()
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  } else {
+    VStack(spacing: 0) {
+      // Rows
+      ScrollView {
+        LazyVStack(spacing: 0) {
+          ForEach(items: peers, id: address, item: peer) {
+            VStack(spacing: 0) {
+              HStack(spacing: 12) {
+                // Left: peer info (flexible)
+                VStack(alignment: HorizontalAlignment.leading, spacing: 3) {
+                  // Line 1: address + transport
+                  HStack(spacing: 5) {
+                    Text(peer.address)
+                      .font(.system(size: 12, design: Font.Design.monospaced))
+                      .foregroundColor(rowFg)
+                    Text(peer.transport)
+                      .font(.system(size: 9, weight: Font.Weight.semibold))
+                      .foregroundColor(peer.transport == "uTP" ? utpColor : tcpColor)
+                      .padding(vertical: 1, horizontal: 4)
+                      .background(
+                        RoundedRectangle(cornerRadius: 3)
+                          .fill(peer.transport == "uTP" ? utpColor.opacity(0.12) : tcpColor.opacity(0.10))
+                      )
+                  }
+
+                  // Line 2: client + source
+                  HStack(spacing: 6) {
+                    Text(peer.client)
+                      .font(.system(size: 11))
+                      .foregroundColor(mutedFg)
+                      .lineLimit(1)
+                      .truncationMode(Text.TruncationMode.tail)
+                    Text(peer.source)
+                      .font(.system(size: 9, weight: Font.Weight.semibold))
+                      .foregroundColor(
+                        peer.source == "Tracker" ? trackerColor :
+                        peer.source == "DHT" ? dhtColor :
+                        peer.source == "PEX" ? pexColor :
+                        peer.source == "LSD" ? lsdColor :
+                        peer.source == "Incoming" ? incomingColor :
+                        peer.source == "Holepunch" ? holepunchColor :
+                        fgTertiary
+                      )
+                      .padding(vertical: 1, horizontal: 4)
+                      .background(
+                        RoundedRectangle(cornerRadius: 3)
+                          .fill(
+                            peer.source == "Tracker" ? trackerColor.opacity(0.12) :
+                            peer.source == "DHT" ? dhtColor.opacity(0.12) :
+                            peer.source == "PEX" ? pexColor.opacity(0.12) :
+                            peer.source == "LSD" ? lsdColor.opacity(0.12) :
+                            peer.source == "Incoming" ? incomingColor.opacity(0.12) :
+                            peer.source == "Holepunch" ? holepunchColor.opacity(0.12) :
+                            Color.clear
+                          )
+                      )
+                  }
+                }
+
+                Spacer()
+
+                // Right: rates + progress + status (fixed widths for alignment)
+                HStack(spacing: 4) {
+                  // Download rate
+                  HStack(spacing: 3) {
+                    Image(systemName: "arrow.down")
+                      .font(.system(size: 8))
+                      .foregroundColor(peer.downloadRate > 0 ? dlColor.opacity(0.6) : fgTertiary.opacity(0.5))
+                    Text(formatRate(peer.downloadRate))
+                      .foregroundColor(peer.downloadRate > 0 ? dlColor.opacity(0.85) : fgTertiary)
+                  }
+                  .font(.system(size: 11, design: Font.Design.monospaced))
+                  .frame(width: 86, alignment: Alignment.trailing)
+
+                  // Upload rate
+                  HStack(spacing: 3) {
+                    Image(systemName: "arrow.up")
+                      .font(.system(size: 8))
+                      .foregroundColor(peer.uploadRate > 0 ? ulColor.opacity(0.6) : fgTertiary.opacity(0.5))
+                    Text(formatRate(peer.uploadRate))
+                      .foregroundColor(peer.uploadRate > 0 ? ulColor.opacity(0.85) : fgTertiary)
+                  }
+                  .font(.system(size: 11, design: Font.Design.monospaced))
+                  .frame(width: 86, alignment: Alignment.trailing)
+
+                  // Progress
+                  Text(formatPercent(peer.progress))
+                    .font(.system(size: 11, design: Font.Design.monospaced))
+                    .frame(width: 50, alignment: Alignment.trailing)
+                    .foregroundColor(peer.progress >= 1.0 ? ulColor.opacity(0.75) : mutedFg)
+
+                  // Status icons
+                  HStack(spacing: 5) {
+                    Image(systemName: peer.flags.contains("D") ? "arrow.down.circle.fill" : "arrow.down.circle")
+                      .foregroundColor(
+                        peer.flags.contains("D") ? dlActiveColor :
+                        peer.flags.contains("d") ? dlChokedColor :
+                        inactiveColor
+                      )
+                      .help(peer.flags.contains("D") ? "Downloading" : peer.flags.contains("d") ? "Interested, choked" : "Not interested")
+
+                    Image(systemName: peer.flags.contains("U") ? "arrow.up.circle.fill" : "arrow.up.circle")
+                      .foregroundColor(
+                        peer.flags.contains("U") ? ulActiveColor :
+                        peer.flags.contains("u") ? ulChokedColor :
+                        inactiveColor
+                      )
+                      .help(peer.flags.contains("U") ? "Uploading" : peer.flags.contains("u") ? "Peer wants, choking" : "Not interested")
+
+                    Image(systemName: peer.flags.contains("S") ? "checkmark.seal.fill" : "checkmark.seal")
+                      .foregroundColor(peer.flags.contains("S") ? seedColor : inactiveColor)
+                      .help(peer.flags.contains("S") ? "Seed" : "Leecher")
+
+                    Image(systemName: "lock.fill")
+                      .foregroundColor(peer.flags.contains("E") ? encColor : inactiveColor)
+                      .help(peer.flags.contains("E") ? "Encrypted" : "Unencrypted")
+
+                    if peer.flags.contains("O") {
+                      Text("O")
+                        .foregroundColor(seedColor.opacity(0.8))
+                        .help("Upload-only")
+                    }
+
+                    if peer.flags.contains("H") {
+                      Text("H")
+                        .foregroundColor(utpColor.opacity(0.85))
+                        .help("Holepunch capable")
+                    }
+
+                    if peer.flags.contains("T") {
+                      Text("T")
+                        .foregroundColor(utpColor.opacity(0.7))
+                        .help("uTP capable")
+                    }
+                  }
+                  .font(.system(size: 10, weight: Font.Weight.semibold))
+                  .frame(width: 118, alignment: Alignment.center)
+                }
+              }
+              .padding(vertical: 8, horizontal: 14)
+              .help(peer.flagsTooltip)
+
+              Rectangle().fill(dividerColor).frame(height: 1).padding(horizontal: 14)
+            }
+          }
+        }
+      }
+
+      Rectangle().fill(dividerColor).frame(height: 1)
+
+      // Footer
+      HStack(spacing: 12) {
+        Text("\(peers.count) peer\(peers.count == 1 ? "" : "s") connected")
+          .font(.system(size: 10))
+          .foregroundColor(fgTertiary)
+        Spacer()
+        HStack(spacing: 10) {
+          HStack(spacing: 3) {
+            Image(systemName: "arrow.down.circle.fill")
+              .font(.system(size: 8))
+              .foregroundColor(dlActiveColor.opacity(0.7))
+            Text("DL")
+              .font(.system(size: 9))
+              .foregroundColor(fgTertiary)
+          }
+          HStack(spacing: 3) {
+            Image(systemName: "arrow.up.circle.fill")
+              .font(.system(size: 8))
+              .foregroundColor(ulActiveColor.opacity(0.7))
+            Text("UL")
+              .font(.system(size: 9))
+              .foregroundColor(fgTertiary)
+          }
+          HStack(spacing: 3) {
+            Image(systemName: "checkmark.seal.fill")
+              .font(.system(size: 8))
+              .foregroundColor(seedColor.opacity(0.7))
+            Text("Seed")
+              .font(.system(size: 9))
+              .foregroundColor(fgTertiary)
+          }
+          HStack(spacing: 3) {
+            Image(systemName: "lock.fill")
+              .font(.system(size: 8))
+              .foregroundColor(encColor.opacity(0.7))
+            Text("Enc")
+              .font(.system(size: 9))
+              .foregroundColor(fgTertiary)
+          }
+          HStack(spacing: 3) {
+            Text("O/H/T")
+              .font(.system(size: 9, weight: Font.Weight.semibold))
+              .foregroundColor(utpColor.opacity(0.8))
+            Text("Upload/Hole/uTP")
+              .font(.system(size: 9))
+              .foregroundColor(fgTertiary)
+          }
+        }
+      }
+      .padding(vertical: 6, horizontal: 14)
+      .background(headerBg)
+    }
+  }
+}

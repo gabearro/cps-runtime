@@ -1,0 +1,835 @@
+// ─────────────────────────────────────────────────────────
+// Settings: Reusable micro-components
+// ─────────────────────────────────────────────────────────
+
+component SettingsFieldRow(label: String, isDark: Bool) {
+  let labelColor = isDark ? Color(red: 0.56, green: 0.56, blue: 0.59) : Color.black.opacity(0.45)
+
+  HStack(alignment: VerticalAlignment.firstTextBaseline) {
+    Text(label)
+      .font(.system(size: 11, weight: Font.Weight.medium))
+      .foregroundColor(labelColor)
+      .frame(width: 100, alignment: Alignment.trailing)
+  }
+}
+
+component SettingsInfoRow(label: String, value: String, isDark: Bool) {
+  let labelColor = isDark ? Color(red: 0.50, green: 0.50, blue: 0.53) : Color.black.opacity(0.4)
+  let valueColor = isDark ? Color(red: 0.82, green: 0.82, blue: 0.84) : Color.black.opacity(0.7)
+
+  HStack(spacing: 0) {
+    Text(label)
+      .font(.system(size: 11))
+      .foregroundColor(labelColor)
+      .frame(width: 90, alignment: Alignment.leading)
+    Text(value)
+      .font(.system(size: 11, design: Font.Design.monospaced))
+      .foregroundColor(valueColor)
+      .textSelection(.enabled)
+    Spacer()
+  }
+}
+
+component ProtocolChip(label: String, enabled: Bool, isDark: Bool) {
+  let onBg = isDark ? Color(red: 0.18, green: 0.30, blue: 0.22) : Color(red: 0.85, green: 0.95, blue: 0.88)
+  let offBg = isDark ? Color.white.opacity(0.03) : Color.black.opacity(0.02)
+  let onFg = isDark ? Color(red: 0.35, green: 0.82, blue: 0.50) : Color(red: 0.15, green: 0.55, blue: 0.25)
+  let offFg = isDark ? Color(red: 0.40, green: 0.40, blue: 0.43) : Color.black.opacity(0.25)
+  let onBorder = isDark ? Color(red: 0.25, green: 0.50, blue: 0.32).opacity(0.5) : Color(red: 0.15, green: 0.55, blue: 0.25).opacity(0.2)
+  let offBorder = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.06)
+
+  HStack(spacing: 5) {
+    Circle()
+      .fill(enabled ? onFg : offFg.opacity(0.4))
+      .frame(width: 5, height: 5)
+    Text(label)
+      .font(.system(size: 11, weight: enabled ? Font.Weight.semibold : Font.Weight.regular))
+      .foregroundColor(enabled ? onFg : offFg)
+  }
+  .padding(vertical: 4, horizontal: 10)
+  .background(
+    RoundedRectangle(cornerRadius: 5)
+      .fill(enabled ? onBg : offBg)
+  )
+  .overlay(
+    RoundedRectangle(cornerRadius: 5)
+      .stroke(enabled ? onBorder : offBorder, lineWidth: 0.5)
+  )
+}
+
+component NatBadge(text: String, color: Color, isDark: Bool) {
+  Text(text)
+    .font(.system(size: 9, weight: Font.Weight.bold))
+    .foregroundColor(color)
+    .tracking(0.3)
+    .padding(vertical: 2, horizontal: 7)
+    .background(
+      RoundedRectangle(cornerRadius: 4)
+        .fill(color.opacity(isDark ? 0.15 : 0.10))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 4)
+        .stroke(color.opacity(0.25), lineWidth: 0.5)
+    )
+}
+
+// ─────────────────────────────────────────────────────────
+// Tab 0: General
+// ─────────────────────────────────────────────────────────
+
+component SettingsGeneralTab(isDark: Bool) {
+  let fg: Color = isDark ? Color(red: 0.96, green: 0.96, blue: 0.97) : Color.primary
+  let fgTertiary: Color = isDark ? Color(red: 0.50, green: 0.50, blue: 0.53) : Color.gray
+  let sectionLabel: Color = isDark ? Color(red: 0.46, green: 0.46, blue: 0.49) : Color(red: 0.55, green: 0.55, blue: 0.58)
+  let cardBg: Color = isDark ? Color.white.opacity(0.03) : Color.black.opacity(0.025)
+  let cardBorder: Color = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.06)
+  let divider: Color = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04)
+
+  ScrollView {
+    VStack(alignment: HorizontalAlignment.leading, spacing: 22) {
+
+      // ── Download Location ──
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        Text("DOWNLOAD LOCATION")
+          .font(.system(size: 10, weight: Font.Weight.bold))
+          .foregroundColor(sectionLabel)
+          .tracking(0.8)
+
+        VStack(alignment: HorizontalAlignment.leading, spacing: 10) {
+          HStack(spacing: 10) {
+            Image(systemName: "folder.fill")
+              .font(.system(size: 13))
+              .foregroundColor(isDark ? Color(red: 0.40, green: 0.52, blue: 1.0) : Color(token.color.accent))
+              .frame(width: 28, height: 28)
+              .background(
+                RoundedRectangle(cornerRadius: 6)
+                  .fill(isDark ? Color(red: 0.40, green: 0.52, blue: 1.0).opacity(0.10) : Color(token.color.accent).opacity(0.08))
+              )
+
+            TextField("~/Downloads", text: downloadDir)
+              .textFieldStyle(PlainTextFieldStyle())
+              .font(.system(size: 12, design: Font.Design.monospaced))
+              .foregroundColor(fg)
+              .padding(vertical: 6, horizontal: 10)
+              .background(
+                RoundedRectangle(cornerRadius: 6)
+                  .fill(isDark ? Color.black.opacity(0.30) : Color.white)
+              )
+              .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                  .stroke(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.10), lineWidth: 0.5)
+              )
+          }
+
+          Text("New torrents will be saved to this directory")
+            .font(.system(size: 10))
+            .foregroundColor(fgTertiary)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(cardBg))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(cardBorder, lineWidth: 0.5))
+      }
+
+      // ── Speed Limits ──
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        Text("BANDWIDTH")
+          .font(.system(size: 10, weight: Font.Weight.bold))
+          .foregroundColor(sectionLabel)
+          .tracking(0.8)
+
+        VStack(alignment: HorizontalAlignment.leading, spacing: 14) {
+          HStack(spacing: 16) {
+            // Download limit
+            HStack(spacing: 8) {
+              ZStack {
+                RoundedRectangle(cornerRadius: 5)
+                  .fill(isDark ? Color(token.color.downloading).opacity(0.10) : Color(token.color.downloading).opacity(0.06))
+                Image(systemName: "arrow.down")
+                  .font(.system(size: 9, weight: Font.Weight.bold))
+                  .foregroundColor(Color(token.color.downloading))
+              }
+              .frame(width: 24, height: 24)
+
+              VStack(alignment: HorizontalAlignment.leading, spacing: 2) {
+                Text("Download")
+                  .font(.system(size: 10))
+                  .foregroundColor(fgTertiary)
+                HStack(spacing: 4) {
+                  TextField("0", text: maxDownloadRate)
+                    .textFieldStyle(PlainTextFieldStyle())
+                    .font(.system(size: 12, design: Font.Design.monospaced))
+                    .foregroundColor(fg)
+                    .frame(width: 60)
+                    .padding(vertical: 4, horizontal: 8)
+                    .background(
+                      RoundedRectangle(cornerRadius: 5)
+                        .fill(isDark ? Color.black.opacity(0.30) : Color.white)
+                    )
+                    .overlay(
+                      RoundedRectangle(cornerRadius: 5)
+                        .stroke(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.10), lineWidth: 0.5)
+                    )
+                  Text("KB/s")
+                    .font(.system(size: 10))
+                    .foregroundColor(fgTertiary)
+                }
+              }
+            }
+
+            Rectangle()
+              .fill(divider)
+              .frame(width: 1, height: 34)
+
+            // Upload limit
+            HStack(spacing: 8) {
+              ZStack {
+                RoundedRectangle(cornerRadius: 5)
+                  .fill(isDark ? Color(token.color.success).opacity(0.10) : Color(token.color.success).opacity(0.06))
+                Image(systemName: "arrow.up")
+                  .font(.system(size: 9, weight: Font.Weight.bold))
+                  .foregroundColor(Color(token.color.success))
+              }
+              .frame(width: 24, height: 24)
+
+              VStack(alignment: HorizontalAlignment.leading, spacing: 2) {
+                Text("Upload")
+                  .font(.system(size: 10))
+                  .foregroundColor(fgTertiary)
+                HStack(spacing: 4) {
+                  TextField("0", text: maxUploadRate)
+                    .textFieldStyle(PlainTextFieldStyle())
+                    .font(.system(size: 12, design: Font.Design.monospaced))
+                    .foregroundColor(fg)
+                    .frame(width: 60)
+                    .padding(vertical: 4, horizontal: 8)
+                    .background(
+                      RoundedRectangle(cornerRadius: 5)
+                        .fill(isDark ? Color.black.opacity(0.30) : Color.white)
+                    )
+                    .overlay(
+                      RoundedRectangle(cornerRadius: 5)
+                        .stroke(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.10), lineWidth: 0.5)
+                    )
+                  Text("KB/s")
+                    .font(.system(size: 10))
+                    .foregroundColor(fgTertiary)
+                }
+              }
+            }
+          }
+
+          Text("Set to 0 for unlimited")
+            .font(.system(size: 10))
+            .foregroundColor(fgTertiary)
+            .padding(leading: 2)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(cardBg))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(cardBorder, lineWidth: 0.5))
+      }
+
+      // ── Connection ──
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        Text("CONNECTION")
+          .font(.system(size: 10, weight: Font.Weight.bold))
+          .foregroundColor(sectionLabel)
+          .tracking(0.8)
+
+        VStack(alignment: HorizontalAlignment.leading, spacing: 12) {
+          HStack(spacing: 24) {
+            VStack(alignment: HorizontalAlignment.leading, spacing: 4) {
+              Text("Listen Port")
+                .font(.system(size: 10))
+                .foregroundColor(fgTertiary)
+              TextField("6881", text: listenPort)
+                .textFieldStyle(PlainTextFieldStyle())
+                .font(.system(size: 12, design: Font.Design.monospaced))
+                .foregroundColor(fg)
+                .frame(width: 72)
+                .padding(vertical: 5, horizontal: 8)
+                .background(
+                  RoundedRectangle(cornerRadius: 5)
+                    .fill(isDark ? Color.black.opacity(0.30) : Color.white)
+                )
+                .overlay(
+                  RoundedRectangle(cornerRadius: 5)
+                    .stroke(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.10), lineWidth: 0.5)
+                )
+            }
+
+            VStack(alignment: HorizontalAlignment.leading, spacing: 4) {
+              Text("Max Peers / Torrent")
+                .font(.system(size: 10))
+                .foregroundColor(fgTertiary)
+              TextField("50", text: maxPeers)
+                .textFieldStyle(PlainTextFieldStyle())
+                .font(.system(size: 12, design: Font.Design.monospaced))
+                .foregroundColor(fg)
+                .frame(width: 72)
+                .padding(vertical: 5, horizontal: 8)
+                .background(
+                  RoundedRectangle(cornerRadius: 5)
+                    .fill(isDark ? Color.black.opacity(0.30) : Color.white)
+                )
+                .overlay(
+                  RoundedRectangle(cornerRadius: 5)
+                    .stroke(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.10), lineWidth: 0.5)
+                )
+            }
+          }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(cardBg))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(cardBorder, lineWidth: 0.5))
+      }
+    }
+    .padding(vertical: 20, horizontal: 22)
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// Tab 1: Network / Protocols
+// ─────────────────────────────────────────────────────────
+
+component SettingsNetworkTab(isDark: Bool) {
+  let fg: Color = isDark ? Color(red: 0.96, green: 0.96, blue: 0.97) : Color.primary
+  let fgSecondary: Color = isDark ? Color(red: 0.64, green: 0.64, blue: 0.67) : Color.secondary
+  let fgTertiary: Color = isDark ? Color(red: 0.50, green: 0.50, blue: 0.53) : Color.gray
+  let sectionLabel: Color = isDark ? Color(red: 0.46, green: 0.46, blue: 0.49) : Color(red: 0.55, green: 0.55, blue: 0.58)
+  let cardBg: Color = isDark ? Color.white.opacity(0.03) : Color.black.opacity(0.025)
+  let cardBorder: Color = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.06)
+  let divider: Color = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04)
+  let toggleRowBg: Color = isDark ? Color.white.opacity(0.02) : Color.black.opacity(0.015)
+  let toggleRowBorder: Color = isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.04)
+
+  ScrollView {
+    VStack(alignment: HorizontalAlignment.leading, spacing: 22) {
+
+      // ── Protocol Matrix ──
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        HStack(spacing: 6) {
+          Text("PROTOCOLS")
+            .font(.system(size: 10, weight: Font.Weight.bold))
+            .foregroundColor(sectionLabel)
+            .tracking(0.8)
+
+          Spacer()
+
+          // Quick status chips
+          HStack(spacing: 4) {
+            ProtocolChip(label: "DHT", enabled: dhtEnabled, isDark: isDark)
+            ProtocolChip(label: "PEX", enabled: pexEnabled, isDark: isDark)
+            ProtocolChip(label: "uTP", enabled: utpEnabled, isDark: isDark)
+          }
+        }
+
+        VStack(spacing: 0) {
+          // DHT row
+          HStack {
+            VStack(alignment: HorizontalAlignment.leading, spacing: 1) {
+              Text("DHT")
+                .font(.system(size: 12, weight: Font.Weight.medium))
+                .foregroundColor(fg)
+              Text("Distributed hash table for trackerless peer discovery")
+                .font(.system(size: 10))
+                .foregroundColor(fgTertiary)
+            }
+            Spacer()
+            Toggle("", isOn: dhtEnabled)
+              .toggleStyle(SwitchToggleStyle())
+              .labelsHidden()
+          }
+          .padding(vertical: 10, horizontal: 14)
+          .background(toggleRowBg)
+
+          Rectangle().fill(divider).frame(height: 0.5)
+
+          // PEX row
+          HStack {
+            VStack(alignment: HorizontalAlignment.leading, spacing: 1) {
+              Text("PEX")
+                .font(.system(size: 12, weight: Font.Weight.medium))
+                .foregroundColor(fg)
+              Text("Peer exchange — share peer lists between connected clients")
+                .font(.system(size: 10))
+                .foregroundColor(fgTertiary)
+            }
+            Spacer()
+            Toggle("", isOn: pexEnabled)
+              .toggleStyle(SwitchToggleStyle())
+              .labelsHidden()
+          }
+          .padding(vertical: 10, horizontal: 14)
+
+          Rectangle().fill(divider).frame(height: 0.5)
+
+          // LSD row
+          HStack {
+            VStack(alignment: HorizontalAlignment.leading, spacing: 1) {
+              Text("LSD")
+                .font(.system(size: 12, weight: Font.Weight.medium))
+                .foregroundColor(fg)
+              Text("Local service discovery on your LAN via multicast")
+                .font(.system(size: 10))
+                .foregroundColor(fgTertiary)
+            }
+            Spacer()
+            Toggle("", isOn: lsdEnabled)
+              .toggleStyle(SwitchToggleStyle())
+              .labelsHidden()
+          }
+          .padding(vertical: 10, horizontal: 14)
+          .background(toggleRowBg)
+
+          Rectangle().fill(divider).frame(height: 0.5)
+
+          // uTP row
+          HStack {
+            VStack(alignment: HorizontalAlignment.leading, spacing: 1) {
+              Text("uTP")
+                .font(.system(size: 12, weight: Font.Weight.medium))
+                .foregroundColor(fg)
+              Text("Micro Transport Protocol — congestion-friendly UDP transport")
+                .font(.system(size: 10))
+                .foregroundColor(fgTertiary)
+            }
+            Spacer()
+            Toggle("", isOn: utpEnabled)
+              .toggleStyle(SwitchToggleStyle())
+              .labelsHidden()
+          }
+          .padding(vertical: 10, horizontal: 14)
+
+          Rectangle().fill(divider).frame(height: 0.5)
+
+          // Web Seeds row
+          HStack {
+            VStack(alignment: HorizontalAlignment.leading, spacing: 1) {
+              Text("Web Seeds")
+                .font(.system(size: 12, weight: Font.Weight.medium))
+                .foregroundColor(fg)
+              Text("Download pieces from HTTP mirrors when available")
+                .font(.system(size: 10))
+                .foregroundColor(fgTertiary)
+            }
+            Spacer()
+            Toggle("", isOn: webSeedEnabled)
+              .toggleStyle(SwitchToggleStyle())
+              .labelsHidden()
+          }
+          .padding(vertical: 10, horizontal: 14)
+          .background(toggleRowBg)
+
+          Rectangle().fill(divider).frame(height: 0.5)
+
+          // Tracker Scrape row
+          HStack {
+            VStack(alignment: HorizontalAlignment.leading, spacing: 1) {
+              Text("Tracker Scrape")
+                .font(.system(size: 12, weight: Font.Weight.medium))
+                .foregroundColor(fg)
+              Text("Query trackers for swarm statistics between announces")
+                .font(.system(size: 10))
+                .foregroundColor(fgTertiary)
+            }
+            Spacer()
+            Toggle("", isOn: trackerScrapeEnabled)
+              .toggleStyle(SwitchToggleStyle())
+              .labelsHidden()
+          }
+          .padding(vertical: 10, horizontal: 14)
+
+          Rectangle().fill(divider).frame(height: 0.5)
+
+          // Holepunch row
+          HStack {
+            VStack(alignment: HorizontalAlignment.leading, spacing: 1) {
+              Text("Holepunch")
+                .font(.system(size: 12, weight: Font.Weight.medium))
+                .foregroundColor(fg)
+              Text("NAT traversal via relay peers for firewalled connections")
+                .font(.system(size: 10))
+                .foregroundColor(fgTertiary)
+            }
+            Spacer()
+            Toggle("", isOn: holepunchEnabled)
+              .toggleStyle(SwitchToggleStyle())
+              .labelsHidden()
+          }
+          .padding(vertical: 10, horizontal: 14)
+          .background(toggleRowBg)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(cardBorder, lineWidth: 0.5))
+      }
+
+      // ── Encryption ──
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        Text("ENCRYPTION")
+          .font(.system(size: 10, weight: Font.Weight.bold))
+          .foregroundColor(sectionLabel)
+          .tracking(0.8)
+
+        VStack(alignment: HorizontalAlignment.leading, spacing: 10) {
+          HStack(spacing: 10) {
+            Image(systemName: "lock.shield.fill")
+              .font(.system(size: 13))
+              .foregroundColor(
+                encryptionMode == "require_encrypted" || encryptionMode == "force_rc4"
+                  ? Color(token.color.success)
+                  : encryptionMode == "prefer_encrypted"
+                    ? Color(token.color.warning)
+                    : fgTertiary
+              )
+              .frame(width: 28, height: 28)
+              .background(
+                RoundedRectangle(cornerRadius: 6)
+                  .fill(
+                    encryptionMode == "require_encrypted" || encryptionMode == "force_rc4"
+                      ? Color(token.color.success).opacity(0.10)
+                      : encryptionMode == "prefer_encrypted"
+                        ? Color(token.color.warning).opacity(0.10)
+                        : isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03)
+                  )
+              )
+
+            Picker("", selection: encryptionMode) {
+              Text("Prefer encrypted").tag("prefer_encrypted")
+              Text("Prefer plaintext").tag("prefer_plaintext")
+              Text("Require encrypted").tag("require_encrypted")
+              Text("Force RC4").tag("force_rc4")
+            }
+            .pickerStyle(MenuPickerStyle())
+            .font(.system(size: 12))
+            .frame(width: 190, alignment: Alignment.leading)
+          }
+
+          Text(
+            encryptionMode == "prefer_encrypted"
+              ? "Encrypted connections preferred, plaintext accepted as fallback"
+              : encryptionMode == "prefer_plaintext"
+                ? "Plaintext connections preferred, encrypted accepted as fallback"
+                : encryptionMode == "require_encrypted"
+                  ? "Only encrypted connections — drops peers that refuse encryption"
+                  : "Full RC4 stream encryption for all peer traffic"
+          )
+            .font(.system(size: 10))
+            .foregroundColor(fgTertiary)
+            .padding(leading: 38)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(cardBg))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(cardBorder, lineWidth: 0.5))
+      }
+    }
+    .padding(vertical: 20, horizontal: 22)
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// Tab 2: NAT / Port Forwarding
+// ─────────────────────────────────────────────────────────
+
+component SettingsNatTab(isDark: Bool) {
+  let fg: Color = isDark ? Color(red: 0.96, green: 0.96, blue: 0.97) : Color.primary
+  let fgSecondary: Color = isDark ? Color(red: 0.64, green: 0.64, blue: 0.67) : Color.secondary
+  let fgTertiary: Color = isDark ? Color(red: 0.50, green: 0.50, blue: 0.53) : Color.gray
+  let sectionLabel: Color = isDark ? Color(red: 0.46, green: 0.46, blue: 0.49) : Color(red: 0.55, green: 0.55, blue: 0.58)
+  let cardBg: Color = isDark ? Color.white.opacity(0.03) : Color.black.opacity(0.025)
+  let cardBorder: Color = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.06)
+  let divider: Color = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04)
+
+  let isActive: Bool = natProtocol != "Not available" && natProtocol != "Discovering..."
+  let statusColor: Color = natProtocol == "Not available"
+    ? Color(token.color.danger)
+    : natProtocol == "Discovering..."
+      ? Color(token.color.warning)
+      : Color(token.color.success)
+
+  ScrollView {
+    VStack(alignment: HorizontalAlignment.leading, spacing: 22) {
+
+      // ── Status Hero ──
+      VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+        Text("GATEWAY STATUS")
+          .font(.system(size: 10, weight: Font.Weight.bold))
+          .foregroundColor(sectionLabel)
+          .tracking(0.8)
+
+        VStack(alignment: HorizontalAlignment.leading, spacing: 14) {
+          HStack(spacing: 14) {
+            // Status indicator orb
+            ZStack {
+              Circle()
+                .fill(statusColor.opacity(0.10))
+                .frame(width: 44, height: 44)
+              Circle()
+                .fill(statusColor.opacity(0.20))
+                .frame(width: 30, height: 30)
+              Image(systemName:
+                natProtocol == "Not available"
+                  ? "xmark"
+                  : natProtocol == "Discovering..."
+                    ? "antenna.radiowaves.left.and.right"
+                    : "checkmark"
+              )
+                .font(.system(size: 14, weight: Font.Weight.bold))
+                .foregroundColor(statusColor)
+            }
+
+            VStack(alignment: HorizontalAlignment.leading, spacing: 4) {
+              HStack(spacing: 8) {
+                Text(natProtocol)
+                  .font(.system(size: 15, weight: Font.Weight.semibold))
+                  .foregroundColor(fg)
+
+                if natPortsForwarded {
+                  NatBadge(text: "FORWARDED", color: Color(token.color.success), isDark: isDark)
+                }
+                if natDoubleNat {
+                  NatBadge(text: "DOUBLE NAT", color: Color(token.color.warning), isDark: isDark)
+                }
+              }
+
+              Text(
+                natProtocol == "Not available"
+                  ? "No NAT gateway detected — configure manual port forwarding for incoming connections"
+                  : natProtocol == "Discovering..."
+                    ? "Scanning for NAT gateways on your network..."
+                    : natPortsForwarded
+                      ? "Ports are forwarded automatically — incoming connections will work"
+                      : "Gateway found but port forwarding not yet active"
+              )
+                .font(.system(size: 11))
+                .foregroundColor(fgTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+          }
+
+          if isActive {
+            Rectangle().fill(divider).frame(height: 0.5)
+
+            // Network details grid
+            VStack(alignment: HorizontalAlignment.leading, spacing: 5) {
+              if natExternalIp != "" {
+                SettingsInfoRow(label: "External IP", value: natExternalIp, isDark: isDark)
+              }
+              SettingsInfoRow(label: "Gateway", value: natGatewayIp, isDark: isDark)
+              SettingsInfoRow(label: "Local IP", value: natLocalIp, isDark: isDark)
+              SettingsInfoRow(label: "Protocol", value: natProtocol, isDark: isDark)
+              if natActiveMappings > 0 {
+                SettingsInfoRow(
+                  label: "Mappings",
+                  value: natActiveMappings == 1 ? "1 active" : String(natActiveMappings) + " active",
+                  isDark: isDark
+                )
+              }
+            }
+          }
+
+          // Double NAT outer layer
+          if natDoubleNat && isActive {
+            Rectangle().fill(divider).frame(height: 0.5)
+
+            HStack(spacing: 10) {
+              Image(systemName:
+                natOuterProtocol != "" && natOuterProtocol != "Not available"
+                  ? "checkmark.circle.fill"
+                  : "exclamationmark.triangle.fill"
+              )
+                .font(.system(size: 12))
+                .foregroundColor(
+                  natOuterProtocol != "" && natOuterProtocol != "Not available"
+                    ? Color(token.color.success)
+                    : Color(token.color.warning)
+                )
+
+              VStack(alignment: HorizontalAlignment.leading, spacing: 2) {
+                Text("Outer NAT Layer")
+                  .font(.system(size: 12, weight: Font.Weight.medium))
+                  .foregroundColor(fg)
+
+                if natOuterProtocol != "" && natOuterProtocol != "Not available" {
+                  HStack(spacing: 8) {
+                    Text(natOuterProtocol)
+                      .font(.system(size: 11))
+                      .foregroundColor(fgSecondary)
+                    if natOuterGatewayIp != "" {
+                      Text(natOuterGatewayIp)
+                        .font(.system(size: 10, design: Font.Design.monospaced))
+                        .foregroundColor(fgTertiary)
+                    }
+                  }
+                  Text("Both NAT layers forwarded automatically")
+                    .font(.system(size: 10))
+                    .foregroundColor(Color(token.color.success).opacity(0.8))
+                } else {
+                  Text("Outer gateway unreachable — incoming connections from outside your network may fail")
+                    .font(.system(size: 10))
+                    .foregroundColor(Color(token.color.warning).opacity(0.8))
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+              }
+            }
+          }
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 10).fill(cardBg))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(cardBorder, lineWidth: 0.5))
+      }
+
+      // ── How NAT Works ──
+      if !isActive {
+        VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+          Text("WHAT IS NAT?")
+            .font(.system(size: 10, weight: Font.Weight.bold))
+            .foregroundColor(sectionLabel)
+            .tracking(0.8)
+
+          VStack(alignment: HorizontalAlignment.leading, spacing: 10) {
+            Text("NAT (Network Address Translation) allows your router to share one public IP among multiple devices. For BitTorrent, incoming connections require port forwarding so peers can reach you directly.")
+              .font(.system(size: 11))
+              .foregroundColor(fgTertiary)
+              .fixedSize(horizontal: false, vertical: true)
+
+            Text("CPS Torrent tries UPnP IGD, NAT-PMP, and PCP automatically. If none work, you may need to configure port forwarding manually in your router.")
+              .font(.system(size: 11))
+              .foregroundColor(fgTertiary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          .padding(14)
+          .background(RoundedRectangle(cornerRadius: 10).fill(cardBg))
+          .overlay(RoundedRectangle(cornerRadius: 10).stroke(cardBorder, lineWidth: 0.5))
+        }
+      }
+    }
+    .padding(vertical: 20, horizontal: 22)
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// Root: SettingsSheet with tab bar
+// ─────────────────────────────────────────────────────────
+
+component SettingsSheet(isDark: Bool) {
+  let bgColor: Color = isDark ? Color(red: 0.13, green: 0.13, blue: 0.14) : Color(NSColor.windowBackgroundColor)
+  let fg: Color = isDark ? Color(red: 0.96, green: 0.96, blue: 0.97) : Color.primary
+  let fgSecondary: Color = isDark ? Color(red: 0.64, green: 0.64, blue: 0.67) : Color.secondary
+  let fgTertiary: Color = isDark ? Color(red: 0.50, green: 0.50, blue: 0.53) : Color.gray
+  let dividerColor: Color = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.06)
+
+  // NAT status color for tab badge
+  let natOk: Bool = natProtocol != "Not available" && natProtocol != "Discovering..."
+  let natColor: Color = natProtocol == "Not available"
+    ? Color(token.color.danger)
+    : natProtocol == "Discovering..."
+      ? Color(token.color.warning)
+      : Color(token.color.success)
+
+  VStack(spacing: 0) {
+    // ── Header ──
+    HStack(alignment: VerticalAlignment.center) {
+      HStack(spacing: 10) {
+        Image(systemName: "gearshape.fill")
+          .font(.system(size: 15))
+          .foregroundColor(isDark ? Color(red: 0.50, green: 0.50, blue: 0.53) : Color.black.opacity(0.3))
+        VStack(alignment: HorizontalAlignment.leading, spacing: 1) {
+          Text("Settings")
+            .font(.system(size: 16, weight: Font.Weight.bold))
+            .foregroundColor(fg)
+          Text("Client configuration")
+            .font(.system(size: 11))
+            .foregroundColor(fgTertiary)
+        }
+      }
+
+      Spacer()
+
+      Button(action: HideSettings) {
+        Image(systemName: "xmark")
+          .font(.system(size: 10, weight: Font.Weight.semibold))
+          .foregroundColor(fgSecondary)
+          .frame(width: 24, height: 24)
+          .background(
+            Circle()
+              .fill(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.04))
+          )
+      }
+      .buttonStyle(BorderlessButtonStyle())
+    }
+    .padding(vertical: 16, horizontal: 22)
+
+    // ── Tab bar ──
+    HStack(spacing: 0) {
+      Picker("", selection: settingsTab) {
+        Text("General").tag(0)
+        Text("Network").tag(1)
+        HStack(spacing: 4) {
+          Text("NAT")
+          Circle()
+            .fill(natColor)
+            .frame(width: 6, height: 6)
+        }.tag(2)
+      }
+      .pickerStyle(SegmentedPickerStyle())
+      .frame(maxWidth: 320)
+
+      Spacer()
+    }
+    .padding(horizontal: 22)
+    .padding(vertical: 6)
+
+    Rectangle().fill(dividerColor).frame(height: 0.5)
+
+    // ── Tab content ──
+    if settingsTab == 0 {
+      SettingsGeneralTab(isDark: isDark)
+    }
+    if settingsTab == 1 {
+      SettingsNetworkTab(isDark: isDark)
+    }
+    if settingsTab == 2 {
+      SettingsNatTab(isDark: isDark)
+    }
+
+    // ── Footer ──
+    Rectangle().fill(dividerColor).frame(height: 0.5)
+
+    HStack(spacing: 10) {
+      Spacer()
+
+      Button(action: HideSettings) {
+        Text("Cancel")
+          .font(.system(size: 12, weight: Font.Weight.medium))
+          .foregroundColor(fgSecondary)
+          .padding(vertical: 6, horizontal: 18)
+          .background(
+            RoundedRectangle(cornerRadius: 6)
+              .fill(isDark ? Color.white.opacity(0.05) : Color.black.opacity(0.03))
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 6)
+              .stroke(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.06), lineWidth: 0.5)
+          )
+      }
+      .buttonStyle(BorderlessButtonStyle())
+      .keyboardShortcut(KeyEquivalent.escape, modifiers: EventModifiers())
+
+      Button(action: SaveSettings) {
+        Text("Save")
+          .font(.system(size: 12, weight: Font.Weight.semibold))
+          .foregroundColor(Color.white)
+          .padding(vertical: 6, horizontal: 22)
+          .background(
+            RoundedRectangle(cornerRadius: 6)
+              .fill(Color(token.color.accent))
+          )
+      }
+      .buttonStyle(BorderlessButtonStyle())
+      .keyboardShortcut(KeyEquivalent.return, modifiers: EventModifiers.command)
+    }
+    .padding(vertical: 12, horizontal: 22)
+  }
+  .frame(minWidth: 520, idealWidth: 540, minHeight: 520, idealHeight: 580)
+  .background(bgColor)
+}

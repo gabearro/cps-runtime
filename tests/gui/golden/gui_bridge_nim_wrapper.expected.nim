@@ -1,6 +1,6 @@
 ## Generated Nim bridge shim (typed ABI helpers).
 
-const GUI_BRIDGE_ABI_VERSION* = 2
+const GUI_BRIDGE_ABI_VERSION* = 5
 
 type
   GuiBridgeActionTag* = enum
@@ -8,9 +8,21 @@ type
     gbatRefresh,
     gbatSync
 
+  GuiBridgeFieldValue* = object
+    fieldId*: uint16
+    valueType*: uint8
+    payload*: seq[byte]
+
   GuiBridgeDispatchPayload* = object
     actionTag*: GuiBridgeActionTag
-    stateBlob*: seq[byte]
+    fields*: seq[GuiBridgeFieldValue]
+
+  GuiBridgeValueType* = enum
+    gbvtBool = 1,
+    gbvtInt64 = 2,
+    gbvtDouble = 3,
+    gbvtString = 4,
+    gbvtJson = 5
 
   GuiBridgeDispatchResult* = object
     statePatchBlob*: seq[byte]
@@ -18,22 +30,32 @@ type
     emittedActionsBlob*: seq[byte]
     diagnosticsBlob*: seq[byte]
 
+proc appendLeU16(dst: var seq[byte], value: uint16) =
+  dst.add byte(value and 0xFF'u16)
+  dst.add byte((value shr 8) and 0xFF'u16)
+
+proc appendLeU32(dst: var seq[byte], value: uint32) =
+  dst.add byte(value and 0xFF'u32)
+  dst.add byte((value shr 8) and 0xFF'u32)
+  dst.add byte((value shr 16) and 0xFF'u32)
+  dst.add byte((value shr 24) and 0xFF'u32)
+
 proc encodeBridgePayload*(payload: GuiBridgeDispatchPayload): seq[byte] =
-  ## Binary wire format: [u32 actionTag][u32 stateLen][stateBlob...]
-  let stateLen = payload.stateBlob.len
-  result = newSeq[byte](8 + stateLen)
-  let actionVal = ord(payload.actionTag).uint32
-  result[0] = byte(actionVal and 0xFF'u32)
-  result[1] = byte((actionVal shr 8) and 0xFF'u32)
-  result[2] = byte((actionVal shr 16) and 0xFF'u32)
-  result[3] = byte((actionVal shr 24) and 0xFF'u32)
-  let lenVal = stateLen.uint32
-  result[4] = byte(lenVal and 0xFF'u32)
-  result[5] = byte((lenVal shr 8) and 0xFF'u32)
-  result[6] = byte((lenVal shr 16) and 0xFF'u32)
-  result[7] = byte((lenVal shr 24) and 0xFF'u32)
-  if stateLen > 0:
-    copyMem(addr result[8], unsafeAddr payload.stateBlob[0], stateLen)
+  ## Binary wire format: [u32 actionTag][u16 fieldCount][u16 reserved][fields...]
+  appendLeU32(result, ord(payload.actionTag).uint32)
+  let count = min(payload.fields.len, int(high(uint16))).uint16
+  appendLeU16(result, count)
+  appendLeU16(result, 0'u16)
+  var i = 0
+  while i < count.int:
+    let f = payload.fields[i]
+    appendLeU16(result, f.fieldId)
+    result.add f.valueType
+    result.add 0'u8
+    appendLeU32(result, f.payload.len.uint32)
+    if f.payload.len > 0:
+      result.add f.payload
+    inc i
 
 proc decodeBridgePayload*(blob: openArray[byte]): GuiBridgeDispatchPayload =
   if blob.len < 8:
@@ -47,10 +69,22 @@ proc decodeBridgePayload*(blob: openArray[byte]): GuiBridgeDispatchPayload =
   else:
     result.actionTag = low(GuiBridgeActionTag)
 
-  let stateLen =
-    uint32(blob[4]) or (uint32(blob[5]) shl 8) or
-    (uint32(blob[6]) shl 16) or (uint32(blob[7]) shl 24)
-  let needed = 8 + stateLen.int
-  if stateLen > 0 and blob.len >= needed:
-    result.stateBlob = newSeq[byte](stateLen.int)
-    copyMem(addr result.stateBlob[0], unsafeAddr blob[8], stateLen.int)
+  let fieldCount = uint16(blob[4]) or (uint16(blob[5]) shl 8)
+  var offset = 8
+  var i = 0
+  while i < fieldCount.int and offset + 7 < blob.len:
+    let fieldId = uint16(blob[offset]) or (uint16(blob[offset + 1]) shl 8)
+    let valueType = blob[offset + 2]
+    let valueLen =
+      uint32(blob[offset + 4]) or (uint32(blob[offset + 5]) shl 8) or
+      (uint32(blob[offset + 6]) shl 16) or (uint32(blob[offset + 7]) shl 24)
+    offset += 8
+    if offset + valueLen.int > blob.len:
+      break
+    var payloadBytes: seq[byte] = @[]
+    if valueLen > 0:
+      payloadBytes = newSeq[byte](valueLen.int)
+      copyMem(addr payloadBytes[0], unsafeAddr blob[offset], valueLen.int)
+    result.fields.add GuiBridgeFieldValue(fieldId: fieldId, valueType: valueType, payload: payloadBytes)
+    offset += valueLen.int
+    inc i

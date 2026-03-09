@@ -1,0 +1,143 @@
+component TrackerRow(tracker: TrackerInfo, isDark: Bool) {
+  let fg = isDark ? Color(red: 0.86, green: 0.86, blue: 0.88) : Color.black.opacity(0.75)
+  let fgTertiary = isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : Color.gray
+  let statusColor = tracker.status == "working" ? Color(token.color.success)
+                  : tracker.status == "updating" ? Color(token.color.warning)
+                  : tracker.status == "error" ? Color(token.color.danger)
+                  : fgTertiary
+
+  HStack(spacing: 12) {
+    // Status indicator with glow
+    ZStack {
+      Circle()
+        .fill(statusColor.opacity(0.15))
+        .frame(width: 16, height: 16)
+      Circle()
+        .fill(statusColor)
+        .frame(width: 6, height: 6)
+    }
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 4) {
+      Text(tracker.url)
+        .font(.system(size: 12))
+        .foregroundColor(fg)
+        .lineLimit(1)
+        .truncationMode(Text.TruncationMode.middle)
+
+      HStack(spacing: 12) {
+        if tracker.status == "working" || tracker.status == "updating" {
+          HStack(spacing: 4) {
+            Image(systemName: "arrow.up")
+              .font(.system(size: 8))
+            Text("\(tracker.seeders)")
+              .font(.system(size: 10))
+          }
+          .foregroundColor(Color(token.color.success).opacity(0.7))
+
+          HStack(spacing: 4) {
+            Image(systemName: "arrow.down")
+              .font(.system(size: 8))
+            Text("\(tracker.leechers)")
+              .font(.system(size: 10))
+          }
+          .foregroundColor(Color(token.color.downloading).opacity(0.7))
+
+          HStack(spacing: 4) {
+            Image(systemName: "checkmark.circle")
+              .font(.system(size: 8))
+            Text("\(tracker.completed)")
+              .font(.system(size: 10))
+          }
+          .foregroundColor(fgTertiary)
+        }
+
+        if tracker.status == "error" && tracker.errorText.count > 0 {
+          Text(tracker.errorText)
+            .font(.system(size: 10))
+            .foregroundColor(Color(token.color.danger).opacity(0.7))
+            .lineLimit(1)
+        }
+
+        if tracker.lastAnnounce.count > 0 {
+          Text("A " + tracker.lastAnnounce)
+            .font(.system(size: 10))
+            .foregroundColor(fgTertiary)
+        }
+
+        if tracker.lastScrape.count > 0 {
+          Text("S " + tracker.lastScrape)
+            .font(.system(size: 10))
+            .foregroundColor(fgTertiary)
+        }
+      }
+    }
+
+    Spacer()
+
+    // Status badge
+    Text(tracker.status)
+      .font(.system(size: 9, weight: Font.Weight.semibold))
+      .foregroundColor(statusColor)
+      .padding(vertical: 3, horizontal: 8)
+      .background(RoundedRectangle(cornerRadius: 4).fill(statusColor.opacity(0.1)))
+  }
+  .padding(vertical: 10, horizontal: 14)
+}
+
+component DetailTrackers(isDark: Bool) {
+  let cardBg = isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03)
+  let sectionLabelColor = isDark ? Color(red: 0.58, green: 0.58, blue: 0.61) : Color(red: 0.60, green: 0.60, blue: 0.63)
+  let fgTertiary = isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : Color.gray
+  let dividerColor = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04)
+
+  if trackers.count == 0 {
+    VStack(spacing: 16) {
+      Spacer()
+      ZStack {
+        Circle()
+          .fill(isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
+          .frame(width: 64, height: 64)
+        Image(systemName: "antenna.radiowaves.left.and.right")
+          .font(.system(size: 24, weight: Font.Weight.light))
+          .foregroundColor(isDark ? Color(red: 0.44, green: 0.44, blue: 0.47) : Color.black.opacity(0.15))
+      }
+      VStack(spacing: 4) {
+        Text("No Trackers")
+          .font(.system(size: 14, weight: Font.Weight.medium))
+          .foregroundColor(isDark ? Color(red: 0.66, green: 0.66, blue: 0.69) : Color.black.opacity(0.35))
+        Text("Tracker information not yet available")
+          .font(.system(size: 12))
+          .foregroundColor(fgTertiary)
+      }
+      Spacer()
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  } else {
+    ScrollView {
+      VStack(alignment: HorizontalAlignment.leading, spacing: 10) {
+        HStack {
+          Text("TRACKERS")
+            .font(.system(size: 11, weight: Font.Weight.semibold))
+            .foregroundColor(sectionLabelColor)
+            .tracking(0.6)
+          Spacer()
+          Text("\(trackers.count) tracker\(trackers.count == 1 ? "" : "s")")
+            .font(.system(size: 10))
+            .foregroundColor(fgTertiary)
+        }
+
+        VStack(spacing: 0) {
+          ForEach(items: trackers, id: url, item: tracker) {
+            TrackerRow(tracker: tracker, isDark: isDark)
+            Rectangle()
+              .fill(dividerColor)
+              .frame(height: 1)
+              .padding(horizontal: 14)
+          }
+        }
+        .background(RoundedRectangle(cornerRadius: 8).fill(cardBg))
+      }
+      .padding(24)
+    }
+  }
+}

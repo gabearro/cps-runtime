@@ -28,6 +28,43 @@ component StatusBar(isDark: Bool) {
 
       Spacer()
 
+      HStack(spacing: 4) {
+        Image(systemName:
+          natProtocol == "Not available"
+            ? "network.slash"
+            : natProtocol == "Discovering..."
+              ? "network"
+              : natDoubleNat
+                ? "network.badge.shield.half.filled"
+                : "network"
+        )
+          .font(.system(size: 9))
+          .foregroundColor(
+            natProtocol == "Not available"
+              ? disconnectedDot
+              : natProtocol == "Discovering..."
+                ? fgTertiary
+                : natDoubleNat
+                  ? token.color.warning
+                  : token.color.success
+          )
+
+        if natExternalIp != "" {
+          Text(natExternalIp)
+            .font(.system(size: 9, design: Font.Design.monospaced))
+            .foregroundColor(fgTertiary)
+        }
+      }
+      .help(
+        natProtocol == "Not available"
+          ? "NAT: Not detected"
+          : natProtocol == "Discovering..."
+            ? "NAT: Discovering..."
+            : natDoubleNat
+              ? "NAT: " + natProtocol + " (Double NAT" + (natOuterProtocol != "" && natOuterProtocol != "Not available" ? " — forwarded" : " — outer unreachable") + ")"
+              : "NAT: " + natProtocol
+      )
+
       if activeServerId >= 0 {
         Button(action: ToggleAway) {
           Image(systemName: "moon.fill")

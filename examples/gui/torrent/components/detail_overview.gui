@@ -1,0 +1,181 @@
+component StatRow(label: String, value: String, isDark: Bool) {
+  HStack {
+    Text(label)
+      .font(.system(size: 12))
+      .foregroundColor(isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : Color.black.opacity(0.4))
+      .frame(width: 130, alignment: Alignment.leading)
+    Text(value)
+      .font(.system(size: 12))
+      .foregroundColor(isDark ? Color(red: 0.86, green: 0.86, blue: 0.88) : Color.black.opacity(0.75))
+      .textSelection(.enabled)
+    Spacer()
+  }
+}
+
+component DetailOverview(isDark: Bool) {
+  let torrent = torrents.first(where: { $0.id == selectedTorrentId })
+  let cardBg = isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03)
+  let sectionLabelColor = isDark ? Color(red: 0.58, green: 0.58, blue: 0.61) : Color(red: 0.60, green: 0.60, blue: 0.63)
+
+  if let torrent = torrent {
+    ScrollView {
+      VStack(alignment: HorizontalAlignment.leading, spacing: 20) {
+
+        // Hero section — progress ring + name + state
+        HStack(spacing: 24) {
+          // Progress ring
+          ZStack {
+            Circle()
+              .stroke(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.06), lineWidth: 7)
+              .frame(width: 88, height: 88)
+            Circle()
+              .trim(from: 0, to: torrent.progress)
+              .stroke(
+                torrent.state == "seeding" ? Color(token.color.success)
+                : torrent.state == "error" ? Color(token.color.danger)
+                : Color(token.color.downloading),
+                style: StrokeStyle(lineWidth: 7, lineCap: CGLineCap.round)
+              )
+              .frame(width: 88, height: 88)
+              .rotationEffect(Angle.degrees(-90))
+            VStack(spacing: 1) {
+              Text(formatPercent(torrent.progress))
+                .font(.system(size: 17, weight: Font.Weight.bold))
+                .foregroundColor(isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : Color.black.opacity(0.85))
+              if torrent.state == "downloading" {
+                Text(torrent.eta.count > 0 ? torrent.eta : "...")
+                  .font(.system(size: 9))
+                  .foregroundColor(isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : Color.black.opacity(0.3))
+              }
+            }
+          }
+
+          VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+            Text(torrent.name)
+              .font(.system(size: 15, weight: Font.Weight.semibold))
+              .foregroundColor(isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : Color.black.opacity(0.85))
+              .lineLimit(2)
+
+            HStack(spacing: 12) {
+              HStack(spacing: 4) {
+                Image(systemName: stateIcon(torrent.state))
+                  .font(.system(size: 10))
+                Text(torrent.state)
+                  .font(.system(size: 12, weight: Font.Weight.medium))
+              }
+              .foregroundColor(stateColor(torrent.state))
+
+              if torrent.state == "downloading" {
+                HStack(spacing: 3) {
+                  Image(systemName: "arrow.down")
+                    .font(.system(size: 9))
+                  Text(formatRate(torrent.downloadRate))
+                    .font(.system(size: 12, design: Font.Design.monospaced))
+                }
+                .foregroundColor(Color(token.color.downloading).opacity(0.8))
+              }
+
+              if torrent.uploadRate > 0 {
+                HStack(spacing: 3) {
+                  Image(systemName: "arrow.up")
+                    .font(.system(size: 9))
+                  Text(formatRate(torrent.uploadRate))
+                    .font(.system(size: 12, design: Font.Design.monospaced))
+                }
+                .foregroundColor(Color(token.color.success).opacity(0.8))
+              }
+            }
+
+            if torrent.errorText.count > 0 {
+              Text(torrent.errorText)
+                .font(.system(size: 11))
+                .foregroundColor(Color(token.color.danger).opacity(0.9))
+                .lineLimit(2)
+            }
+          }
+          Spacer()
+        }
+        .padding(20)
+        .background(RoundedRectangle(cornerRadius: 10).fill(cardBg))
+
+        // Transfer section
+        VStack(alignment: HorizontalAlignment.leading, spacing: 10) {
+          Text("TRANSFER")
+            .font(.system(size: 11, weight: Font.Weight.semibold))
+            .foregroundColor(sectionLabelColor)
+            .tracking(0.6)
+
+          VStack(spacing: 6) {
+            StatRow(label: "Downloaded", value: formatBytes(torrent.downloaded), isDark: isDark)
+            StatRow(label: "Uploaded", value: formatBytes(torrent.uploaded), isDark: isDark)
+            StatRow(label: "Ratio", value: formatRatio(torrent.ratio), isDark: isDark)
+            StatRow(label: "Download Speed", value: formatRate(torrent.downloadRate), isDark: isDark)
+            StatRow(label: "Upload Speed", value: formatRate(torrent.uploadRate), isDark: isDark)
+          }
+          .padding(16)
+          .background(RoundedRectangle(cornerRadius: 8).fill(cardBg))
+        }
+
+        // Details section
+        VStack(alignment: HorizontalAlignment.leading, spacing: 10) {
+          Text("DETAILS")
+            .font(.system(size: 11, weight: Font.Weight.semibold))
+            .foregroundColor(sectionLabelColor)
+            .tracking(0.6)
+
+          VStack(spacing: 6) {
+            StatRow(label: "Total Size", value: formatBytes(torrent.totalSize), isDark: isDark)
+            StatRow(label: "Pieces", value: "\(torrent.verifiedPieces) / \(torrent.pieceCount)", isDark: isDark)
+            StatRow(label: "Peers", value: "\(torrent.peerCount) (\(torrent.seedCount) seeds)", isDark: isDark)
+            StatRow(label: "Trackers", value: "\(torrent.trackerCount)", isDark: isDark)
+            StatRow(label: "Info Hash", value: torrent.infoHash, isDark: isDark)
+            StatRow(label: "Added", value: torrent.addedDate, isDark: isDark)
+            if torrent.completedDate.count > 0 {
+              StatRow(label: "Completed", value: torrent.completedDate, isDark: isDark)
+            }
+          }
+          .padding(16)
+          .background(RoundedRectangle(cornerRadius: 8).fill(cardBg))
+        }
+
+        // Protocol section
+        VStack(alignment: HorizontalAlignment.leading, spacing: 10) {
+          Text("PROTOCOL")
+            .font(.system(size: 11, weight: Font.Weight.semibold))
+            .foregroundColor(sectionLabelColor)
+            .tracking(0.6)
+
+          VStack(spacing: 6) {
+            StatRow(
+              label: "Enabled",
+              value:
+                (torrent.protocolDhtEnabled ? "DHT " : "") +
+                (torrent.protocolPexEnabled ? "PEX " : "") +
+                (torrent.protocolLsdEnabled ? "LSD " : "") +
+                (torrent.protocolUtpEnabled ? "uTP " : "") +
+                (torrent.protocolWebSeedEnabled ? "WebSeed " : "") +
+                (torrent.protocolScrapeEnabled ? "Scrape " : "") +
+                (torrent.protocolHolepunchEnabled ? "Holepunch" : ""),
+              isDark: isDark
+            )
+            StatRow(label: "Transport", value: "uTP \(torrent.protocolUtpPeers) / TCP \(torrent.protocolTcpPeers)", isDark: isDark)
+            StatRow(label: "Encryption", value: torrent.protocolEncryptionMode, isDark: isDark)
+            StatRow(label: "LSD", value: "announces \(torrent.protocolLsdAnnounces), peers \(torrent.protocolLsdPeers)", isDark: isDark)
+            StatRow(label: "WebSeed", value: "\(formatBytes(torrent.protocolWebSeedBytes)) failures \(torrent.protocolWebSeedFailures)", isDark: isDark)
+            StatRow(label: "Holepunch", value: "attempts \(torrent.protocolHolepunchAttempts), success \(torrent.protocolHolepunchSuccesses)", isDark: isDark)
+            if torrent.protocolPrivate {
+              StatRow(label: "Private", value: "DHT/PEX/LSD/Holepunch forced off", isDark: isDark)
+            }
+          }
+          .padding(16)
+          .background(RoundedRectangle(cornerRadius: 8).fill(cardBg))
+        }
+      }
+      .padding(24)
+    }
+  } else {
+    Text("No torrent selected")
+      .foregroundColor(isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : Color.black.opacity(0.25))
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+}

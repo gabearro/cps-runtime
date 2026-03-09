@@ -140,6 +140,31 @@ Terminal UI framework built on the CPS event loop. Declarative widget trees rebu
 
 **Key design:** Widgets are declarative descriptions (like VDOM nodes), not stateful objects. State lives in the application layer and flows down. Custom widgets (`wkCustom`) use `customChildren`/`customChildRects` to expose internal children for event routing without re-drawing them. Focus trapping (`withFocusTrap`) confines Tab cycling and key events to a widget subtree (used for modals/dialogs).
 
+### BitTorrent Client (`src/cps/bittorrent/`)
+
+Full BitTorrent client built on the CPS runtime. Supports BEP 3 (core), BEP 5 (DHT), BEP 6 (fast extension), BEP 9/10 (metadata/extension protocol), BEP 11 (PEX), BEP 14 (LSD), BEP 15 (UDP tracker), BEP 16 (super seeding), BEP 19 (web seeds), BEP 20 (peer ID), BEP 27 (private torrents), BEP 29 (uTP), BEP 55 (holepunch).
+
+**Architecture:** `TorrentClient` is the orchestrator that spawns concurrent CPS tasks:
+- `trackerLoop` — announces to all HTTP/HTTPS/UDP trackers, merges peer lists
+- `eventLoop` — processes peer events (handshake, bitfield, piece, choke/unchoke)
+- `dhtLoop` — iterative Kademlia DHT bootstrap + periodic get_peers lookup
+- `acceptLoop` / `utpAcceptLoop` — accept incoming TCP and uTP connections
+- `unchokeLoop` — tit-for-tat choking algorithm with optimistic unchoke
+- `webSeedLoop` — HTTP range-based piece downloading from web seeds
+- `lsdLoop` — LAN multicast peer discovery
+
+**Core modules:**
+- `bencode.nim` — Bencoding encoder/decoder
+- `metainfo.nim` — Torrent file and magnet link parsing
+- `peer_protocol.nim` — BitTorrent wire protocol message codec
+- `peer.nim` — Per-peer connection state machine (handshake, message loop, keep-alive)
+- `pieces.nim` — Piece/block state tracking, rarest-first selection, endgame mode
+- `storage.nim` — Multi-file disk I/O, piece verification via SHA1
+- `tracker.nim` — HTTP/HTTPS/UDP tracker announce with redirect following
+- `dht.nim` — Kademlia routing table, KRPC message codec, token management
+- `utp.nim` / `utp_stream.nim` — Micro Transport Protocol (BEP 29) over UDP
+- `client.nim` — Orchestrator: peer management, availability tracking, request scheduling
+
 ### IRC Client (`src/cps/irc/`)
 
 - `protocol.nim` — RFC 2812 message parsing/formatting, IrcEvent enum (26 event types), DccInfo struct
@@ -221,6 +246,7 @@ React-like frontend framework compiling to WebAssembly (standalone wasm32 via cl
 | `import cps/http/server/dsl` | Also exports: types, router, runtime, transform, eventloop, tables, sse, ws, compression, multipart, chunked |
 | `import cps/tui` | style, cell, input, layout, widget, renderer, textinput, reactive, dsl, components, events, component, app |
 | `import cps/ircclient` | irc/protocol, irc/client, irc/dcc, irc/xdcc, irc/ebook_indexer |
+| `import cps/bittorrent` | metainfo, client, pieces, storage, tracker, peer_protocol, bencode, peerid, dht, extensions, metadata, pex, lsd |
 | `import cps/ui` | types, vdom, dombridge, scheduler, reconciler, hooks, runtime, dsl, errors, router, net, ssr |
 
 ## Critical Gotchas
@@ -254,6 +280,14 @@ React-like frontend framework compiling to WebAssembly (standalone wasm32 via cl
 - **Focus trap for modals**: Set `withFocusTrap(true)` on modal/dialog widgets. Tab/Shift+Tab only cycles within the subtree, and key events route to focused widget first (before framework Tab handling).
 - **POSIX only**: TUI uses `termios`, `SIGWINCH`, raw mode. Not available on Windows.
 - **STDOUT non-blocking on macOS**: STDIN is set non-blocking for async input; on Unix terminals STDIN/STDOUT share the same file description, making STDOUT non-blocking too. `writeOutput` handles `EAGAIN` with `poll()` retry to prevent truncated frames.
+
+### BitTorrent
+- **CPS try/except with await in except**: The exception from an awaited future inside an except handler may propagate past the inner except. Use the flag-based pattern: `var error = ""; try: await x except: error = e.msg; if error.len > 0: raise`.
+- **`.mitems` in CPS procs**: Not supported. Use index-based while loops instead.
+- **`const` inside CPS procs**: Module-level const declarations work; `const` inside a CPS proc body causes "undeclared identifier". Move constants to module scope.
+- **Super seeder (BEP 16)**: Seeds send HAVE one piece at a time instead of BITFIELD. Must initialize peer bitfield on first HAVE and request blocks immediately if already unchoked.
+- **Ubuntu tracker**: Returns exactly 1 peer per announce regardless of `numwant`. Use DHT and multiple tracker tiers for broader peer discovery.
+- **Connection backoff**: Failed peers are tracked in `failedPeers` table with 120s backoff to prevent hammering.
 
 ## Lock-Free Guarantees
 

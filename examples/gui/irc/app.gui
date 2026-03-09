@@ -200,6 +200,15 @@ app CpsIrc {
     editingServerId: Int = -1
     editServerJson: String = "{}"
 
+    natProtocol: String = "Discovering..."
+    natExternalIp: String = ""
+    natGatewayIp: String = ""
+    natLocalIp: String = ""
+    natDoubleNat: Bool = false
+    natOuterProtocol: String = ""
+    natOuterGatewayIp: String = ""
+    natActiveMappings: Int = 0
+
     computed hasActiveServer: Bool = activeServerId >= 0
     computed hasActiveChannel: Bool = activeChannelName != ""
   }

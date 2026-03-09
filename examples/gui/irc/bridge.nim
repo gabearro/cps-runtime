@@ -17,6 +17,7 @@ import cps/concurrency/channels
 import cps/io/unix
 import cps/io/buffered
 import cps/io/streams
+import cps/io/nat
 import cps/bouncer/bridge except ChannelState
 import cps/bouncer/types as bouncerTypes
 
@@ -359,6 +360,19 @@ var
   gPollActive: bool = false
   gDirty: bool = true  ## Set when event-loop thread pushes UI events; cleared after buildPatch
 
+  # Incremental patch tracking: skip expensive arrays when unchanged.
+  # Reset to "force send" state whenever the active channel/server changes.
+  gLastSentActiveServer: int = -999
+  gLastSentActiveChannel: string = ""
+  gLastSentMsgId: int = -1         ## highest message ID sent to Swift for this channel
+  gLastSentMsgCount: int = -1      ## message count sent to Swift
+  gLastSentUserCount: int = -1     ## user count sent to Swift for this channel
+  gLastSentChannelCount: int = -1  ## channel count sent to Swift for this server
+  gMessagesDirty: bool = true      ## set when messages change for the active channel
+  gUsersDirty: bool = true         ## set when users change for the active channel
+  gChannelsDirty: bool = true      ## set when channel list changes for the active server
+  gServersDirty: bool = true       ## set when server list changes
+
   # Ignore list, highlight words, join/part mute list
   gIgnoreList: seq[string] = @[]
   gHighlightWords: seq[string] = @[]
@@ -433,6 +447,9 @@ var
   # Bouncer session (only accessed from event loop thread)
   gBouncerSession: BouncerBridgeSession
 
+  # NAT manager for port forwarding (only accessed from event loop thread)
+  gNatMgr: NatManager
+
   # Appearance settings (persisted)
   gFontSize: int = 13
   gMessageDensity: string = "comfortable"
@@ -442,6 +459,11 @@ var
   gNotifyPipeRead: cint = -1
   gNotifyPipeWrite: cint = -1
   gNotifyPending: Atomic[bool]
+
+  # Command notify pipe: main thread writes to wake event loop when commands enqueued
+  gCmdPipeRead: cint = -1
+  gCmdPipeWrite: cint = -1
+  gCmdNotifyPending: Atomic[bool]
 
 # ============================================================
 # Notification pipe
@@ -458,6 +480,18 @@ proc notifySwift() =
     if n == 1: return
     if osLastError().int == EINTR: continue
     return  # pipe full or error — already signaled
+
+proc notifyEventLoop() =
+  ## Coalesced pipe write to wake the event loop when commands are enqueued.
+  ## Called from the main thread (Swift dispatch).
+  if gCmdPipeWrite < 0: return
+  if gCmdNotifyPending.exchange(true, moAcquireRelease): return
+  var buf: array[1, byte] = [1'u8]
+  while true:
+    let n = posix.write(gCmdPipeWrite, addr buf[0], 1)
+    if n == 1: return
+    if osLastError().int == EINTR: continue
+    return
 
 # ============================================================
 # Event queue helpers
@@ -1198,6 +1232,10 @@ proc addMessage(serverId: int, channelName: string, kind: string,
   # Cap messages
   if gMessages[ck].len > MaxMessagesPerChannel:
     gMessages[ck].delete(0)
+
+  # Mark messages dirty for incremental patch when active channel affected
+  if serverId == gActiveServerId and channelName.toLowerAscii == gActiveChannelName.toLowerAscii:
+    gMessagesDirty = true
 
   # Update unread/mention counts if not active channel
   if serverId != gActiveServerId or channelName.toLowerAscii != gActiveChannelName.toLowerAscii:
@@ -2493,6 +2531,30 @@ proc dccDownloader(dccTransferId: int, dccIp: uint32, dccPort: int,
   except CatchableError as e:
     pushDccEvent(uiDccFailed, dccServerId, dccTransferId, e.msg)
 
+proc getNatExternalIp*(): string =
+  ## Get the external IP discovered by NAT. Returns "" if unavailable.
+  ## Non-CPS helper, safe to call from event loop thread.
+  if gNatMgr != nil:
+    return getExternalIp(gNatMgr)
+  ""
+
+proc natForwardPort*(proto: MappingProto, port: uint16,
+                     lifetime: uint32 = 7200): CpsFuture[NatMapping] {.cps.} =
+  ## Forward a port via NAT for DCC. Returns the mapping (caller must delete later).
+  ## Raises if NAT is not available or forwarding fails.
+  if gNatMgr == nil or gNatMgr.protocol == npNone:
+    raise newException(NatError, "NAT port forwarding not available")
+  let mapping: NatMapping = await addMapping(gNatMgr, proto, port, port, lifetime)
+  return mapping
+
+proc natDeletePort*(mapping: NatMapping): CpsVoidFuture {.cps.} =
+  ## Delete a NAT port mapping. Best-effort, ignores errors.
+  if gNatMgr != nil:
+    try:
+      await deleteMapping(gNatMgr, mapping)
+    except CatchableError:
+      discard
+
 # ============================================================
 # Bouncer integration helpers (event loop thread only)
 # ============================================================
@@ -3045,11 +3107,47 @@ proc connectToBouncerGui(): CpsVoidFuture {.cps.} =
   # Start the bouncer event forwarder background task
   discard spawn bouncerEventForwarder(session)
 
+proc waitForCommandNotify(): CpsVoidFuture =
+  ## Wait until the command notify pipe becomes readable (main thread enqueued a command).
+  ## Falls back to 50ms sleep if the command pipe is not initialized.
+  {.cast(gcsafe).}:
+    if gCmdPipeRead < 0:
+      return cpsSleep(50)
+    let fut = newCpsVoidFuture()
+    let loop = getEventLoop()
+    let pipeFd = gCmdPipeRead
+    loop.registerRead(pipeFd.int, proc() {.closure.} =
+      # Drain all bytes from the pipe
+      var buf: array[64, byte]
+      while posix.read(pipeFd, addr buf[0], buf.len) > 0:
+        discard
+      gCmdNotifyPending.store(false, moRelease)
+      # Unregister so we can re-register next iteration
+      loop.unregister(pipeFd.int)
+      fut.complete()
+    )
+    result = fut
+
 proc commandProcessor(): CpsVoidFuture {.cps.} =
-  ## Runs on event loop thread. Drains command queue every 50ms.
+  ## Runs on event loop thread. Wakes when commands are enqueued via pipe notification.
 
   # Try to connect to bouncer at startup
   await connectToBouncerGui()
+
+  # Discover NAT gateway for DCC port forwarding (best-effort, non-blocking)
+  try:
+    gNatMgr = newNatManager()
+    await discover(gNatMgr)
+    if gNatMgr.protocol != npNone:
+      let extIp = getExternalIp(gNatMgr)
+      if extIp.len > 0:
+        stderr.writeLine "[NAT] Discovered " & $gNatMgr.protocol & ", external IP: " & extIp
+      else:
+        stderr.writeLine "[NAT] Discovered " & $gNatMgr.protocol
+    else:
+      stderr.writeLine "[NAT] No NAT gateway found (DCC will use direct IP)"
+  except CatchableError as natErr:
+    stderr.writeLine "[NAT] Discovery failed: " & natErr.msg
 
   while true:
     var commands: seq[BridgeCommand]
@@ -3314,6 +3412,14 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
               "DCC spawn failed: " & e.msg)
 
       of cmdShutdownAll:
+        # Shut down NAT port forwarding (deletes mappings, closes sockets)
+        if gNatMgr != nil:
+          try:
+            await shutdown(gNatMgr)
+          except CatchableError:
+            discard
+          gNatMgr = nil
+
         # Gracefully disconnect all IRC connections (sends QUIT to servers).
         # Runs on the event loop thread so gConnections access is safe.
         # We await all disconnect futures to ensure QUIT messages are flushed
@@ -3337,7 +3443,7 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
         # loop thread terminates cleanly before Swift calls dlclose().
         return
 
-    await cpsSleep(50)
+    await waitForCommandNotify()
 
 proc eventLoopMain() {.thread.} =
   ## Event loop thread entry point.
@@ -3374,6 +3480,34 @@ proc processUiEvents(): bool =
 
   for evt in events:
     let si = findServerIdx(evt.serverId)
+    let isActiveServer = evt.serverId == gActiveServerId
+    let isActiveChannel = isActiveServer and evt.channel.toLowerAscii == gActiveChannelName.toLowerAscii
+
+    # Mark dirty flags for incremental patch optimization.
+    # These are coarse — false positives are fine, missed changes are not.
+    case evt.kind
+    of uiConnected, uiDisconnected, uiLagUpdate, uiAwayChange:
+      gServersDirty = true
+      if evt.kind in {uiConnected, uiDisconnected}:
+        gChannelsDirty = true
+    of uiUserJoin, uiUserPart, uiUserQuit, uiUserNick, uiUserList,
+       uiModeChange, uiChghost, uiSetname, uiAccount:
+      if isActiveChannel or evt.kind == uiUserQuit:
+        gUsersDirty = true
+      # These also add system messages → channels unread
+      gChannelsDirty = true
+    of uiNewMessage:
+      # addMessage sets gMessagesDirty for active channel
+      gChannelsDirty = true  # unread count changes
+    of uiTopicChange, uiChannelListUpdate:
+      gChannelsDirty = true
+    of uiNickChange:
+      gServersDirty = true
+    of uiError:
+      discard  # just adds a system message
+    of uiBatchComplete, uiTyping, uiMonOnline, uiMonOffline,
+       uiDccProgress, uiDccComplete, uiDccFailed:
+      discard  # scalar/DCC state, always included
 
     case evt.kind
     of uiConnected:
@@ -4033,88 +4167,135 @@ proc keybindsToJson(): string =
 proc buildPatch(includeEditableFields: bool): seq[byte] =
   ## Build JSON state patch. When includeEditableFields is false (Poll),
   ## user-editable text fields are excluded to avoid overwriting in-progress typing.
+  ##
+  ## Incremental optimization: expensive array fields (messages, users, channels,
+  ## servers) are only included when their content has changed since the last patch.
+  ## Swift's JSON merge preserves existing keys when they're absent from the patch,
+  ## so omitting unchanged arrays keeps the previous values.
   var patch = newJObject()
 
-  # Servers
-  var serversArr = newJArray()
-  for s in gServers:
-    var obj = newJObject()
-    obj["id"] = %s.id
-    obj["name"] = %sanitizeUtf8(s.name)
-    obj["host"] = %sanitizeUtf8(s.host)
-    obj["port"] = %s.port
-    obj["nick"] = %sanitizeUtf8(s.nick)
-    obj["useTls"] = %s.useTls
-    obj["connected"] = %s.connected
-    obj["connecting"] = %s.connecting
-    obj["lagMs"] = %s.lagMs
-    obj["isAway"] = %s.isAway
-    serversArr.add(obj)
-  patch["servers"] = serversArr
+  let ck = channelKey(gActiveServerId, gActiveChannelName)
+  let sk = serverKey(gActiveServerId)
+
+  # Detect if active channel/server changed since last patch (forces full resend)
+  let activeChanged = gActiveServerId != gLastSentActiveServer or
+                      gActiveChannelName != gLastSentActiveChannel
+  if activeChanged:
+    gMessagesDirty = true
+    gUsersDirty = true
+    gChannelsDirty = true
+    gServersDirty = true
+
+  # Detect message changes via ID/count comparison
+  let curMsgCount = if ck in gMessages: gMessages[ck].len else: 0
+  let curLastMsgId = if curMsgCount > 0: gMessages[ck][^1].id else: -1
+  if curMsgCount != gLastSentMsgCount or curLastMsgId != gLastSentMsgId:
+    gMessagesDirty = true
+
+  # Detect user changes via count comparison
+  let curUserCount = if ck in gUsers: gUsers[ck].len else: 0
+  if curUserCount != gLastSentUserCount:
+    gUsersDirty = true
+
+  # Detect channel changes via count comparison
+  let curChannelCount = if sk in gChannels: gChannels[sk].len else: 0
+  if curChannelCount != gLastSentChannelCount:
+    gChannelsDirty = true
+
+  # Servers — always small, but skip when unchanged
+  if gServersDirty:
+    var serversArr = newJArray()
+    for s in gServers:
+      var obj = newJObject()
+      obj["id"] = %s.id
+      obj["name"] = %sanitizeUtf8(s.name)
+      obj["host"] = %sanitizeUtf8(s.host)
+      obj["port"] = %s.port
+      obj["nick"] = %sanitizeUtf8(s.nick)
+      obj["useTls"] = %s.useTls
+      obj["connected"] = %s.connected
+      obj["connecting"] = %s.connecting
+      obj["lagMs"] = %s.lagMs
+      obj["isAway"] = %s.isAway
+      serversArr.add(obj)
+    patch["servers"] = serversArr
+    gServersDirty = false
 
   # Channels for active server
-  var channelsArr = newJArray()
-  let sk = serverKey(gActiveServerId)
-  if sk in gChannels:
-    for ch in gChannels[sk]:
-      var obj = newJObject()
-      obj["id"] = %ch.id
-      obj["serverId"] = %ch.serverId
-      obj["name"] = %sanitizeUtf8(ch.name)
-      obj["topic"] = %sanitizeUtf8(ch.topic)
-      obj["unread"] = %ch.unread
-      obj["mentions"] = %ch.mentions
-      obj["userCount"] = %ch.userCount
-      obj["isChannel"] = %ch.isChannel
-      obj["isDm"] = %ch.isDm
-      channelsArr.add(obj)
-  patch["channels"] = channelsArr
+  if gChannelsDirty:
+    var channelsArr = newJArray()
+    if sk in gChannels:
+      for ch in gChannels[sk]:
+        var obj = newJObject()
+        obj["id"] = %ch.id
+        obj["serverId"] = %ch.serverId
+        obj["name"] = %sanitizeUtf8(ch.name)
+        obj["topic"] = %sanitizeUtf8(ch.topic)
+        obj["unread"] = %ch.unread
+        obj["mentions"] = %ch.mentions
+        obj["userCount"] = %ch.userCount
+        obj["isChannel"] = %ch.isChannel
+        obj["isDm"] = %ch.isDm
+        channelsArr.add(obj)
+    patch["channels"] = channelsArr
+    gChannelsDirty = false
+    gLastSentChannelCount = curChannelCount
 
-  # Messages for active channel
-  var messagesArr = newJArray()
-  let ck = channelKey(gActiveServerId, gActiveChannelName)
-  if ck in gMessages:
-    for m in gMessages[ck]:
-      var obj = newJObject()
-      obj["id"] = %m.id
-      obj["kind"] = %m.kind
-      obj["nick"] = %m.nick
-      obj["text"] = %m.text
-      obj["timestamp"] = %m.timestamp
-      obj["timestampFull"] = %m.timestampFull
-      obj["isMention"] = %m.isMention
-      obj["isOwn"] = %m.isOwn
-      obj["spans"] = %m.spans
-      messagesArr.add(obj)
-  patch["messages"] = messagesArr
+  # Messages for active channel — the biggest cost, skip when unchanged
+  if gMessagesDirty:
+    var messagesArr = newJArray()
+    if ck in gMessages:
+      for m in gMessages[ck]:
+        var obj = newJObject()
+        obj["id"] = %m.id
+        obj["kind"] = %m.kind
+        obj["nick"] = %m.nick
+        obj["text"] = %m.text
+        obj["timestamp"] = %m.timestamp
+        obj["timestampFull"] = %m.timestampFull
+        obj["isMention"] = %m.isMention
+        obj["isOwn"] = %m.isOwn
+        obj["spans"] = %m.spans
+        messagesArr.add(obj)
+    patch["messages"] = messagesArr
+    gMessagesDirty = false
+    gLastSentMsgId = curLastMsgId
+    gLastSentMsgCount = curMsgCount
 
-  # Users for active channel
-  var usersArr = newJArray()
-  if ck in gUsers:
-    var sortedUsers = gUsers[ck]
-    sortedUsers.sort(proc(a, b: UserState): int =
-      # Sort by prefix rank then alphabetically
-      let prefixRank = proc(p: string): int =
-        case p
-        of "~": 0
-        of "&": 1
-        of "@": 2
-        of "%": 3
-        of "+": 4
-        else: 5
-      let ra = prefixRank(a.prefix)
-      let rb = prefixRank(b.prefix)
-      if ra != rb:
-        return cmp(ra, rb)
-      cmp(a.nick.toLowerAscii, b.nick.toLowerAscii)
-    )
-    for u in sortedUsers:
-      var obj = newJObject()
-      obj["nick"] = %sanitizeUtf8(u.nick)
-      obj["prefix"] = %sanitizeUtf8(u.prefix)
-      obj["isAway"] = %u.isAway
-      usersArr.add(obj)
-  patch["users"] = usersArr
+  # Users for active channel — sort is expensive, skip when unchanged
+  if gUsersDirty:
+    var usersArr = newJArray()
+    if ck in gUsers:
+      var sortedUsers = gUsers[ck]
+      sortedUsers.sort(proc(a, b: UserState): int =
+        # Sort by prefix rank then alphabetically
+        let prefixRank = proc(p: string): int =
+          case p
+          of "~": 0
+          of "&": 1
+          of "@": 2
+          of "%": 3
+          of "+": 4
+          else: 5
+        let ra = prefixRank(a.prefix)
+        let rb = prefixRank(b.prefix)
+        if ra != rb:
+          return cmp(ra, rb)
+        cmp(a.nick.toLowerAscii, b.nick.toLowerAscii)
+      )
+      for u in sortedUsers:
+        var obj = newJObject()
+        obj["nick"] = %sanitizeUtf8(u.nick)
+        obj["prefix"] = %sanitizeUtf8(u.prefix)
+        obj["isAway"] = %u.isAway
+        usersArr.add(obj)
+    patch["users"] = usersArr
+    gUsersDirty = false
+    gLastSentUserCount = curUserCount
+
+  # Update tracking state
+  gLastSentActiveServer = gActiveServerId
+  gLastSentActiveChannel = gActiveChannelName
 
   # Scalar state (non-editable — always included)
   patch["showUserList"] = %gShowUserList
@@ -4205,6 +4386,38 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
 
   # Server editor JSON (always included so Swift form sees Nim-populated data)
   patch["editServerJson"] = %gEditServerJson
+
+  # NAT status
+  if gNatMgr != nil:
+    patch["natProtocol"] = %(case gNatMgr.protocol
+      of npNone: "Not available"
+      of npNatPmp: "NAT-PMP"
+      of npPcp: "PCP"
+      of npUpnpIgd: "UPnP IGD")
+    patch["natExternalIp"] = %gNatMgr.externalIp
+    patch["natGatewayIp"] = %gNatMgr.gatewayIp
+    patch["natLocalIp"] = %gNatMgr.localIp
+    patch["natDoubleNat"] = %gNatMgr.doubleNat
+    if gNatMgr.outerMgr != nil:
+      patch["natOuterProtocol"] = %(case gNatMgr.outerMgr.protocol
+        of npNone: "Not available"
+        of npNatPmp: "NAT-PMP"
+        of npPcp: "PCP"
+        of npUpnpIgd: "UPnP IGD")
+      patch["natOuterGatewayIp"] = %gNatMgr.outerMgr.gatewayIp
+    else:
+      patch["natOuterProtocol"] = %""
+      patch["natOuterGatewayIp"] = %""
+    patch["natActiveMappings"] = %gNatMgr.mappings.len
+  else:
+    patch["natProtocol"] = %"Discovering..."
+    patch["natExternalIp"] = %""
+    patch["natGatewayIp"] = %""
+    patch["natLocalIp"] = %""
+    patch["natDoubleNat"] = %false
+    patch["natOuterProtocol"] = %""
+    patch["natOuterGatewayIp"] = %""
+    patch["natActiveMappings"] = %0
 
   # Fields only included when the bridge explicitly modifies them
   # (not during Poll, to avoid overwriting in-progress typing, sheet state,
@@ -4310,6 +4523,16 @@ proc ensureInit() =
       discard fcntl(gNotifyPipeWrite, F_SETFL,
         fcntl(gNotifyPipeWrite, F_GETFL) or O_NONBLOCK)
     gNotifyPending.store(false)
+    # Create command notify pipe (main thread → event loop wake)
+    var cmdFds: array[2, cint]
+    if posix.pipe(cmdFds) == 0:
+      gCmdPipeRead = cmdFds[0]
+      gCmdPipeWrite = cmdFds[1]
+      discard fcntl(gCmdPipeRead, F_SETFL,
+        fcntl(gCmdPipeRead, F_GETFL) or O_NONBLOCK)
+      discard fcntl(gCmdPipeWrite, F_SETFL,
+        fcntl(gCmdPipeWrite, F_GETFL) or O_NONBLOCK)
+    gCmdNotifyPending.store(false)
     gInitialized = true
 
 # ============================================================
@@ -4468,6 +4691,13 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
   syncFromSnapshot(payload, payloadLen)
 
   var pollSkipped = false  # true when poll found no dirty state → skip buildPatch
+
+  # Non-poll actions (user-initiated) always need a full state response
+  if actionTag != tagPoll and actionTag != tagStartPoll:
+    gMessagesDirty = true
+    gUsersDirty = true
+    gChannelsDirty = true
+    gServersDirty = true
 
   case actionTag
   of tagPoll:
@@ -5632,6 +5862,9 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
     outp[].effects = writeBlob(@[])
     outp[].emittedActions = writeBlob(@[])
     outp[].diagnostics = writeBlob(diagBlob)
+
+  # Wake event loop if any commands were enqueued during this dispatch
+  notifyEventLoop()
 
   0'i32
 

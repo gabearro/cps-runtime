@@ -719,6 +719,7 @@ proc broadcastNickChanged*(bouncer: Bouncer, serverName, oldNick, newNick: strin
 
 proc startClientServer*(bouncer: Bouncer): CpsVoidFuture {.cps.} =
   ## Start the Unix socket accept loop for bouncer clients.
+  bouncer.resetStopSignal()
   bouncer.listener = unixListen(bouncer.config.socketPath)
   while bouncer.running:
     try:
@@ -726,4 +727,4 @@ proc startClientServer*(bouncer: Bouncer): CpsVoidFuture {.cps.} =
       bouncer.clientGroup.spawn(handleClientConnection(bouncer, client))
     except CatchableError:
       if bouncer.running:
-        await cpsSleep(100)  # Brief pause before retrying accept
+        await sleepOrSignal(100, bouncer.stopSignal)  # Brief pause before retrying accept

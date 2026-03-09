@@ -11,6 +11,7 @@ import cps/eventloop
 import cps/io/streams
 import cps/io/unix
 import cps/io/buffered
+import cps/io/timeouts
 import cps/concurrency/signals
 import cps/concurrency/taskgroup
 import cps/bouncer/types
@@ -125,14 +126,53 @@ proc runTest(): CpsVoidFuture {.cps.} =
 
   # Shutdown
   bouncer.running = false
+  bouncer.signalStop()
   if bouncer.listener != nil:
     bouncer.listener.close()
   serverFut.cancel()
 
   cleanup()
 
+proc runStopWakeRegression(): CpsVoidFuture {.cps.} =
+  ## Regression: stop signal should wake accept/periodic loops promptly.
+  cleanup()
+  let config = BouncerConfig(
+    socketPath: testSocketPath,
+    logDir: testLogDir,
+    bufferSize: 64,
+    flushIntervalMs: 120000,
+    servers: @[],
+  )
+  let bouncer = newBouncer(config)
+
+  if not dirExists(testLogDir):
+    createDir(testLogDir)
+  let socketDir = parentDir(testSocketPath)
+  if not dirExists(socketDir):
+    createDir(socketDir)
+
+  let serverFut = startClientServer(bouncer)
+  let flushFut = periodicFlush(bouncer)
+  let detachFut = checkDetachTimers(bouncer)
+
+  await cpsSleep(120)
+  bouncer.running = false
+  bouncer.signalStop()
+  if bouncer.listener != nil:
+    bouncer.listener.close()
+
+  await withTimeout(serverFut, 1000)
+  await withTimeout(flushFut, 1000)
+  await withTimeout(detachFut, 1000)
+  cleanup()
+
 block:
   let fut = runTest()
   runCps(fut)
+
+block:
+  let fut = runStopWakeRegression()
+  runCps(fut)
+  echo "PASS: bouncer stop wake regression"
 
 echo "\nBouncer integration test complete!"

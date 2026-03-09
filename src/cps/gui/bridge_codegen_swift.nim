@@ -4,7 +4,7 @@ import std/strutils
 import ./ir
 
 const
-  guiBridgeAbiVersion* = 4'u32
+  guiBridgeAbiVersion* = 5'u32
 
 proc swiftEscape(value: string): string =
   value

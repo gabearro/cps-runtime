@@ -147,6 +147,7 @@ type
     serverGroup*: TaskGroup
     buffers*: Table[string, MessageRingBuffer] ## "server:channel" -> ring buffer
     running*: bool
+    stopSignal*: CpsVoidFuture                  ## Completed once during shutdown to wake sleepers
     nextClientId*: int
     nextMsgId*: int64                          ## Global monotonic message ID
     # Callbacks set by daemon.nim for runtime management
@@ -202,3 +203,11 @@ proc toIrcClientConfig*(sc: BouncerServerConfig): IrcClientConfig =
 proc bufferKey*(serverName, target: string): string =
   ## Create a buffer lookup key from server name and target.
   serverName & ":" & target.toLowerAscii()
+
+proc resetStopSignal*(bouncer: Bouncer) =
+  bouncer.stopSignal = newCpsVoidFuture()
+  bouncer.stopSignal.pinFutureRuntime()
+
+proc signalStop*(bouncer: Bouncer) {.inline.} =
+  if bouncer.stopSignal != nil and not bouncer.stopSignal.finished:
+    bouncer.stopSignal.complete()

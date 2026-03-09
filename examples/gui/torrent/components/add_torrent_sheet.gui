@@ -1,0 +1,132 @@
+component AddTorrentSheet(isDark: Bool) {
+  let bgColor = isDark ? Color(red: 0.16, green: 0.16, blue: 0.17) : Color(NSColor.windowBackgroundColor)
+  let cardBg = isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03)
+  let dividerColor = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : Color.primary
+  let fgSecondary = isDark ? Color(red: 0.66, green: 0.66, blue: 0.69) : Color.secondary
+  let fgTertiary = isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : Color.gray
+  let sectionLabelColor = isDark ? Color(red: 0.58, green: 0.58, blue: 0.61) : Color(red: 0.60, green: 0.60, blue: 0.63)
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 24) {
+    // Header
+    HStack {
+      VStack(alignment: HorizontalAlignment.leading, spacing: 2) {
+        Text("Add Torrent")
+          .font(.system(size: 17, weight: Font.Weight.semibold))
+          .foregroundColor(fg)
+        Text("Add a .torrent file or paste a magnet link")
+          .font(.system(size: 12))
+          .foregroundColor(fgTertiary)
+      }
+      Spacer()
+      Button(action: HideAddTorrent) {
+        Image(systemName: "xmark.circle.fill")
+          .font(.system(size: 20))
+          .foregroundColor(isDark ? Color(red: 0.44, green: 0.44, blue: 0.47) : Color.black.opacity(0.18))
+      }
+      .buttonStyle(BorderlessButtonStyle())
+    }
+
+    // Torrent file section
+    VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+      Text("TORRENT FILE")
+        .font(.system(size: 11, weight: Font.Weight.semibold))
+        .foregroundColor(sectionLabelColor)
+        .tracking(0.6)
+
+      HStack(spacing: 12) {
+        TorrentFilePickerButton(store: store, selectedPath: addTorrentPath)
+
+        if addTorrentPath.count > 0 {
+          VStack(alignment: HorizontalAlignment.leading, spacing: 2) {
+            Text(lastPathComponent(addTorrentPath))
+              .font(.system(size: 12, weight: Font.Weight.medium))
+              .foregroundColor(fg)
+              .lineLimit(1)
+            Text(addTorrentPath)
+              .font(.system(size: 10))
+              .foregroundColor(fgTertiary)
+              .lineLimit(1)
+              .truncationMode(Text.TruncationMode.middle)
+          }
+        } else {
+          Text("No file selected")
+            .font(.system(size: 12))
+            .foregroundColor(fgTertiary)
+        }
+        Spacer()
+      }
+      .padding(14)
+      .background(RoundedRectangle(cornerRadius: 8).fill(cardBg))
+    }
+
+    // Divider with "or"
+    HStack(spacing: 12) {
+      Rectangle().fill(dividerColor).frame(height: 1)
+      Text("or")
+        .font(.system(size: 11, weight: Font.Weight.medium))
+        .foregroundColor(fgTertiary)
+      Rectangle().fill(dividerColor).frame(height: 1)
+    }
+
+    // Magnet link section
+    VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+      Text("MAGNET LINK")
+        .font(.system(size: 11, weight: Font.Weight.semibold))
+        .foregroundColor(sectionLabelColor)
+        .tracking(0.6)
+
+      TextField("magnet:?xt=urn:btih:...", text: addMagnetLink)
+        .textFieldStyle(RoundedBorderTextFieldStyle())
+        .font(.system(size: 12))
+    }
+
+    Spacer()
+
+    // Action buttons
+    HStack(spacing: 10) {
+      Spacer()
+
+      Button(action: HideAddTorrent) {
+        Text("Cancel")
+          .font(.system(size: 13))
+          .foregroundColor(fgSecondary)
+          .padding(vertical: 7, horizontal: 20)
+          .background(RoundedRectangle(cornerRadius: 7).fill(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04)))
+      }
+      .buttonStyle(BorderlessButtonStyle())
+      .keyboardShortcut(KeyEquivalent.escape, modifiers: EventModifiers())
+
+      if addTorrentPath.count > 0 {
+        Button(action: AddTorrentFromFile) {
+          Text("Add File")
+            .font(.system(size: 13, weight: Font.Weight.medium))
+            .foregroundColor(Color.white)
+            .padding(vertical: 7, horizontal: 20)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color(token.color.accent)))
+        }
+        .buttonStyle(BorderlessButtonStyle())
+        .keyboardShortcut(KeyEquivalent.return, modifiers: EventModifiers.command)
+      } else if addMagnetLink.count > 0 {
+        Button(action: AddTorrentFromMagnet) {
+          Text("Add Magnet")
+            .font(.system(size: 13, weight: Font.Weight.medium))
+            .foregroundColor(Color.white)
+            .padding(vertical: 7, horizontal: 20)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color(token.color.accent)))
+        }
+        .buttonStyle(BorderlessButtonStyle())
+        .keyboardShortcut(KeyEquivalent.return, modifiers: EventModifiers.command)
+      } else {
+        Text("Add")
+          .font(.system(size: 13, weight: Font.Weight.medium))
+          .foregroundColor(Color.white.opacity(0.35))
+          .padding(vertical: 7, horizontal: 20)
+          .background(RoundedRectangle(cornerRadius: 7).fill(Color(token.color.accent).opacity(0.35)))
+      }
+    }
+  }
+  .padding(24)
+  .frame(minWidth: 480, idealWidth: 480, minHeight: 350)
+  .background(bgColor)
+}

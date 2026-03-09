@@ -1,0 +1,71 @@
+component ToolbarIconButton(icon: String, helpText: String, isDark: Bool) {
+  let fg = isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : Color.black.opacity(0.55)
+  let hoverBg = isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+
+  Image(systemName: icon)
+    .font(.system(size: 12, weight: Font.Weight.medium))
+    .foregroundColor(fg)
+    .frame(width: 28, height: 28)
+    .background(RoundedRectangle(cornerRadius: 6).fill(hoverBg))
+    .help(helpText)
+}
+
+component Toolbar(isDark: Bool) {
+  let dividerColor = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.08)
+  let bgColor = isDark ? Color(red: 0.16, green: 0.16, blue: 0.17) : Color(NSColor.windowBackgroundColor)
+  let accentFg = Color(token.color.accent)
+
+  HStack(spacing: 6) {
+    // Add button — primary action, gets accent treatment
+    Button(action: ShowAddTorrent) {
+      HStack(spacing: 5) {
+        Image(systemName: "plus")
+          .font(.system(size: 11, weight: Font.Weight.bold))
+        Text("Add")
+          .font(.system(size: 12, weight: Font.Weight.medium))
+      }
+      .foregroundColor(accentFg)
+      .padding(vertical: 5, horizontal: 12)
+      .background(RoundedRectangle(cornerRadius: 6).fill(accentFg.opacity(0.12)))
+    }
+    .buttonStyle(BorderlessButtonStyle())
+    .help("Add torrent file or magnet link")
+
+    Rectangle()
+      .fill(dividerColor)
+      .frame(width: 1, height: 18)
+      .padding(horizontal: 4)
+
+    if hasSelection {
+      Button(action: PauseTorrent(torrentId: selectedTorrentId)) {
+        ToolbarIconButton(icon: "pause.fill", helpText: "Pause", isDark: isDark)
+      }
+      .buttonStyle(BorderlessButtonStyle())
+
+      Button(action: ResumeTorrent(torrentId: selectedTorrentId)) {
+        ToolbarIconButton(icon: "play.fill", helpText: "Resume", isDark: isDark)
+      }
+      .buttonStyle(BorderlessButtonStyle())
+
+      Button(action: ShowRemoveConfirm(torrentId: selectedTorrentId)) {
+        ToolbarIconButton(icon: "trash", helpText: "Remove", isDark: isDark)
+      }
+      .buttonStyle(BorderlessButtonStyle())
+
+      Rectangle()
+        .fill(dividerColor)
+        .frame(width: 1, height: 18)
+        .padding(horizontal: 4)
+    }
+
+    Spacer()
+
+    Button(action: ShowSettings) {
+      ToolbarIconButton(icon: "gearshape", helpText: "Settings", isDark: isDark)
+    }
+    .buttonStyle(BorderlessButtonStyle())
+  }
+  .padding(horizontal: 14, vertical: 8)
+  .background(bgColor)
+  .overlay(Rectangle().fill(dividerColor).frame(height: 1), alignment: Alignment.bottom)
+}

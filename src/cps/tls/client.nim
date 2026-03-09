@@ -40,6 +40,9 @@ const TLS1_2_VERSION* = 0x0303.clong
 proc SSL_CTX_ctrl*(ctx: SslCtx, cmd: clong, larg: clong, parg: pointer): clong
   {.cdecl, dynlib: DLLSSLName, importc.}
 
+proc SSL_CTX_set_default_verify_paths*(ctx: SslCtx): cint
+  {.cdecl, dynlib: DLLSSLName, importc.}
+
 proc sslCtxSetMinProtoVersion(ctx: SslCtx, version: clong): bool =
   when defined(useBoringSSL):
     boringssl.SSL_CTX_set_min_proto_version(ctx, uint16(version)) != 0
@@ -254,6 +257,31 @@ proc newTlsStream*(tcpStream: TcpStream, hostname: string,
         for c in proto:
           alpnBuf.add byte(c)
       discard SSL_CTX_set_alpn_protos(ctx, cast[cstring](addr alpnBuf[0]), cuint(alpnBuf.len))
+
+  # Load system CA certificates for peer verification
+  if SSL_CTX_set_default_verify_paths(ctx) != 1:
+    # Fallback: try common CA bundle paths
+    const caPaths = [
+      "/etc/ssl/certs",                          # Linux
+      "/opt/homebrew/etc/openssl@3/cert.pem",    # macOS Homebrew ARM
+      "/usr/local/etc/openssl@3/cert.pem",       # macOS Homebrew x86
+    ]
+    const caFiles = [
+      "/etc/ssl/cert.pem",                       # macOS system
+      "/etc/pki/tls/certs/ca-bundle.crt",        # RHEL/Fedora
+    ]
+    var loaded = false
+    for f in caFiles:
+      if SSL_CTX_load_verify_locations(ctx, f.cstring, nil) == 1:
+        loaded = true
+        break
+    if not loaded:
+      for d in caPaths:
+        if SSL_CTX_load_verify_locations(ctx, nil, d.cstring) == 1:
+          loaded = true
+          break
+    # If no CA certs found, verification will fail for HTTPS — that's correct
+    # behavior rather than silently accepting any certificate.
 
   let ssl = SSL_new(ctx)
   if ssl.isNil:

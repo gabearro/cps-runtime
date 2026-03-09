@@ -90,8 +90,12 @@ proc setupMtReactor(loop: EventLoop) =
   let wakeCb: proc() {.closure.} = proc() =
     platform.wakePipeDrain(loop.wakePipeRead)
     loop.recordWakeSignal()
-    loop.markWakeDrained()
     loop.drainCrossThreadQueue()
+    loop.markWakeDrained()
+    if loop.crossThreadQueue.hasPending():
+      # A producer can publish tail before linking prev.next. If that happens
+      # while we drain, re-signal so the reactor can't sleep through pending work.
+      loop.tryWakeSelector()
   loop.registerRead(loop.wakePipeRead, wakeCb)
 
   initMpscQueue(loop.crossThreadQueue)

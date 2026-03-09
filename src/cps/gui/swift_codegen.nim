@@ -1225,6 +1225,194 @@ proc formatSwiftDouble(value: float64): string =
     return $value.int64 & ".0"
   $value
 
+proc bridgeWireKind(typ: string): string =
+  let t = typ.strip()
+  if t == "Int":
+    return "int64"
+  if t in ["Double", "Float", "CGFloat"]:
+    return "double"
+  if t == "Bool":
+    return "bool"
+  if t == "String":
+    return "string"
+  "json"
+
+proc isBridgeRequestCandidate(name: string): bool =
+  let n = swiftIdent(name)
+  n in [
+    "selectedTorrentId", "detailTab", "showAddTorrent", "addMagnetLink", "addTorrentPath",
+    "showSettings", "downloadDir", "listenPort", "maxDownloadRate", "maxUploadRate",
+    "maxPeers", "dhtEnabled", "pexEnabled", "lsdEnabled", "utpEnabled", "webSeedEnabled",
+    "trackerScrapeEnabled", "holepunchEnabled", "encryptionMode", "actionPriority",
+    "showRemoveConfirm", "removeDeleteFiles", "actionTorrentId", "pollActive"
+  ]
+
+proc emitBridgeStateHelpers(ir: GuiIrProgram, outLines: var seq[string]) =
+  var storageFields: seq[GuiFieldDecl]
+  for field in ir.stateFields:
+    if not field.isComputed:
+      storageFields.add field
+
+  var pollTag = -1
+  for i, action in ir.actions:
+    if action.name.toLowerAscii == "poll":
+      pollTag = i
+      break
+
+  outLines.add "let guiBridgePollActionTag: UInt32? = " &
+    (if pollTag >= 0: "UInt32(" & $pollTag & ")" else: "nil")
+  outLines.add "let guiBridgeValueTypeBool: UInt8 = 1"
+  outLines.add "let guiBridgeValueTypeInt64: UInt8 = 2"
+  outLines.add "let guiBridgeValueTypeDouble: UInt8 = 3"
+  outLines.add "let guiBridgeValueTypeString: UInt8 = 4"
+  outLines.add "let guiBridgeValueTypeJSON: UInt8 = 5"
+  outLines.add ""
+  outLines.add "struct GUIBridgeFieldValue {"
+  outLines.add "  var fieldId: UInt16"
+  outLines.add "  var valueType: UInt8"
+  outLines.add "  var payload: Data"
+  outLines.add "}"
+  outLines.add ""
+  outLines.add "private func guiBridgeEncodeInt64(_ value: Int64) -> Data {"
+  outLines.add "  var le = value.littleEndian"
+  outLines.add "  return withUnsafeBytes(of: &le) { Data($0) }"
+  outLines.add "}"
+  outLines.add ""
+  outLines.add "private func guiBridgeDecodeInt64(_ payload: Data) -> Int64? {"
+  outLines.add "  guard payload.count == 8 else { return nil }"
+  outLines.add "  var value: Int64 = 0"
+  outLines.add "  _ = withUnsafeMutableBytes(of: &value) { payload.copyBytes(to: $0) }"
+  outLines.add "  return Int64(littleEndian: value)"
+  outLines.add "}"
+  outLines.add ""
+  outLines.add "private func guiBridgeEncodeDouble(_ value: Double) -> Data {"
+  outLines.add "  var bits = value.bitPattern.littleEndian"
+  outLines.add "  return withUnsafeBytes(of: &bits) { Data($0) }"
+  outLines.add "}"
+  outLines.add ""
+  outLines.add "private func guiBridgeDecodeDouble(_ payload: Data) -> Double? {"
+  outLines.add "  guard payload.count == 8 else { return nil }"
+  outLines.add "  var bits: UInt64 = 0"
+  outLines.add "  _ = withUnsafeMutableBytes(of: &bits) { payload.copyBytes(to: $0) }"
+  outLines.add "  return Double(bitPattern: UInt64(littleEndian: bits))"
+  outLines.add "}"
+  outLines.add ""
+  outLines.add "private func guiBridgeDecodeBool(_ payload: Data) -> Bool? {"
+  outLines.add "  guard payload.count == 1 else { return nil }"
+  outLines.add "  return payload[0] != 0"
+  outLines.add "}"
+  outLines.add ""
+  outLines.add "private func guiBridgeEncodeString(_ value: String) -> Data {"
+  outLines.add "  value.data(using: .utf8) ?? Data()"
+  outLines.add "}"
+  outLines.add ""
+  outLines.add "private func guiBridgeDecodeString(_ payload: Data) -> String? {"
+  outLines.add "  String(data: payload, encoding: .utf8)"
+  outLines.add "}"
+  outLines.add ""
+  outLines.add "func guiBridgeEncodeRequestFields(actionTag: UInt32, state: GUIState?) -> [GUIBridgeFieldValue] {"
+  outLines.add "  guard let state else { return [] }"
+  outLines.add "  if let pollTag = guiBridgePollActionTag, actionTag == pollTag {"
+  outLines.add "    return []"
+  outLines.add "  }"
+  outLines.add "  var out: [GUIBridgeFieldValue] = []"
+
+  for i, field in storageFields:
+    if not isBridgeRequestCandidate(field.name):
+      continue
+    let fName = swiftIdent(field.name)
+    let kind = bridgeWireKind(field.typ)
+    let fieldId = i + 1
+    case kind
+    of "bool":
+      outLines.add "  out.append(GUIBridgeFieldValue(fieldId: " & $fieldId &
+        ", valueType: guiBridgeValueTypeBool, payload: Data([state." & fName & " ? 1 : 0])))"
+    of "int64":
+      outLines.add "  out.append(GUIBridgeFieldValue(fieldId: " & $fieldId &
+        ", valueType: guiBridgeValueTypeInt64, payload: guiBridgeEncodeInt64(Int64(state." & fName & "))))"
+    of "double":
+      outLines.add "  out.append(GUIBridgeFieldValue(fieldId: " & $fieldId &
+        ", valueType: guiBridgeValueTypeDouble, payload: guiBridgeEncodeDouble(Double(state." & fName & "))))"
+    of "string":
+      outLines.add "  out.append(GUIBridgeFieldValue(fieldId: " & $fieldId &
+        ", valueType: guiBridgeValueTypeString, payload: guiBridgeEncodeString(state." & fName & ")))"
+    else:
+      discard
+
+  outLines.add "  return out"
+  outLines.add "}"
+  outLines.add ""
+  outLines.add "func guiBridgeApplyPatchField(state: inout GUIState, fieldId: UInt16, valueType: UInt8, payload: Data) -> Bool {"
+  outLines.add "  switch fieldId {"
+
+  for i, field in storageFields:
+    let fName = swiftIdent(field.name)
+    let fType = swiftTypeName(field.typ)
+    let kind = bridgeWireKind(field.typ)
+    let fieldId = i + 1
+    outLines.add "  case " & $fieldId & ":"
+    case kind
+    of "bool":
+      outLines.add "    if valueType == guiBridgeValueTypeBool, let decoded = guiBridgeDecodeBool(payload) {"
+      outLines.add "      state." & fName & " = decoded"
+      outLines.add "      return true"
+      outLines.add "    }"
+      outLines.add "    if valueType == guiBridgeValueTypeJSON, let decoded = try? JSONDecoder().decode(Bool.self, from: payload) {"
+      outLines.add "      state." & fName & " = decoded"
+      outLines.add "      return true"
+      outLines.add "    }"
+      outLines.add "    return false"
+    of "int64":
+      outLines.add "    if valueType == guiBridgeValueTypeInt64, let decoded = guiBridgeDecodeInt64(payload) {"
+      outLines.add "      state." & fName & " = Int(decoded)"
+      outLines.add "      return true"
+      outLines.add "    }"
+      outLines.add "    if valueType == guiBridgeValueTypeJSON, let decoded = try? JSONDecoder().decode(Int.self, from: payload) {"
+      outLines.add "      state." & fName & " = decoded"
+      outLines.add "      return true"
+      outLines.add "    }"
+      outLines.add "    return false"
+    of "double":
+      outLines.add "    if valueType == guiBridgeValueTypeDouble, let decoded = guiBridgeDecodeDouble(payload) {"
+      outLines.add "      state." & fName & " = Double(decoded)"
+      outLines.add "      return true"
+      outLines.add "    }"
+      outLines.add "    if valueType == guiBridgeValueTypeInt64, let decoded = guiBridgeDecodeInt64(payload) {"
+      outLines.add "      state." & fName & " = Double(decoded)"
+      outLines.add "      return true"
+      outLines.add "    }"
+      outLines.add "    if valueType == guiBridgeValueTypeJSON, let decoded = try? JSONDecoder().decode(Double.self, from: payload) {"
+      outLines.add "      state." & fName & " = decoded"
+      outLines.add "      return true"
+      outLines.add "    }"
+      outLines.add "    return false"
+    of "string":
+      outLines.add "    if valueType == guiBridgeValueTypeString, let decoded = guiBridgeDecodeString(payload) {"
+      outLines.add "      state." & fName & " = decoded"
+      outLines.add "      return true"
+      outLines.add "    }"
+      outLines.add "    if valueType == guiBridgeValueTypeJSON, let decoded = try? JSONDecoder().decode(String.self, from: payload) {"
+      outLines.add "      state." & fName & " = decoded"
+      outLines.add "      return true"
+      outLines.add "    }"
+      outLines.add "    return false"
+    else:
+      outLines.add "    if valueType == guiBridgeValueTypeJSON, let decoded = try? JSONDecoder().decode(" & fType & ".self, from: payload) {"
+      outLines.add "      state." & fName & " = decoded"
+      outLines.add "      return true"
+      outLines.add "    }"
+      outLines.add "    if valueType == guiBridgeValueTypeString, let text = guiBridgeDecodeString(payload), let jsonData = text.data(using: .utf8), let decoded = try? JSONDecoder().decode(" & fType & ".self, from: jsonData) {"
+      outLines.add "      state." & fName & " = decoded"
+      outLines.add "      return true"
+      outLines.add "    }"
+      outLines.add "    return false"
+
+  outLines.add "  default:"
+  outLines.add "    return false"
+  outLines.add "  }"
+  outLines.add "}"
+  outLines.add ""
+
 proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
   var outLines: seq[string] = @[]
   let windowDecl = ir.window
@@ -1357,6 +1545,8 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
 
   outLines.add "}"
   outLines.add ""
+
+  emitBridgeStateHelpers(ir, outLines)
 
   var ctx = EmitContext()
   for field in ir.stateFields:
@@ -1583,30 +1773,141 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
     for eb in component.envBindings:
       outLines.add "  @Environment(\\." & swiftIdent(eb.keyPath) & ") var " & swiftIdent(eb.localName)
 
-    outLines.add ""
-    outLines.add "  var body: some View {"
-
-    # Emit let bindings as inline lets at the top of body
+    # Emit let bindings with explicit types as private computed properties
+    # (reduces body complexity, avoids SwiftUI type-checker timeouts on large components)
+    # Bindings without explicit types stay as inline lets inside body.
+    var bodyLetBindings: seq[GuiLetBinding]
     for lb in component.letBindings:
       let name = swiftIdent(lb.name)
       let valueExpr = emitExpr(localCtx, lb.value, uiContext = true)
       if lb.typ.len > 0:
-        outLines.add "    let " & name & ": " & swiftTypeName(lb.typ) & " = " & valueExpr
+        outLines.add "  private var " & name & ": " & swiftTypeName(lb.typ) & " { " & valueExpr & " }"
       else:
+        bodyLetBindings.add lb
+
+    outLines.add ""
+
+    # Check if body is complex enough to need splitting into section properties.
+    # When a component has a single root container (ScrollView/VStack/etc) whose
+    # children each produce many lines, we extract each child as a private
+    # @ViewBuilder computed property to keep body simple for the type-checker.
+    var didSplitBody = false
+    if bodyLetBindings.len == 0 and component.body.len == 1:
+      let rootNode = component.body[0]
+      # Check if root is a container with multiple children
+      if rootNode.children.len > 0:
+        # Find the innermost single-child container chain (e.g., ScrollView > VStack)
+        var innerNode = rootNode
+        while innerNode.children.len == 1 and innerNode.children[0].children.len > 1:
+          innerNode = innerNode.children[0]
+        # If inner node has 2+ children and total output is large, split
+        if innerNode.children.len >= 2:
+          var totalLines = 0
+          for child in innerNode.children:
+            totalLines += emitNode(localCtx, child, 3, componentByName).countLines
+          if totalLines > 60:
+            # Emit each child as a section property
+            for i, child in innerNode.children:
+              let sectionName = "_section" & $i
+              outLines.add "  @ViewBuilder private var " & sectionName & ": some View {"
+              outLines.add emitNode(localCtx, child, 2, componentByName)
+              outLines.add "  }"
+              outLines.add ""
+            # Emit body with section references replacing children
+            outLines.add "  var body: some View {"
+            # Rebuild container chain with section references
+            proc emitContainerChain(node: GuiUiNode, inner: GuiUiNode, ctx: EmitContext, level: int, sectionCount: int, componentByName: Table[string, GuiComponentDecl], outLines: var seq[string]) =
+              let nodeLeaf = node.name.split('.')[^1]
+              var head = indent(level) & nodeLeaf & "("
+              var parts: seq[string]
+              for arg in node.args:
+                parts.add emitExpr(ctx, arg, uiContext = true)
+              for arg in node.namedArgs:
+                parts.add swiftIdent(arg.name) & ": " & emitExpr(ctx, arg.value, uiContext = true)
+              head.add parts.join(", ")
+              head.add ") {"
+              outLines.add head
+              if node == inner:
+                for i in 0 ..< sectionCount:
+                  outLines.add indent(level + 1) & "_section" & $i
+              else:
+                emitContainerChain(node.children[0], inner, ctx, level + 1, sectionCount, componentByName, outLines)
+              outLines.add indent(level) & "}"
+              # Apply modifiers
+              for m in node.modifiers:
+                discard  # modifiers are part of emitNode output; we handle them below
+
+            # Simpler approach: emit the root node but replace innerNode's children
+            # We can't easily rewrite the tree, so generate by reconstructing manually
+            var savedChildren = innerNode.children
+            innerNode.children = @[]
+            for i in 0 ..< savedChildren.len:
+              let placeholder = GuiUiNode(name: "_section" & $i)
+              innerNode.children.add placeholder
+            # Override emitNode for placeholder nodes — this won't work directly.
+            # Instead, just emit the structure manually.
+            innerNode.children = savedChildren  # restore
+
+            # Practical approach: emit the nesting manually
+            # Find the chain of containers: root -> ... -> innerNode
+            var chain: seq[GuiUiNode] = @[]
+            var cur = rootNode
+            chain.add cur
+            while cur != innerNode:
+              cur = cur.children[0]
+              chain.add cur
+
+            # Emit opening tags
+            for depth, node in chain:
+              let nodeLeaf = node.name.split('.')[^1]
+              var head = indent(2 + depth) & nodeLeaf & "("
+              var parts: seq[string]
+              for arg in node.args:
+                parts.add emitExpr(localCtx, arg, uiContext = true)
+              for arg in node.namedArgs:
+                parts.add swiftIdent(arg.name) & ": " & emitExpr(localCtx, arg.value, uiContext = true)
+              head.add parts.join(", ")
+              head.add ") {"
+              outLines.add head
+
+            # Emit section references
+            let innerDepth = chain.len + 1
+            for i in 0 ..< innerNode.children.len:
+              outLines.add indent(innerDepth) & "_section" & $i
+
+            # Emit closing tags and modifiers (reverse order)
+            for depth in countdown(chain.len - 1, 0):
+              let node = chain[depth]
+              var closing = indent(2 + depth) & "}"
+              for m in node.modifiers:
+                closing.add "\n" & emitModifierCall(localCtx, m, 2 + depth, componentByName)
+              outLines.add closing
+
+            outLines.add "  }"
+            outLines.add "}"
+            didSplitBody = true
+
+    if not didSplitBody:
+      outLines.add "  var body: some View {"
+
+      # Emit remaining let bindings (no explicit type) as inline lets
+      for lb in bodyLetBindings:
+        let name = swiftIdent(lb.name)
+        let valueExpr = emitExpr(localCtx, lb.value, uiContext = true)
         outLines.add "    let " & name & " = " & valueExpr
 
-    if component.body.len == 0:
-      outLines.add "    EmptyView()"
-    elif component.body.len == 1:
-      outLines.add emitNode(localCtx, component.body[0], 2, componentByName)
-    else:
-      outLines.add "    Group {"
-      for node in component.body:
-        outLines.add emitNode(localCtx, node, 3, componentByName)
-      outLines.add "    }"
+      if component.body.len == 0:
+        outLines.add "    EmptyView()"
+      elif component.body.len == 1:
+        outLines.add emitNode(localCtx, component.body[0], 2, componentByName)
+      else:
+        outLines.add "    Group {"
+        for node in component.body:
+          outLines.add emitNode(localCtx, node, 3, componentByName)
+        outLines.add "    }"
 
-    outLines.add "  }"
-    outLines.add "}"
+      outLines.add "  }"
+      outLines.add "}"
     outLines.add ""
 
     # Xcode #Preview block for this component
@@ -1928,7 +2229,8 @@ final class GUIRuntime {
   private var bridgeTimeoutMs = 250
   private var notifySource: DispatchSourceRead?
   private var notifyStarted = false
-  private var pollPending = false
+  private var dispatchInFlight = false
+  private var pollQueued = false
 
   init(store: GUIStore) {
     self.store = store
@@ -1993,16 +2295,19 @@ final class GUIRuntime {
       // Drain all bytes from the pipe
       var buf = [UInt8](repeating: 0, count: 64)
       while Darwin.read(fd, &buf, buf.count) > 0 {}
-      // Coalesce rapid notifications — only enqueue one poll per run loop cycle
-      guard let self, !self.pollPending else { return }
-      self.pollPending = true
-      Task { @MainActor in
-        self.pollPending = false
-        self.store.send(.poll)
+      // Dispatch on next run loop iteration to avoid re-entrancy
+      DispatchQueue.main.async {
+        self?.enqueuePollAction()
       }
     }
     notifySource = source
     source.resume()
+  }
+
+  private func enqueuePollAction() {
+    guard let pollTag = guiBridgePollActionTag,
+          let action = guiActionFromTag(pollTag) else { return }
+    store.send(action)
   }
 
   func enqueue(_ commands: [GUIEffectCommand]) {
@@ -2236,6 +2541,24 @@ final class GUIRuntime {
     }
 
     let actionTag = UInt32(args["actionTag"]?.intValue ?? Int(guiActionTag(action)))
+    let isPollAction = (guiBridgePollActionTag != nil && actionTag == guiBridgePollActionTag!)
+    if dispatchInFlight {
+      if isPollAction {
+        pollQueued = true
+      }
+      return
+    }
+    dispatchInFlight = true
+    defer {
+      dispatchInFlight = false
+      if pollQueued {
+        pollQueued = false
+        DispatchQueue.main.async { [weak self] in
+          self?.enqueuePollAction()
+        }
+      }
+    }
+
     let payload = makeBridgePayload(actionTag: actionTag, state: store.state)
     let correlation = UUID().uuidString
 
@@ -2277,16 +2600,27 @@ final class GUIRuntime {
     var payload = Data()
     var tag = actionTag.littleEndian
     withUnsafeBytes(of: &tag) { payload.append(contentsOf: $0) }
-    let stateBlob: Data
-    if let state, let encoded = try? JSONEncoder().encode(state) {
-      stateBlob = encoded
-    } else {
-      stateBlob = Data()
+
+    var fields = guiBridgeEncodeRequestFields(actionTag: actionTag, state: state)
+    if fields.count > Int(UInt16.max) {
+      fields = Array(fields.prefix(Int(UInt16.max)))
     }
-    var stateLen: UInt32 = UInt32(min(stateBlob.count, Int(UInt32.max)))
-    withUnsafeBytes(of: &stateLen) { payload.append(contentsOf: $0) }
-    if stateLen > 0 {
-      payload.append(stateBlob.prefix(Int(stateLen)))
+
+    var fieldCount = UInt16(fields.count).littleEndian
+    withUnsafeBytes(of: &fieldCount) { payload.append(contentsOf: $0) }
+    var reserved: UInt16 = 0
+    withUnsafeBytes(of: &reserved) { payload.append(contentsOf: $0) }
+
+    for field in fields {
+      var idLE = field.fieldId.littleEndian
+      withUnsafeBytes(of: &idLE) { payload.append(contentsOf: $0) }
+      payload.append(field.valueType)
+      payload.append(0) // reserved
+      var lenLE = UInt32(min(field.payload.count, Int(UInt32.max))).littleEndian
+      withUnsafeBytes(of: &lenLE) { payload.append(contentsOf: $0) }
+      if lenLE > 0 {
+        payload.append(field.payload.prefix(Int(lenLE)))
+      }
     }
     return payload
   }
@@ -2321,26 +2655,55 @@ final class GUIRuntime {
   private func applyBridgeStatePatch(_ patchData: Data) {
     guard !patchData.isEmpty else { return }
 
-    guard let patchObject = try? JSONSerialization.jsonObject(with: patchData),
-          let patch = patchObject as? [String: Any] else {
-      logBridge("warning", "bridge emitted invalid state patch payload", code: "GUI_BRIDGE_STATE_PATCH")
+    func readU16(_ data: Data, _ offset: Int) -> UInt16? {
+      guard offset + 1 < data.count else { return nil }
+      return UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
+    }
+
+    func readU32(_ data: Data, _ offset: Int) -> UInt32? {
+      guard offset + 3 < data.count else { return nil }
+      return UInt32(data[offset]) |
+             (UInt32(data[offset + 1]) << 8) |
+             (UInt32(data[offset + 2]) << 16) |
+             (UInt32(data[offset + 3]) << 24)
+    }
+
+    guard patchData.count >= 4,
+          let fieldCount = readU16(patchData, 0) else {
+      logBridge("warning", "bridge emitted malformed binary state patch", code: "GUI_BRIDGE_STATE_PATCH")
       return
     }
 
-    do {
-      let currentStateData = try JSONEncoder().encode(store.state)
-      var mergedState: [String: Any] =
-        (try JSONSerialization.jsonObject(with: currentStateData) as? [String: Any]) ?? [:]
+    var offset = 4 // u16 count + u16 reserved
+    var nextState = store.state
+    var appliedAny = false
 
-      for (key, value) in patch {
-        mergedState[key] = value
+    for _ in 0..<fieldCount {
+      guard let fieldId = readU16(patchData, offset),
+            offset + 7 < patchData.count else {
+        logBridge("warning", "bridge emitted truncated binary state patch", code: "GUI_BRIDGE_STATE_PATCH")
+        return
       }
+      let valueType = patchData[offset + 2]
+      guard let valueLen = readU32(patchData, offset + 4) else {
+        logBridge("warning", "bridge emitted malformed binary state patch length", code: "GUI_BRIDGE_STATE_PATCH")
+        return
+      }
+      offset += 8
+      let end = offset + Int(valueLen)
+      guard end <= patchData.count else {
+        logBridge("warning", "bridge emitted out-of-bounds binary state patch", code: "GUI_BRIDGE_STATE_PATCH")
+        return
+      }
+      let payload = patchData.subdata(in: offset..<end)
+      if guiBridgeApplyPatchField(state: &nextState, fieldId: fieldId, valueType: valueType, payload: payload) {
+        appliedAny = true
+      }
+      offset = end
+    }
 
-      let mergedStateData = try JSONSerialization.data(withJSONObject: mergedState)
-      let decodedState = try JSONDecoder().decode(GUIState.self, from: mergedStateData)
-      store.state = decodedState
-    } catch {
-      logBridge("warning", "failed to apply bridge state patch: \(error)", code: "GUI_BRIDGE_STATE_PATCH")
+    if appliedAny {
+      store.state = nextState
     }
   }
 

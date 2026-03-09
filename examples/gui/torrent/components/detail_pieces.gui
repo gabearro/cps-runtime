@@ -1,0 +1,82 @@
+component DetailPieces(isDark: Bool) {
+  let fgTertiary = isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : Color.gray
+  let fgSecondary = isDark ? Color(red: 0.66, green: 0.66, blue: 0.69) : Color.secondary
+  let torrent = torrents.first(where: { $0.id == selectedTorrentId })
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 0) {
+    if let torrent = torrent {
+      // Legend bar
+      HStack(spacing: 16) {
+        HStack(spacing: 5) {
+          RoundedRectangle(cornerRadius: 2)
+            .fill(Color(token.color.success))
+            .frame(width: 10, height: 10)
+          Text("Verified")
+            .font(.system(size: 10))
+            .foregroundColor(fgSecondary)
+        }
+        HStack(spacing: 5) {
+          RoundedRectangle(cornerRadius: 2)
+            .fill(Color(token.color.downloading))
+            .frame(width: 10, height: 10)
+          Text("Partial")
+            .font(.system(size: 10))
+            .foregroundColor(fgSecondary)
+        }
+        HStack(spacing: 5) {
+          RoundedRectangle(cornerRadius: 2)
+            .fill(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.08))
+            .frame(width: 10, height: 10)
+          Text("Empty")
+            .font(.system(size: 10))
+            .foregroundColor(fgSecondary)
+        }
+        HStack(spacing: 5) {
+          RoundedRectangle(cornerRadius: 2)
+            .fill(Color(token.color.danger))
+            .frame(width: 10, height: 10)
+          Text("Failed")
+            .font(.system(size: 10))
+            .foregroundColor(fgSecondary)
+        }
+
+        Spacer()
+
+        Text("\(torrent.verifiedPieces) / \(torrent.pieceCount)")
+          .font(.system(size: 11, weight: Font.Weight.medium, design: Font.Design.monospaced))
+          .foregroundColor(isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : Color.black.opacity(0.55))
+        Text("pieces")
+          .font(.system(size: 11))
+          .foregroundColor(fgTertiary)
+      }
+      .padding(vertical: 12, horizontal: 24)
+      .background(isDark ? Color.white.opacity(0.02) : Color.black.opacity(0.015))
+
+      Rectangle()
+        .fill(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04))
+        .frame(height: 1)
+
+      // Piece map (custom Swift view)
+      PieceMapView(data: pieceMapData, pieceCount: torrent.pieceCount)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(16)
+    } else {
+      VStack(spacing: 16) {
+        Spacer()
+        ZStack {
+          Circle()
+            .fill(isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
+            .frame(width: 64, height: 64)
+          Image(systemName: "square.grid.3x3")
+            .font(.system(size: 24, weight: Font.Weight.light))
+            .foregroundColor(isDark ? Color(red: 0.44, green: 0.44, blue: 0.47) : Color.black.opacity(0.15))
+        }
+        Text("No piece data available")
+          .font(.system(size: 13))
+          .foregroundColor(fgTertiary)
+        Spacer()
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+  }
+}

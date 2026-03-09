@@ -15,6 +15,122 @@ struct GUIState: Codable {
   var remindersEnabled: Bool = true
 }
 
+let guiBridgePollActionTag: UInt32? = nil
+let guiBridgeValueTypeBool: UInt8 = 1
+let guiBridgeValueTypeInt64: UInt8 = 2
+let guiBridgeValueTypeDouble: UInt8 = 3
+let guiBridgeValueTypeString: UInt8 = 4
+let guiBridgeValueTypeJSON: UInt8 = 5
+
+struct GUIBridgeFieldValue {
+  var fieldId: UInt16
+  var valueType: UInt8
+  var payload: Data
+}
+
+private func guiBridgeEncodeInt64(_ value: Int64) -> Data {
+  var le = value.littleEndian
+  return withUnsafeBytes(of: &le) { Data($0) }
+}
+
+private func guiBridgeDecodeInt64(_ payload: Data) -> Int64? {
+  guard payload.count == 8 else { return nil }
+  var value: Int64 = 0
+  _ = withUnsafeMutableBytes(of: &value) { payload.copyBytes(to: $0) }
+  return Int64(littleEndian: value)
+}
+
+private func guiBridgeEncodeDouble(_ value: Double) -> Data {
+  var bits = value.bitPattern.littleEndian
+  return withUnsafeBytes(of: &bits) { Data($0) }
+}
+
+private func guiBridgeDecodeDouble(_ payload: Data) -> Double? {
+  guard payload.count == 8 else { return nil }
+  var bits: UInt64 = 0
+  _ = withUnsafeMutableBytes(of: &bits) { payload.copyBytes(to: $0) }
+  return Double(bitPattern: UInt64(littleEndian: bits))
+}
+
+private func guiBridgeDecodeBool(_ payload: Data) -> Bool? {
+  guard payload.count == 1 else { return nil }
+  return payload[0] != 0
+}
+
+private func guiBridgeEncodeString(_ value: String) -> Data {
+  value.data(using: .utf8) ?? Data()
+}
+
+private func guiBridgeDecodeString(_ payload: Data) -> String? {
+  String(data: payload, encoding: .utf8)
+}
+
+func guiBridgeEncodeRequestFields(actionTag: UInt32, state: GUIState?) -> [GUIBridgeFieldValue] {
+  guard let state else { return [] }
+  if let pollTag = guiBridgePollActionTag, actionTag == pollTag {
+    return []
+  }
+  var out: [GUIBridgeFieldValue] = []
+  return out
+}
+
+func guiBridgeApplyPatchField(state: inout GUIState, fieldId: UInt16, valueType: UInt8, payload: Data) -> Bool {
+  switch fieldId {
+  case 1:
+    if valueType == guiBridgeValueTypeInt64, let decoded = guiBridgeDecodeInt64(payload) {
+      state.count = Int(decoded)
+      return true
+    }
+    if valueType == guiBridgeValueTypeJSON, let decoded = try? JSONDecoder().decode(Int.self, from: payload) {
+      state.count = decoded
+      return true
+    }
+    return false
+  case 2:
+    if valueType == guiBridgeValueTypeString, let decoded = guiBridgeDecodeString(payload) {
+      state.query = decoded
+      return true
+    }
+    if valueType == guiBridgeValueTypeJSON, let decoded = try? JSONDecoder().decode(String.self, from: payload) {
+      state.query = decoded
+      return true
+    }
+    return false
+  case 3:
+    if valueType == guiBridgeValueTypeString, let decoded = guiBridgeDecodeString(payload) {
+      state.networkStatus = decoded
+      return true
+    }
+    if valueType == guiBridgeValueTypeJSON, let decoded = try? JSONDecoder().decode(String.self, from: payload) {
+      state.networkStatus = decoded
+      return true
+    }
+    return false
+  case 4:
+    if valueType == guiBridgeValueTypeString, let decoded = guiBridgeDecodeString(payload) {
+      state.lastEvent = decoded
+      return true
+    }
+    if valueType == guiBridgeValueTypeJSON, let decoded = try? JSONDecoder().decode(String.self, from: payload) {
+      state.lastEvent = decoded
+      return true
+    }
+    return false
+  case 5:
+    if valueType == guiBridgeValueTypeBool, let decoded = guiBridgeDecodeBool(payload) {
+      state.remindersEnabled = decoded
+      return true
+    }
+    if valueType == guiBridgeValueTypeJSON, let decoded = try? JSONDecoder().decode(Bool.self, from: payload) {
+      state.remindersEnabled = decoded
+      return true
+    }
+    return false
+  default:
+    return false
+  }
+}
+
 enum GUIAction: Equatable {
   case increment
   case tick
@@ -173,8 +289,9 @@ final class GUIStore: ObservableObject {
     runtime.enqueue(effects)
   }
 
-  func shutdown() {
+  func shutdown(completion: @escaping () -> Void) {
     runtime.shutdown()
+    completion()
   }
 }
 
@@ -301,7 +418,6 @@ struct MomentumGui: App {
     WindowGroup {
       GUIRootView(store: store)
         .onDisappear {
-          store.shutdown()
         }
     }
   }

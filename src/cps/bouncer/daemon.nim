@@ -368,7 +368,7 @@ proc reconnectServer*(bouncer: Bouncer, name: string): CpsVoidFuture {.cps.} =
 proc periodicFlush*(bouncer: Bouncer): CpsVoidFuture {.cps.} =
   ## Periodically flush all message buffers to disk.
   while bouncer.running:
-    await cpsSleep(bouncer.config.flushIntervalMs)
+    await sleepOrSignal(bouncer.config.flushIntervalMs, bouncer.stopSignal)
     if not bouncer.running:
       break
     # Collect keys first (can't iterate Tables in CPS procs)
@@ -403,7 +403,7 @@ proc getDetachableChannels(bouncer: Bouncer): seq[(string, string, float)] =
 proc checkDetachTimers*(bouncer: Bouncer): CpsVoidFuture {.cps.} =
   ## Periodically check detach-after policies and auto-detach inactive channels.
   while bouncer.running:
-    await cpsSleep(10_000)  # Check every 10 seconds
+    await sleepOrSignal(10_000, bouncer.stopSignal)  # Check every 10 seconds
     if not bouncer.running:
       break
     let now = epochTime()
@@ -443,9 +443,11 @@ proc newBouncer*(config: BouncerConfig, configPath: string = ""): Bouncer =
     serverGroup: newTaskGroup(epCollectAll),
     buffers: initTable[string, MessageRingBuffer](),
     running: true,
+    stopSignal: newCpsVoidFuture(),
     nextClientId: 1,
     nextMsgId: 0,
   )
+  result.resetStopSignal()
   # Set daemon callback procs (used by server.nim BouncerServ commands)
   result.onAddServer = proc(bouncer: Bouncer, sc: BouncerServerConfig): CpsVoidFuture =
     addServer(bouncer, sc)
@@ -469,6 +471,7 @@ proc startBouncer*(configPath: string): CpsVoidFuture {.cps.} =
   # 1. Load config
   let config = loadConfig(configPath)
   let bouncer = newBouncer(config, configPath)
+  bouncer.resetStopSignal()
 
   # Ensure log directory exists
   if not dirExists(config.logDir):
@@ -513,6 +516,7 @@ proc startBouncer*(configPath: string): CpsVoidFuture {.cps.} =
 
   echo "\nShutting down..."
   bouncer.running = false
+  bouncer.signalStop()
 
   # 7. Graceful shutdown
   # Flush all buffers

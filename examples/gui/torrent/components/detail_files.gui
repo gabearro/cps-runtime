@@ -1,0 +1,117 @@
+component FileRow(file: TorrentFile, isDark: Bool) {
+  let fg = isDark ? Color(red: 0.86, green: 0.86, blue: 0.88) : Color.primary
+  let fgSecondary = isDark ? Color(red: 0.66, green: 0.66, blue: 0.69) : Color.secondary
+  let fgTertiary = isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : Color.gray
+  let priorityColor = file.priority == "high" ? Color(token.color.warning)
+                    : file.priority == "skip" ? fgTertiary
+                    : Color(token.color.accent)
+
+  HStack(spacing: 10) {
+    // File icon
+    ZStack {
+      RoundedRectangle(cornerRadius: 5)
+        .fill(isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
+        .frame(width: 28, height: 28)
+      Image(systemName: fileIcon(file.path))
+        .font(.system(size: 12))
+        .foregroundColor(file.priority == "skip" ? fgTertiary : fgSecondary)
+    }
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 3) {
+      Text(file.path)
+        .font(.system(size: 12))
+        .foregroundColor(file.priority == "skip" ? fgTertiary : fg)
+        .lineLimit(1)
+        .truncationMode(Text.TruncationMode.middle)
+
+      HStack(spacing: 8) {
+        Text(formatBytes(file.size))
+          .font(.system(size: 10))
+          .foregroundColor(fgTertiary)
+
+        if file.priority != "skip" {
+          ProgressView(value: file.progress, total: 1.0)
+            .tint(file.progress >= 1.0 ? Color(token.color.success) : Color(token.color.downloading))
+            .scaleEffect(x: 1.0, y: 0.4, anchor: UnitPoint.center)
+            .frame(width: 50)
+
+          Text(formatPercent(file.progress))
+            .font(.system(size: 10, weight: Font.Weight.medium))
+            .foregroundColor(file.progress >= 1.0 ? Color(token.color.success).opacity(0.8) : fgSecondary)
+        }
+      }
+    }
+
+    Spacer()
+
+    // Priority picker
+    Menu(file.priority == "high" ? "High" : file.priority == "skip" ? "Skip" : "Normal") {
+      Button("High", action: SetFilePriority(index: file.index, priority: "high"))
+      Button("Normal", action: SetFilePriority(index: file.index, priority: "normal"))
+      Button("Skip", action: SetFilePriority(index: file.index, priority: "skip"))
+    }
+    .font(.system(size: 10, weight: Font.Weight.medium))
+    .foregroundColor(priorityColor.opacity(0.9))
+  }
+  .padding(vertical: 8, horizontal: 14)
+}
+
+component DetailFiles(isDark: Bool) {
+  let cardBg = isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03)
+  let sectionLabelColor = isDark ? Color(red: 0.58, green: 0.58, blue: 0.61) : Color(red: 0.60, green: 0.60, blue: 0.63)
+  let fgTertiary = isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : Color.gray
+  let dividerColor = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04)
+
+  if files.count == 0 {
+    VStack(spacing: 16) {
+      Spacer()
+      ZStack {
+        Circle()
+          .fill(isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
+          .frame(width: 64, height: 64)
+        Image(systemName: "doc.text")
+          .font(.system(size: 24, weight: Font.Weight.light))
+          .foregroundColor(isDark ? Color(red: 0.44, green: 0.44, blue: 0.47) : Color.black.opacity(0.15))
+      }
+      VStack(spacing: 4) {
+        Text("No Files")
+          .font(.system(size: 14, weight: Font.Weight.medium))
+          .foregroundColor(isDark ? Color(red: 0.66, green: 0.66, blue: 0.69) : Color.black.opacity(0.35))
+        Text("File information not yet available")
+          .font(.system(size: 12))
+          .foregroundColor(fgTertiary)
+      }
+      Spacer()
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  } else {
+    ScrollView {
+      VStack(alignment: HorizontalAlignment.leading, spacing: 10) {
+        HStack {
+          Text("FILES")
+            .font(.system(size: 11, weight: Font.Weight.semibold))
+            .foregroundColor(sectionLabelColor)
+            .tracking(0.6)
+          Spacer()
+          Text("\(files.count) file\(files.count == 1 ? "" : "s")")
+            .font(.system(size: 10))
+            .foregroundColor(fgTertiary)
+        }
+
+        VStack(spacing: 0) {
+          ForEach(items: files, id: index, item: file) {
+            FileRow(file: file, isDark: isDark)
+            if file.index < files.count - 1 {
+              Rectangle()
+                .fill(dividerColor)
+                .frame(height: 1)
+                .padding(horizontal: 14)
+            }
+          }
+        }
+        .background(RoundedRectangle(cornerRadius: 8).fill(cardBg))
+      }
+      .padding(24)
+    }
+  }
+}

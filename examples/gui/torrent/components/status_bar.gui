@@ -1,0 +1,138 @@
+component StatusBar(isDark: Bool) {
+  let barBg = isDark ? Color(red: 0.10, green: 0.10, blue: 0.12) : Color(red: 0.94, green: 0.94, blue: 0.95)
+  let dividerColor = isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04)
+  let fgTertiary = isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : Color.gray
+  let disconnectedDot = isDark ? Color(red: 0.49, green: 0.49, blue: 0.52) : Color(red: 0.72, green: 0.72, blue: 0.74)
+  let selected = torrents.first(where: { $0.id == selectedTorrentId })
+
+  VStack(spacing: 0) {
+    Rectangle().fill(dividerColor).frame(height: 1)
+
+    HStack(spacing: 14) {
+      // Download rate
+      HStack(spacing: 4) {
+        Image(systemName: "arrow.down")
+          .font(.system(size: 8, weight: Font.Weight.semibold))
+          .foregroundColor(statusDownRate > 0 ? Color(token.color.downloading) : disconnectedDot)
+        Text(formatRate(statusDownRate))
+          .font(.system(size: 10, design: Font.Design.monospaced))
+          .foregroundColor(statusDownRate > 0 ? (isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : Color.black.opacity(0.65)) : fgTertiary)
+      }
+
+      // Upload rate
+      HStack(spacing: 4) {
+        Image(systemName: "arrow.up")
+          .font(.system(size: 8, weight: Font.Weight.semibold))
+          .foregroundColor(statusUpRate > 0 ? Color(token.color.success) : disconnectedDot)
+        Text(formatRate(statusUpRate))
+          .font(.system(size: 10, design: Font.Design.monospaced))
+          .foregroundColor(statusUpRate > 0 ? (isDark ? Color(red: 0.76, green: 0.76, blue: 0.78) : Color.black.opacity(0.65)) : fgTertiary)
+      }
+
+      // Thin divider
+      Rectangle()
+        .fill(isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.08))
+        .frame(width: 1, height: 10)
+
+      // DHT nodes
+      HStack(spacing: 4) {
+        Circle()
+          .fill(statusDhtNodes > 0 ? Color(token.color.success) : disconnectedDot)
+          .frame(width: 5, height: 5)
+        Text("DHT \(statusDhtNodes)")
+          .font(.system(size: 10))
+          .foregroundColor(fgTertiary)
+      }
+
+      if let torrent = selected {
+        HStack(spacing: 6) {
+          Text("PEX")
+            .font(.system(size: 9, weight: Font.Weight.semibold))
+            .foregroundColor(torrent.protocolPexEnabled ? Color(token.color.success) : disconnectedDot)
+          Text("LSD")
+            .font(.system(size: 9, weight: Font.Weight.semibold))
+            .foregroundColor(torrent.protocolLsdEnabled ? Color(token.color.success) : disconnectedDot)
+          Text("uTP")
+            .font(.system(size: 9, weight: Font.Weight.semibold))
+            .foregroundColor(torrent.protocolUtpEnabled ? Color(token.color.success) : disconnectedDot)
+          Text("HP")
+            .font(.system(size: 9, weight: Font.Weight.semibold))
+            .foregroundColor(torrent.protocolHolepunchEnabled ? Color(token.color.success) : disconnectedDot)
+        }
+      }
+
+      // Thin divider
+      Rectangle()
+        .fill(isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.08))
+        .frame(width: 1, height: 10)
+
+      // NAT status
+      HStack(spacing: 4) {
+        Image(systemName:
+          natProtocol == "Not available"
+            ? "network.slash"
+            : natProtocol == "Discovering..."
+              ? "network"
+              : natDoubleNat
+                ? "network.badge.shield.half.filled"
+                : "network"
+        )
+          .font(.system(size: 9))
+          .foregroundColor(
+            natProtocol == "Not available"
+              ? disconnectedDot
+              : natProtocol == "Discovering..."
+                ? fgTertiary
+                : natPortsForwarded
+                  ? (natDoubleNat ? Color(token.color.warning) : Color(token.color.success))
+                  : disconnectedDot
+          )
+
+        Text(
+          natProtocol == "Not available"
+            ? "No NAT"
+            : natProtocol == "Discovering..."
+              ? "NAT..."
+              : natDoubleNat
+                ? "2×NAT"
+                : natProtocol
+        )
+          .font(.system(size: 10))
+          .foregroundColor(fgTertiary)
+
+        if natExternalIp != "" {
+          Text(natExternalIp)
+            .font(.system(size: 9, design: Font.Design.monospaced))
+            .foregroundColor(fgTertiary)
+        }
+      }
+      .help(
+        natProtocol == "Not available"
+          ? "NAT: Not detected — incoming connections may not work"
+          : natProtocol == "Discovering..."
+            ? "NAT: Discovering gateway..."
+            : natDoubleNat
+              ? "NAT: " + natProtocol + " (Double NAT" + (natOuterProtocol != "" && natOuterProtocol != "Not available" ? " — both layers forwarded" : " — outer unreachable") + ")"
+              : "NAT: " + natProtocol + (natPortsForwarded ? " — ports forwarded" : "")
+      )
+
+      Spacer()
+
+      // Status text
+      if statusText.count > 0 {
+        Text(statusText)
+          .font(.system(size: 10))
+          .foregroundColor(fgTertiary)
+          .lineLimit(1)
+      }
+
+      // Torrent count
+      Text("\(torrents.count) torrent\(torrents.count == 1 ? "" : "s")")
+        .font(.system(size: 10))
+        .foregroundColor(fgTertiary)
+    }
+    .padding(horizontal: 14, vertical: 6)
+    .frame(maxWidth: Double.infinity, alignment: Alignment.leading)
+    .background(barBg)
+  }
+}

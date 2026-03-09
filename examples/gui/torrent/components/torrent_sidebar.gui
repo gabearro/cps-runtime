@@ -1,0 +1,191 @@
+component TorrentRow(torrent: Torrent, isSelected: Bool, isDark: Bool) {
+  let fg = isDark ? Color(red: 0.98, green: 0.98, blue: 0.99) : Color.primary
+  let fgSecondary = isDark ? Color(red: 0.66, green: 0.66, blue: 0.69) : Color.secondary
+  let fgTertiary = isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : Color.gray
+
+  let stateColor = torrent.state == "downloading" ? Color(token.color.downloading)
+                 : torrent.state == "seeding" ? Color(token.color.success)
+                 : torrent.state == "paused" ? fgTertiary
+                 : torrent.state == "checking" ? Color(token.color.warning)
+                 : torrent.state == "error" ? Color(token.color.danger)
+                 : fgTertiary
+
+  let activeBg = isDark ? Color.white.opacity(0.12) : Color(token.color.accent).opacity(0.08)
+  let activeBorder = isDark ? Color.white.opacity(0.14) : Color(token.color.accent).opacity(0.15)
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 6) {
+    // Title row with status dot
+    HStack(spacing: 8) {
+      ZStack {
+        Circle()
+          .fill(stateColor.opacity(0.2))
+          .frame(width: 16, height: 16)
+        Circle()
+          .fill(stateColor)
+          .frame(width: 6, height: 6)
+      }
+
+      Text(torrent.name)
+        .font(.system(size: 13, weight: isSelected ? Font.Weight.semibold : Font.Weight.medium))
+        .foregroundColor(isSelected ? fg : fgSecondary)
+        .lineLimit(1)
+        .truncationMode(Text.TruncationMode.middle)
+
+      Spacer()
+    }
+
+    // Progress bar
+    ProgressView(value: torrent.progress, total: 1.0)
+      .tint(stateColor)
+      .scaleEffect(x: 1.0, y: 0.5, anchor: UnitPoint.center)
+
+    // Stats row
+    HStack(spacing: 0) {
+      Text(torrent.state == "downloading" ? formatRate(torrent.downloadRate) + " ↓"
+         : torrent.state == "seeding" ? formatRate(torrent.uploadRate) + " ↑"
+         : torrent.state)
+        .font(.system(size: 10))
+        .foregroundColor(fgTertiary)
+
+      Spacer()
+
+      Text(formatPercent(torrent.progress))
+        .font(.system(size: 10, weight: Font.Weight.semibold))
+        .foregroundColor(stateColor.opacity(0.9))
+
+      if torrent.state == "downloading" && torrent.eta.count > 0 {
+        Text(" · " + torrent.eta)
+          .font(.system(size: 10))
+          .foregroundColor(fgTertiary)
+      }
+    }
+  }
+  .padding(vertical: 8, horizontal: 10)
+  .background(
+    RoundedRectangle(cornerRadius: 7)
+      .fill(isSelected ? activeBg : Color.clear)
+  )
+  .overlay(
+    RoundedRectangle(cornerRadius: 7)
+      .stroke(isSelected ? activeBorder : Color.clear, lineWidth: 0.5)
+  )
+  .contentShape(Rectangle())
+  .contextMenu {
+    if torrent.state == "downloading" || torrent.state == "seeding" {
+      Button(action: PauseTorrent(torrentId: torrent.id)) {
+        Label("Pause", systemImage: "pause.fill")
+      }
+    }
+    if torrent.state == "paused" || torrent.state == "error" {
+      Button(action: ResumeTorrent(torrentId: torrent.id)) {
+        Label("Resume", systemImage: "play.fill")
+      }
+    }
+    Divider()
+    Button(action: CopyMagnetLink(torrentId: torrent.id)) {
+      Label("Copy Magnet Link", systemImage: "link")
+    }
+    Button(action: OpenInFinder(torrentId: torrent.id)) {
+      Label("Show in Finder", systemImage: "folder")
+    }
+    Button(action: RecheckTorrent(torrentId: torrent.id)) {
+      Label("Verify Data", systemImage: "checkmark.shield")
+    }
+    Divider()
+    Button(action: ShowRemoveConfirm(torrentId: torrent.id)) {
+      Label("Remove...", systemImage: "trash")
+    }
+  }
+}
+
+component TorrentSidebar(isDark: Bool) {
+  let sidebarBg = isDark
+    ? Color(red: 0.16, green: 0.16, blue: 0.17)
+    : Color(red: 0.965, green: 0.965, blue: 0.975)
+  let dividerColor = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+  let fgTertiary = isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : Color.gray
+  let fgSecondary = isDark ? Color(red: 0.66, green: 0.66, blue: 0.69) : Color.secondary
+  let sectionLabelColor = isDark ? Color(red: 0.58, green: 0.58, blue: 0.61) : Color(red: 0.60, green: 0.60, blue: 0.63)
+
+  VStack(spacing: 0) {
+    if torrents.count == 0 {
+      // Refined empty state
+      VStack(spacing: 16) {
+        Spacer()
+
+        ZStack {
+          Circle()
+            .fill(isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
+            .frame(width: 72, height: 72)
+          Image(systemName: "arrow.down.circle.dotted")
+            .font(.system(size: 28, weight: Font.Weight.light))
+            .foregroundColor(isDark ? Color(red: 0.44, green: 0.44, blue: 0.47) : Color.black.opacity(0.18))
+        }
+
+        VStack(spacing: 4) {
+          Text("No Torrents")
+            .font(.system(size: 14, weight: Font.Weight.semibold))
+            .foregroundColor(isDark ? Color(red: 0.66, green: 0.66, blue: 0.69) : Color.black.opacity(0.4))
+          Text("Add a .torrent file or magnet link")
+            .font(.system(size: 12))
+            .foregroundColor(fgTertiary)
+            .multilineTextAlignment(TextAlignment.center)
+        }
+
+        Button(action: ShowAddTorrent) {
+          HStack(spacing: 5) {
+            Image(systemName: "plus")
+              .font(.system(size: 10, weight: Font.Weight.bold))
+            Text("Add Torrent")
+              .font(.system(size: 12, weight: Font.Weight.medium))
+          }
+          .foregroundColor(Color.white)
+          .padding(vertical: 7, horizontal: 18)
+          .background(RoundedRectangle(cornerRadius: 7).fill(Color(token.color.accent)))
+        }
+        .buttonStyle(BorderlessButtonStyle())
+
+        Spacer()
+      }
+      .padding(20)
+    } else {
+      // Torrents header
+      HStack {
+        Text("TORRENTS")
+          .font(.system(size: 11, weight: Font.Weight.semibold))
+          .foregroundColor(sectionLabelColor)
+          .tracking(0.6)
+
+        Spacer()
+
+        Button(action: ShowAddTorrent) {
+          Image(systemName: "plus")
+            .font(.system(size: 11, weight: Font.Weight.medium))
+            .foregroundColor(fgSecondary)
+        }
+        .buttonStyle(BorderlessButtonStyle())
+        .help("Add torrent")
+      }
+      .padding(vertical: 10, horizontal: 14)
+
+      Rectangle()
+        .fill(dividerColor)
+        .frame(height: 1)
+
+      ScrollView {
+        LazyVStack(spacing: 2) {
+          ForEach(items: torrents, id: id, item: torrent) {
+            Button(action: SelectTorrent(torrentId: torrent.id)) {
+              TorrentRow(torrent: torrent, isSelected: torrent.id == selectedTorrentId, isDark: isDark)
+            }
+            .buttonStyle(PlainButtonStyle())
+            .padding(horizontal: 6)
+          }
+        }
+        .padding(vertical: 8)
+      }
+    }
+  }
+  .background(sidebarBg)
+  .overlay(Rectangle().fill(dividerColor).frame(width: 1), alignment: Alignment.trailing)
+}

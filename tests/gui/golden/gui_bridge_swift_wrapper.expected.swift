@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-let GUIBridgeAbiVersion: UInt32 = 2
+let GUIBridgeAbiVersion: UInt32 = 5
 
 struct GUIBridgeDispatchResult {
   var status: Int32
@@ -36,6 +36,8 @@ private struct GUIBridgeFunctionTable {
   var alloc: (@convention(c) (Int) -> UnsafeMutableRawPointer?)?
   var free: (@convention(c) (UnsafeMutableRawPointer?) -> Void)?
   var dispatch: (@convention(c) (UnsafePointer<UInt8>?, UInt32, UnsafeMutableRawPointer?) -> Int32)?
+  var getNotifyFd: (@convention(c) () -> Int32)?
+  var waitShutdown: (@convention(c) (Int32) -> Int32)?
 }
 
 private typealias GUIBridgeGetTableFn = @convention(c) () -> UnsafeRawPointer?
@@ -108,6 +110,16 @@ final class GUIBridgeRuntime {
     }
 
     return GUIBridgeDispatchResult(status: status, statePatch: bufferToData(out.statePatch), effects: bufferToData(out.effects), emittedActions: bufferToData(out.emittedActions), diagnostics: bufferToData(out.diagnostics))
+  }
+
+  func getNotifyFd() -> Int32 {
+    guard let t = table, let fn = t.getNotifyFd else { return -1 }
+    return fn()
+  }
+
+  func waitShutdown(timeoutMs: Int32) -> Bool {
+    guard let t = table, let fn = t.waitShutdown else { return false }
+    return fn(timeoutMs) != 0
   }
 
   func maybeReload(path: String) {

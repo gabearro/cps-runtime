@@ -118,7 +118,10 @@ proc compileBridge*(
   if not artifacts.enabled:
     return true
 
-  let cmd = "GUI_BRIDGE_ENTRY=" & quoteShell(artifacts.entryFile) & " " & quoteShell(artifacts.buildScriptPath)
+  # Invoke via bash explicitly; direct shebang execution can fail intermittently
+  # in this toolchain/runtime path (observed as exit 137 with empty output).
+  let cmd = "GUI_BRIDGE_ENTRY=" & quoteShell(artifacts.entryFile) &
+    " bash " & quoteShell(artifacts.buildScriptPath)
   let res = execCmdEx(cmd)
   if verbose:
     echo res.output

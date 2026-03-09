@@ -664,6 +664,7 @@ proc runAllTests(): CpsVoidFuture {.cps.} =
 
   # Shutdown
   bouncer.running = false
+  bouncer.signalStop()
   if bouncer.listener != nil:
     bouncer.listener.close()
   serverFut.cancel()

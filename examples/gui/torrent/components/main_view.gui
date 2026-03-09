@@ -1,0 +1,56 @@
+component TorrentApp {
+  @Environment(.colorScheme) colorScheme: ColorScheme
+  let isDark = colorScheme == ColorScheme.dark
+  let dividerColor = isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.08)
+
+  VStack(spacing: 0) {
+    Toolbar(isDark: isDark)
+
+    NavigationSplitView {
+      TorrentSidebar(isDark: isDark)
+        .frame(minWidth: 280, idealWidth: 320, maxWidth: 420)
+      if hasSelection {
+        TorrentDetail(isDark: isDark)
+      } else {
+        // Empty state — detail pane
+        VStack(spacing: 20) {
+          Spacer()
+          ZStack {
+            Circle()
+              .fill(isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
+              .frame(width: 96, height: 96)
+            Image(systemName: "arrow.down.circle")
+              .font(.system(size: 40, weight: Font.Weight.light))
+              .foregroundColor(isDark ? Color(red: 0.44, green: 0.44, blue: 0.47) : Color.black.opacity(0.15))
+          }
+          VStack(spacing: 6) {
+            Text("No Torrent Selected")
+              .font(.system(size: 15, weight: Font.Weight.medium))
+              .foregroundColor(isDark ? Color(red: 0.66, green: 0.66, blue: 0.69) : Color.black.opacity(0.35))
+            Text("Select a torrent from the sidebar or add a new one")
+              .font(.system(size: 12))
+              .foregroundColor(isDark ? Color(red: 0.54, green: 0.54, blue: 0.57) : Color.black.opacity(0.2))
+          }
+          Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(isDark ? Color(red: 0.14, green: 0.14, blue: 0.15) : Color(NSColor.controlBackgroundColor))
+      }
+    }
+    .navigationSplitViewStyle(ProminentDetailNavigationSplitViewStyle())
+
+    StatusBar(isDark: isDark)
+  }
+  .background(isDark ? Color(red: 0.14, green: 0.14, blue: 0.15) : Color(NSColor.windowBackgroundColor))
+
+  .sheet(isPresented: showAddTorrent) { AddTorrentSheet(isDark: isDark) }
+  .sheet(isPresented: showSettings) { SettingsSheet(isDark: isDark) }
+
+  .alert("Remove this torrent?", isPresented: showRemoveConfirm) {
+    Button("Cancel", role: ButtonRole.cancel, action: HideRemoveConfirm) {}
+    Button("Remove", role: ButtonRole.destructive, action: ConfirmRemove) {}
+  }
+
+  .modifier(TorrentDropModifier(store: store))
+  .onAppear(perform: StartPoll)
+}
