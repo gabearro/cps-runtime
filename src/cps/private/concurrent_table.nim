@@ -85,23 +85,29 @@ proc snapshotKeys*[K, V](ct: var ConcurrentTable[K, V]): seq[K] =
   ## Uses manual lock/unlock since Nim iterators cannot be called
   ## inside withSpinLock template bodies.
   acquire(ct.lock)
-  result = newSeqOfCap[K](ct.data.len)
-  for k in ct.data.keys:
-    result.add(k)
-  release(ct.lock)
+  try:
+    result = newSeqOfCap[K](ct.data.len)
+    for k in ct.data.keys:
+      result.add(k)
+  finally:
+    release(ct.lock)
 
 proc snapshotPairs*[K, V](ct: var ConcurrentTable[K, V]): seq[(K, V)] =
   ## Return a snapshot of all key-value pairs under a single lock acquisition.
   acquire(ct.lock)
-  result = newSeqOfCap[(K, V)](ct.data.len)
-  for k, v in ct.data.pairs:
-    result.add((k, v))
-  release(ct.lock)
+  try:
+    result = newSeqOfCap[(K, V)](ct.data.len)
+    for k, v in ct.data.pairs:
+      result.add((k, v))
+  finally:
+    release(ct.lock)
 
 proc snapshotValues*[K, V](ct: var ConcurrentTable[K, V]): seq[V] =
   ## Return a snapshot of all values under a single lock acquisition.
   acquire(ct.lock)
-  result = newSeqOfCap[V](ct.data.len)
-  for v in ct.data.values:
-    result.add(v)
-  release(ct.lock)
+  try:
+    result = newSeqOfCap[V](ct.data.len)
+    for v in ct.data.values:
+      result.add(v)
+  finally:
+    release(ct.lock)
