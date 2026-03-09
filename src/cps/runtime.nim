@@ -1338,6 +1338,8 @@ proc defaultCallbackRuntime(): CpsRuntime {.inline.} =
   result = loadMainRuntimeFast()
 
 proc addCallbackOnRuntime[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
+  if cb == nil:
+    return
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("addCallback")
     statInc(rtCallbacksRegistered)
@@ -1376,33 +1378,37 @@ proc addCallbackOnRuntime[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc()
       continue
 
     if head == CallbackInline:
-      let oldThunk = allocCallbackThunk(fut.inlineCallback, fut.inlineTargetRuntime)
+      var expectedInline = CallbackInline
+      if not fut.callbackHead.compareExchange(
+        expectedInline,
+        CallbackInlineInit,
+        moAcquireRelease,
+        moAcquire
+      ):
+        if expectedInline == CallbackClosed:
+          fireCallbackInline(targetRt, cb)
+          return
+        if expectedInline == CallbackInlineInit:
+          cpuRelax()
+        continue
+
+      let oldCb = fut.inlineCallback
+      let oldRt = fut.inlineTargetRuntime
+      if oldCb == nil:
+        fut.inlineCallback = cb
+        fut.inlineTargetRuntime = targetRt
+        fut.callbackHead.store(CallbackInline, moRelease)
+        return
+
+      let oldThunk = allocCallbackThunk(oldCb, oldRt)
       let oldNode = allocCallbackNode(oldThunk)
       let newThunk = allocCallbackThunk(cb, targetRt)
       let newNode = allocCallbackNode(newThunk)
       newNode.next = cast[pointer](oldNode)
-      var expectedInline = CallbackInline
-      if fut.callbackHead.compareExchange(
-        expectedInline,
-        cast[pointer](newNode),
-        moAcquireRelease,
-        moAcquire
-      ):
-        fut.inlineCallback = nil
-        fut.inlineTargetRuntime = nil
-        return
-
-      freeCallbackNode(newNode)
-      GC_unref(newThunk)
-      freeCallbackNode(oldNode)
-      GC_unref(oldThunk)
-
-      if expectedInline == CallbackClosed:
-        fireCallbackInline(targetRt, cb)
-        return
-      if expectedInline == CallbackInlineInit:
-        cpuRelax()
-      continue
+      fut.inlineCallback = nil
+      fut.inlineTargetRuntime = nil
+      fut.callbackHead.store(cast[pointer](newNode), moRelease)
+      return
 
     let thunk = allocCallbackThunk(cb, targetRt)
     let node = allocCallbackNode(thunk)
@@ -1424,6 +1430,8 @@ proc addCallbackOnRuntime[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc()
       cpuRelax()
 
 proc addCallbackOnRuntime(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
+  if cb == nil:
+    return
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("addCallback")
     statInc(rtCallbacksRegistered)
@@ -1462,33 +1470,37 @@ proc addCallbackOnRuntime(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {
       continue
 
     if head == CallbackInline:
-      let oldThunk = allocCallbackThunk(fut.inlineCallback, fut.inlineTargetRuntime)
+      var expectedInline = CallbackInline
+      if not fut.callbackHead.compareExchange(
+        expectedInline,
+        CallbackInlineInit,
+        moAcquireRelease,
+        moAcquire
+      ):
+        if expectedInline == CallbackClosed:
+          fireCallbackInline(targetRt, cb)
+          return
+        if expectedInline == CallbackInlineInit:
+          cpuRelax()
+        continue
+
+      let oldCb = fut.inlineCallback
+      let oldRt = fut.inlineTargetRuntime
+      if oldCb == nil:
+        fut.inlineCallback = cb
+        fut.inlineTargetRuntime = targetRt
+        fut.callbackHead.store(CallbackInline, moRelease)
+        return
+
+      let oldThunk = allocCallbackThunk(oldCb, oldRt)
       let oldNode = allocCallbackNode(oldThunk)
       let newThunk = allocCallbackThunk(cb, targetRt)
       let newNode = allocCallbackNode(newThunk)
       newNode.next = cast[pointer](oldNode)
-      var expectedInline = CallbackInline
-      if fut.callbackHead.compareExchange(
-        expectedInline,
-        cast[pointer](newNode),
-        moAcquireRelease,
-        moAcquire
-      ):
-        fut.inlineCallback = nil
-        fut.inlineTargetRuntime = nil
-        return
-
-      freeCallbackNode(newNode)
-      GC_unref(newThunk)
-      freeCallbackNode(oldNode)
-      GC_unref(oldThunk)
-
-      if expectedInline == CallbackClosed:
-        fireCallbackInline(targetRt, cb)
-        return
-      if expectedInline == CallbackInlineInit:
-        cpuRelax()
-      continue
+      fut.inlineCallback = nil
+      fut.inlineTargetRuntime = nil
+      fut.callbackHead.store(cast[pointer](newNode), moRelease)
+      return
 
     let thunk = allocCallbackThunk(cb, targetRt)
     let node = allocCallbackNode(thunk)

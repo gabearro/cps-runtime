@@ -755,10 +755,34 @@ macro cps*(prc: untyped): untyped =
     else:
       fcmShared
 
+  proc pragmaName(pragma: NimNode): string =
+    ## Extract the pragma name from an entry in a pragma list.
+    case pragma.kind
+    of nnkIdent, nnkSym:
+      $pragma
+    of nnkExprColonExpr:
+      if pragma.len == 2 and pragma[0].kind in {nnkIdent, nnkSym}:
+        $pragma[0]
+      else:
+        ""
+    of nnkCall, nnkCommand:
+      if pragma.len > 0 and pragma[0].kind in {nnkIdent, nnkSym}:
+        $pragma[0]
+      else:
+        ""
+    else:
+      ""
+
+  var wrapperPragmas: seq[NimNode]
+  var stepPragmas: seq[NimNode]
+  var seenStepPragmas: HashSet[string]
+
   if procPragmas.kind == nnkPragma:
     for pragma in procPragmas:
-      if pragma.kind == nnkExprColonExpr and pragma.len == 2 and
-         pragma[0].kind == nnkIdent and $pragma[0] == "cpsFutureMode":
+      let pName = pragmaName(pragma)
+      if pName == "cpsFutureMode":
+        if pragma.kind != nnkExprColonExpr or pragma.len != 2:
+          error("cpsFutureMode must be 'local' or 'shared'", pragma)
         let modeNode = pragma[1]
         if modeNode.kind != nnkIdent:
           error("cpsFutureMode must be 'local' or 'shared'", modeNode)
@@ -772,6 +796,15 @@ macro cps*(prc: untyped): untyped =
             futureCtorMode = fcmLocal
         else:
           error("cpsFutureMode must be 'local' or 'shared'", modeNode)
+        continue
+
+      if pName == "cps":
+        continue
+
+      wrapperPragmas.add pragma.copyNimTree()
+      if pName in ["nosinks", "gcsafe"] and pName notin seenStepPragmas:
+        seenStepPragmas.incl pName
+        stepPragmas.add pragma.copyNimTree()
 
   # Extract base name without export marker for generating internal identifiers
   let procBaseName = if procName.kind == nnkPostfix: $procName[1] else: $procName
@@ -842,6 +875,16 @@ macro cps*(prc: untyped): untyped =
       nnkBracketExpr.newTree(ident"hint", ident"XDeclaredButNotUsed"),
       bindSym"off"
     )
+    procNode[4] = pragmaNode
+
+  proc appendPragmas(procNode: NimNode, extraPragmas: seq[NimNode]) =
+    if procNode.kind != nnkProcDef or extraPragmas.len == 0:
+      return
+    var pragmaNode = procNode[4]
+    if pragmaNode.kind == nnkEmpty:
+      pragmaNode = nnkPragma.newTree()
+    for pragma in extraPragmas:
+      pragmaNode.add pragma.copyNimTree()
     procNode[4] = pragmaNode
 
   proc buildWrapperParams(): seq[NimNode] =
@@ -930,6 +973,7 @@ macro cps*(prc: untyped): untyped =
           return `failedTypedFutureSym`[`innerResultType`](`e`)
 
     let fastProc = newProc(name = procName, params = buildWrapperParams(), body = fastBody)
+    appendPragmas(fastProc, wrapperPragmas)
     addUnreachableWarningPragma(fastProc)
     applyGenericParams(fastProc)
     return newStmtList(fastProc)
@@ -1864,11 +1908,15 @@ macro cps*(prc: untyped): untyped =
       # enclosing try/finally blocks (e.g. withLock's release).
       result = n.copyNimNode()
       for i, child in n.pairs:
-        if i == n.len - 1:
+        if i < n.len - 2:
+          # Loop variables: binding positions, don't rewrite to env.varName
+          result.add child.copyNimTree()
+        elif i == n.len - 2:
+          # Iterator expression: rewrite normally
+          result.add rewrite(child, knownNames, breakTarget, continueTarget, inTryScope)
+        else:
           # Loop body: clear break/continue targets
           result.add rewrite(child, knownNames, nil, nil, inTryScope)
-        else:
-          result.add rewrite(child, knownNames, breakTarget, continueTarget, inTryScope)
     of nnkWhileStmt:
       # Same as nnkForStmt: non-split while loops should use normal
       # break/continue, not CPS step transitions.
@@ -2357,6 +2405,7 @@ macro cps*(prc: untyped): untyped =
     let stepProc = quote do:
       proc `stepBareName`(`cParam`: sink Continuation): Continuation {.nimcall.} =
         `stepBody`
+    appendPragmas(stepProc, stepPragmas)
     addUnreachableWarningPragma(stepProc)
     applyGenericParams(stepProc)
     stepProcs.add stepProc
@@ -2395,12 +2444,12 @@ macro cps*(prc: untyped): untyped =
     return `envLocal`.fut
 
   let wrapperProc = newProc(name = procName, params = buildWrapperParams(), body = wrapperBody)
-  wrapperProc[4] = newEmptyNode()
+  appendPragmas(wrapperProc, wrapperPragmas)
   applyGenericParams(wrapperProc)
 
   # Forward declare wrapper proc for recursive self-calls
   let wrapperFwd = newProc(name = procName, params = buildWrapperParams(), body = newEmptyNode())
-  wrapperFwd[4] = newEmptyNode()
+  appendPragmas(wrapperFwd, wrapperPragmas)
   applyGenericParams(wrapperFwd)
 
   # Build forward declarations for step functions
@@ -2409,6 +2458,7 @@ macro cps*(prc: untyped): untyped =
       let cp = ident"c"
       let fwd = quote do:
         proc `sn`(`cp`: sink Continuation): Continuation {.nimcall.}
+      appendPragmas(fwd, stepPragmas)
       applyGenericParams(fwd)
       fwd
 
@@ -2422,4 +2472,3 @@ macro cps*(prc: untyped): untyped =
   for sp in stepProcs:
     result.add sp
   result.add wrapperProc
-

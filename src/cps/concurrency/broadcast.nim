@@ -12,11 +12,13 @@
 ## regardless of how many updates they missed.
 ##
 ## Thread safety: when mtModeEnabled is true (MT runtime active), channel
-## state is protected by a Lock with minimal hold time. Future completions
+## state is protected by a CAS-based SpinLock (not pthread_mutex) to ensure
+## the reactor thread is never blocked by a syscall. Future completions
 ## happen outside the lock to avoid deadlocks.
 
-import std/[options, locks, deques]
+import std/[options, deques]
 import ../runtime
+import ../private/spinlock
 
 proc runtimeMtEnabled(): bool {.inline.} =
   let rt = currentRuntime().runtime
@@ -42,14 +44,14 @@ type
     capacity: int        ## Max items in ring buffer
     waiters: Deque[CpsFuture[T]]  ## Futures waiting for data
     closed: bool         ## Whether this receiver has been closed
-    lock: Lock
+    lock: SpinLock
     mtEnabled: bool
 
   BroadcastChannel*[T] = ref object
     ## A broadcast channel. Messages sent are delivered to all subscribers.
     receivers: seq[BroadcastReceiver[T]]
     closed: bool
-    lock: Lock
+    lock: SpinLock
     mtEnabled: bool
     capacity: int        ## Default capacity for new receivers
 
@@ -62,7 +64,7 @@ type
     lastVersion: int     ## Last version this receiver has seen
     channel: WatchChannel[T]  ## Back-reference to parent channel
     waiters: Deque[CpsFuture[T]]  ## Futures waiting for value change
-    lock: Lock
+    lock: SpinLock
     mtEnabled: bool
 
   WatchChannel*[T] = ref object
@@ -71,7 +73,7 @@ type
     version: int         ## Incremented on each send
     receivers: seq[WatchReceiver[T]]
     closed: bool
-    lock: Lock
+    lock: SpinLock
     mtEnabled: bool
 
 # ============================================================
@@ -90,7 +92,7 @@ proc newBroadcast*[T](capacity: int = 16): BroadcastChannel[T] =
   )
   if runtimeMtEnabled():
     result.mtEnabled = true
-    initLock(result.lock)
+    initSpinLock(result.lock)
 
 # ============================================================
 # Broadcast Channel: Subscribe / Unsubscribe
@@ -110,7 +112,7 @@ proc subscribe*[T](ch: BroadcastChannel[T]): BroadcastReceiver[T] =
   )
   if runtimeMtEnabled():
     rx.mtEnabled = true
-    initLock(rx.lock)
+    initSpinLock(rx.lock)
   if ch.mtEnabled:
     acquire(ch.lock)
     if ch.closed:
@@ -330,7 +332,7 @@ proc newWatch*[T](initial: T): WatchChannel[T] =
   )
   if runtimeMtEnabled():
     result.mtEnabled = true
-    initLock(result.lock)
+    initSpinLock(result.lock)
 
 # ============================================================
 # Watch Channel: Subscribe
@@ -349,7 +351,7 @@ proc subscribe*[T](ch: WatchChannel[T]): WatchReceiver[T] =
   # Capture mtEnabled from the channel, not from the global, for consistency
   if ch.mtEnabled:
     result.mtEnabled = true
-    initLock(result.lock)
+    initSpinLock(result.lock)
   if ch.mtEnabled:
     acquire(ch.lock)
     ch.receivers.add(result)

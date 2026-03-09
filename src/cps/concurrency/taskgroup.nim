@@ -5,12 +5,14 @@
 ## siblings on first error) and collect-all (gather all errors) modes.
 ##
 ## Thread safety: when mtModeEnabled is true at creation time, group
-## state is protected by a Lock with minimal hold time. Future completions
+## state is protected by a CAS-based SpinLock (not pthread_mutex) to ensure
+## the reactor thread is never blocked by a syscall. Future completions
 ## and cancelAll() happen outside the lock to avoid deadlocks.
 
-import std/[locks, atomics]
+import std/atomics
 import ../runtime
 import ../eventloop
+import ../private/spinlock
 
 proc runtimeMtEnabled(): bool {.inline.} =
   let rt = currentRuntime().runtime
@@ -33,7 +35,7 @@ type
     errorPolicy: ErrorPolicy
     atomicCancelled: Atomic[bool]  ## Lock-free cancelled flag
     atomicTaskCount: Atomic[int]   ## Lock-free total task count
-    lock: Lock                     ## Protects: errors, cancelProcs, completionWaiters
+    lock: SpinLock                     ## Protects: errors, cancelProcs, completionWaiters
     mtEnabled: bool
 
 proc newTaskGroup*(errorPolicy: ErrorPolicy = epFailFast): TaskGroup =
@@ -49,7 +51,7 @@ proc newTaskGroup*(errorPolicy: ErrorPolicy = epFailFast): TaskGroup =
   result.atomicTaskCount.store(0, moRelaxed)
   if runtimeMtEnabled():
     result.mtEnabled = true
-    initLock(result.lock)
+    initSpinLock(result.lock)
 
 proc cancelAll*(group: TaskGroup) =
   ## Cancel all running tasks in the group.

@@ -9,6 +9,8 @@
 ## - Pending continuations (ready to run immediately)
 
 import std/[selectors, nativesockets, monotimes, times, os, atomics, sysatomics, locks]
+when not defined(windows):
+  import std/posix
 import ./runtime
 import ./private/mpsc_queue
 import ./private/platform
@@ -34,7 +36,7 @@ type
     ## Handle for a scheduled timer. Call cancel() to suppress callback.
     state: TimerState
 
-  TimerEntry = object
+  TimerEntry = ref object
     deadline: MonoTime
     callback: proc() {.closure.}
     state: TimerState
@@ -79,6 +81,8 @@ proc newTimerState(): TimerState {.inline.} =
 
 proc cancel*(h: TimerHandle) {.inline.} =
   ## Cancel a timer callback if it has not fired yet.
+  ## Marks the timer as cancelled. Callback release is performed on the
+  ## event-loop thread when the entry is pruned from the timer heap.
   if h.state != nil:
     h.state.cancelled.store(true, moRelease)
 
@@ -140,9 +144,14 @@ proc timerHeapPop(loop: EventLoop): TimerEntry =
 
 proc pruneCancelledTimerRoots(loop: EventLoop) =
   while loop.timers.len > 0:
-    let next = loop.timerHeapPeek()
-    if next.state == nil or not next.state.cancelled.load(moAcquire):
+    # Check the root directly without copying (avoid extra refcount bumps)
+    let st = loop.timers[0].state
+    if st == nil or not st.cancelled.load(moAcquire):
       break
+    # Nil out callback and state in-place before popping so captured
+    # closures are released on the event-loop thread in a deterministic spot.
+    loop.timers[0].callback = nil
+    loop.timers[0].state = nil
     discard loop.timerHeapPop()
 
 proc processTimersCount(loop: EventLoop): int =
@@ -152,11 +161,18 @@ proc processTimersCount(loop: EventLoop): int =
   loop.pruneCancelledTimerRoots()
   let now = getMonoTime()
   while loop.timers.len > 0:
-    let entry = loop.timerHeapPeek()
-    if entry.deadline > now:
+    # Check deadline directly to avoid copying the entry
+    if loop.timers[0].deadline > now:
       break
-    let fired = loop.timerHeapPop()
-    if fired.state == nil or not fired.state.cancelled.load(moAcquire):
+    # Check if cancelled; nil out callback before popping if so
+    let isCancelled = loop.timers[0].state != nil and
+                      loop.timers[0].state.cancelled.load(moAcquire)
+    if isCancelled:
+      loop.timers[0].callback = nil
+      loop.timers[0].state = nil
+      discard loop.timerHeapPop()
+    else:
+      let fired = loop.timerHeapPop()
       if fired.callback != nil:
         fired.callback()
       inc result
@@ -226,11 +242,19 @@ proc postToEventLoop*(loop: EventLoop, cb: CrossThreadCallback) =
   enqueue(loop.crossThreadQueue, node)
   loop.tryWakeSelector()
 
+proc shouldProxyToReactor*(loop: EventLoop): bool {.inline.} =
+  ## In MT mode, selector/timer/ready-queue mutation must happen on the reactor
+  ## thread. During bootstrap (queue/pipe not initialized) run inline.
+  loop.mtActive and
+    not isReactorThread and
+    loop.crossThreadQueue.head != nil and
+    loop.wakePipeWrite != SocketHandle(-1)
+
 proc registerTimer*(loop: EventLoop, delayMs: int, cb: proc() {.closure.}): TimerHandle {.discardable.} =
   let timerState = newTimerState()
   let timerCb = cb
-  if loop.mtActive and isSchedulerWorker:
-    # Called from a worker thread — compute deadline now, then proxy to reactor.
+  if loop.shouldProxyToReactor():
+    # Called from non-reactor thread — compute deadline now, then proxy to reactor.
     let deadline = getMonoTime() + initDuration(milliseconds = delayMs)
     loop.postToEventLoop(proc() {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -247,34 +271,97 @@ proc registerTimer*(loop: EventLoop, delayMs: int, cb: proc() {.closure.}): Time
       echo "[timer] queued len=", loop.timers.len
   result = TimerHandle(state: timerState)
 
+proc registerHandleSafe(loop: EventLoop, fd: SocketHandle, events: set[Event],
+                        cb: proc() {.closure.}) =
+  ## Defensive registration that handles fd recycling and invalid fds.
+  ##
+  ## Key issues addressed:
+  ## 1. kqueue auto-removes events when a socket closes, but the selector's
+  ##    internal table retains stale entries. updateHandle is a no-op when the
+  ##    event mask matches, so recycled fds never get kevent EV_ADD.
+  ## 2. On macOS/kqueue, registering a closed fd causes EBADF which corrupts
+  ##    Nim's selector changes buffer (changesLength not reset on error),
+  ##    poisoning ALL subsequent kevent calls.
+  ## Fix: validate the fd before touching the selector.
+  when defined(debugMtIo):
+    debugEcho "[MT-IO] registerHandleSafe fd=", int(fd), " events=", events, " contains=", loop.selector.contains(fd)
+  when not defined(windows):
+    if posix.fcntl(cint(int(fd)), F_GETFD) < 0:
+      # fd is closed or invalid — skip registration to avoid corrupting
+      # the kqueue selector's changes buffer.
+      return
+  try:
+    if loop.selector.contains(fd):
+      # Always re-register to handle fd recycling correctly.
+      try:
+        loop.selector.unregister(fd)
+      except Exception:
+        discard  # ENOENT from kqueue is normal for recycled fds
+    loop.selector.registerHandle(fd, events, cb)
+  except Exception:
+    try:
+      loop.selector.unregister(fd)
+    except Exception:
+      discard
+    try:
+      loop.selector.registerHandle(fd, events, cb)
+    except Exception:
+      discard
+
+proc queueReadyIfAlreadySignaled(loop: EventLoop, fd: SocketHandle,
+                                 events: set[Event], cb: proc() {.closure.}) =
+  ## kqueue can miss a readiness edge when registration is deferred from
+  ## a non-reactor thread. After proxy registration, probe once and queue
+  ## the callback if the fd is already readable/writable.
+  if cb == nil:
+    return
+  when not defined(windows):
+    var pollMask: cshort = 0
+    if Event.Read in events:
+      pollMask = pollMask or POLLIN
+    if Event.Write in events:
+      pollMask = pollMask or POLLOUT
+    if pollMask == 0:
+      return
+    var pfd = TPollfd(fd: cint(int(fd)), events: pollMask, revents: 0)
+    if poll(addr pfd, Tnfds(1), 0.cint) <= 0:
+      return
+    let readyMask = pollMask or POLLERR or POLLHUP
+    if (pfd.revents and readyMask) != 0:
+      loop.readyQueue.add(cb)
+
 proc registerRead*(loop: EventLoop, fd: SocketHandle, cb: proc() {.closure.}) =
-  if loop.mtActive and isSchedulerWorker:
+  if loop.shouldProxyToReactor():
     let fdVal = fd
+    let cbVal = cb
     loop.postToEventLoop(proc() {.closure, gcsafe.} =
       {.cast(gcsafe).}:
-        loop.selector.registerHandle(fdVal, {Event.Read}, cb)
+        registerHandleSafe(loop, fdVal, {Event.Read}, cbVal)
+        queueReadyIfAlreadySignaled(loop, fdVal, {Event.Read}, cbVal)
     )
   else:
-    loop.selector.registerHandle(fd, {Event.Read}, cb)
+    registerHandleSafe(loop, fd, {Event.Read}, cb)
 
 proc registerRead*(loop: EventLoop, fd: int, cb: proc() {.closure.}) =
   registerRead(loop, SocketHandle(fd), cb)
 
 proc registerWrite*(loop: EventLoop, fd: SocketHandle, cb: proc() {.closure.}) =
-  if loop.mtActive and isSchedulerWorker:
+  if loop.shouldProxyToReactor():
     let fdVal = fd
+    let cbVal = cb
     loop.postToEventLoop(proc() {.closure, gcsafe.} =
       {.cast(gcsafe).}:
-        loop.selector.registerHandle(fdVal, {Event.Write}, cb)
+        registerHandleSafe(loop, fdVal, {Event.Write}, cbVal)
+        queueReadyIfAlreadySignaled(loop, fdVal, {Event.Write}, cbVal)
     )
   else:
-    loop.selector.registerHandle(fd, {Event.Write}, cb)
+    registerHandleSafe(loop, fd, {Event.Write}, cb)
 
 proc registerWrite*(loop: EventLoop, fd: int, cb: proc() {.closure.}) =
   registerWrite(loop, SocketHandle(fd), cb)
 
 proc unregister*(loop: EventLoop, fd: SocketHandle) =
-  if loop.mtActive and isSchedulerWorker:
+  if loop.shouldProxyToReactor():
     let fdVal = fd
     loop.postToEventLoop(proc() {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -293,7 +380,7 @@ proc unregister*(loop: EventLoop, fd: int) =
   unregister(loop, SocketHandle(fd))
 
 proc scheduleCallback*(loop: EventLoop, cb: proc() {.closure.}) =
-  if loop.mtActive and isSchedulerWorker:
+  if loop.shouldProxyToReactor():
     let cbCopy = cb
     loop.postToEventLoop(proc() {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -309,25 +396,57 @@ proc drainCrossThreadQueue*(loop: EventLoop) =
   ## Drain all callbacks from the lock-free MPSC queue (event loop thread only).
   if not loop.mtActive:
     return
+  var drained = 0
   while true:
     let node = dequeue(loop.crossThreadQueue)
     if node == nil:
+      if loop.crossThreadQueue.hasPending():
+        cpuRelax()
+        continue
       break
     let cb = node.callback
     freeNode(node)
+    inc drained
     cb()
+  when defined(debugMtIo):
+    if drained > 0:
+      debugEcho "[MT-IO] drainCrossThreadQueue: drained ", drained, " callbacks, selector.count=", loop.selector.count
 
 proc processIo(loop: EventLoop, timeoutMs: int): int {.warning[ProveInit]: off.} =
   ## Process I/O events, returning the number of events processed.
   ## Suppress a known ioselectors_kqueue `ProveInit` false-positive from
   ## `getData` template instantiation (tracked upstream in Nim stdlib).
   if loop.selector.isEmpty:
+    when defined(debugMtIo):
+      debugEcho "[MT-IO] processIo: selector is empty"
     return 0
-  let events = loop.selector.select(timeoutMs)
+  when defined(debugMtIo):
+    debugEcho "[MT-IO] processIo: calling select(", timeoutMs, ") count=", loop.selector.count
+  var events: seq[ReadyKey]
+  try:
+    events = loop.selector.select(timeoutMs)
+  except Exception:
+    # kqueue AssertionDefect or other selector corruption — skip this tick
+    return 0
+  when defined(debugMtIo):
+    if events.len > 0:
+      for ev in events:
+        debugEcho "[MT-IO] processIo: event fd=", ev.fd, " events=", ev.events
   for ev in events:
+    # Guard: a previous callback in this batch may have unregistered this fd.
+    # Nim's selector.getData() returns `var T`; when the fd is no longer
+    # registered the result pointer is never assigned (nil), and the
+    # caller's dereference would SIGSEGV at address 0x0.
+    if not loop.selector.contains(ev.fd):
+      continue
     let cb = loop.selector.getData(ev.fd)
     if cb != nil:
-      cb()
+      try:
+        cb()
+      except Exception:
+        # Callback error — unregister the fd to prevent repeated failures
+        try: loop.selector.unregister(ev.fd)
+        except Exception: discard
       inc result
 
 proc processReady(loop: EventLoop): int =
@@ -435,7 +554,7 @@ proc hasWork*(loop: EventLoop): bool =
   loop.readyQueue.len > 0 or
   loop.timers.len > 0 or
   not loop.selector.isEmpty or
-  (loop.mtActive and not loop.crossThreadQueue.isEmpty)
+  (loop.mtActive and loop.crossThreadQueue.hasPending())
 
 proc runForever*(loop: EventLoop) =
   loop.running = true
@@ -488,6 +607,49 @@ proc cpsSleep*(ms: int): CpsVoidFuture =
     timerFut.complete()
   )
   result = fut
+
+type
+  SleepSignalState = ref object
+    resolved: Atomic[bool]
+    result: CpsVoidFuture
+    timer: TimerHandle
+
+proc completeSleepSignal(st: SleepSignalState, cancelTimer: bool) {.inline.} =
+  var expected = false
+  if st.resolved.compareExchange(expected, true, moAcquireRelease, moAcquire):
+    if cancelTimer:
+      st.timer.cancel()
+    let rf = st.result
+    st.result = nil
+    if rf != nil:
+      rf.complete()
+
+proc sleepOrSignal*(ms: int, signal: CpsVoidFuture): CpsVoidFuture =
+  ## Sleep for `ms` unless `signal` completes first.
+  if signal != nil and signal.finished:
+    return completedVoidFuture()
+  let delayMs = if ms < 0: 0 else: ms
+  if delayMs == 0:
+    return completedVoidFuture()
+
+  let resultFut = newCpsVoidFuture()
+  resultFut.pinFutureRuntime()
+  let st = SleepSignalState(result: resultFut)
+  st.resolved.store(false, moRelaxed)
+
+  proc makeTimerCb(state: SleepSignalState): proc() {.closure.} =
+    result = proc() =
+      completeSleepSignal(state, false)
+
+  proc makeSignalCb(state: SleepSignalState): proc() {.closure.} =
+    result = proc() =
+      completeSleepSignal(state, true)
+
+  let loop = getEventLoop()
+  st.timer = loop.registerTimer(delayMs, makeTimerCb(st))
+  if signal != nil:
+    signal.addCallback(makeSignalCb(st))
+  result = resultFut
 
 proc cpsYield*(): CpsVoidFuture =
   ## Yield control back to the event loop for one tick.
@@ -608,31 +770,150 @@ proc runCps*(fut: CpsVoidFuture) =
     else: currentRuntime()
   blockOn(h, fut)
 
-proc waitAll*(futures: varargs[CpsVoidFuture]): CpsVoidFuture =
-  ## Returns a future that completes when all given futures complete.
-  ## Thread-safe: uses atomic counter in MT mode.
-  let count = futures.len
-  if count == 0:
+type
+  WaitAllState = ref object
+    remaining: Atomic[int]
+    result: CpsVoidFuture
+
+  WaitAllGateState = ref object
+    remaining: Atomic[int]
+    resolved: Atomic[bool]
+    result: CpsVoidFuture
+    timer: TimerHandle
+
+proc waitAllImpl[F](futures: openArray[F]): CpsVoidFuture =
+  ## Shared implementation for typed/void waitAll openArray overloads.
+  var pending = newSeqOfCap[F](futures.len)
+  for i in 0 ..< futures.len:
+    let fut = futures[i]
+    if fut != nil and not fut.finished:
+      pending.add(fut)
+  if pending.len == 0:
     return completedVoidFuture()
+
   let resultFut = newCpsVoidFuture()
-  if currentRuntimeIsMt():
-    let counter = newAtomicCounter(count)
-    for f in futures:
-      f.addCallback(proc() =
-        let prev = counter.value.fetchSub(1, moAcquireRelease)
-        if prev == 1:
-          freeAtomicCounter(counter)
-          resultFut.complete()
-      )
-  else:
-    var remaining = count
-    for f in futures:
-      f.addCallback(proc() =
-        dec remaining
-        if remaining == 0:
-          resultFut.complete()
-      )
+  resultFut.pinFutureRuntime()
+  let state = WaitAllState(result: resultFut)
+  state.remaining.store(pending.len, moRelaxed)
+
+  proc makeCallback(st: WaitAllState): proc() {.closure.} =
+    result = proc() =
+      let prev = st.remaining.fetchSub(1, moAcquireRelease)
+      if prev == 1:
+        let rf = st.result
+        st.result = nil
+        if rf != nil:
+          rf.complete()
+
+  let cb = makeCallback(state)
+  for i in 0 ..< pending.len:
+    pending[i].addCallback(cb)
   result = resultFut
+
+proc completeWaitGate(st: WaitAllGateState, cancelTimer: bool) {.inline.} =
+  var expected = false
+  if st.resolved.compareExchange(expected, true, moAcquireRelease, moAcquire):
+    if cancelTimer:
+      st.timer.cancel()
+    let rf = st.result
+    st.result = nil
+    if rf != nil:
+      rf.complete()
+
+proc waitAllOrSignalImpl[F](futures: openArray[F], timeoutMs: int,
+                            signal: CpsVoidFuture): CpsVoidFuture =
+  ## Complete when all non-nil futures complete, or timeout elapses, or
+  ## optional stop signal completes.
+  if signal != nil and signal.finished:
+    return completedVoidFuture()
+
+  var pending = newSeqOfCap[F](futures.len)
+  for i in 0 ..< futures.len:
+    let fut = futures[i]
+    if fut != nil and not fut.finished:
+      pending.add(fut)
+  if pending.len == 0:
+    return completedVoidFuture()
+
+  let resultFut = newCpsVoidFuture()
+  resultFut.pinFutureRuntime()
+  let state = WaitAllGateState(result: resultFut)
+  state.remaining.store(pending.len, moRelaxed)
+  state.resolved.store(false, moRelaxed)
+
+  proc makeTimerCb(st: WaitAllGateState): proc() {.closure.} =
+    result = proc() =
+      completeWaitGate(st, false)
+
+  proc makeFutureCb(st: WaitAllGateState): proc() {.closure.} =
+    result = proc() =
+      let prev = st.remaining.fetchSub(1, moAcquireRelease)
+      if prev == 1:
+        completeWaitGate(st, true)
+
+  proc makeSignalCb(st: WaitAllGateState): proc() {.closure.} =
+    result = proc() =
+      completeWaitGate(st, true)
+
+  let loop = getEventLoop()
+  let delayMs = if timeoutMs < 0: 0 else: timeoutMs
+  state.timer = loop.registerTimer(delayMs, makeTimerCb(state))
+  if signal != nil:
+    signal.addCallback(makeSignalCb(state))
+  let futCb = makeFutureCb(state)
+  for i in 0 ..< pending.len:
+    pending[i].addCallback(futCb)
+  result = resultFut
+
+proc waitAll*[T](futures: openArray[CpsFuture[T]]): CpsVoidFuture =
+  ## Returns a void future that completes when all non-nil typed futures complete.
+  waitAllImpl(futures)
+
+proc waitAll*(futures: openArray[CpsVoidFuture]): CpsVoidFuture =
+  ## Returns a future that completes when all non-nil void futures complete.
+  waitAllImpl(futures)
+
+proc waitAllOrTimeout*[T](futures: openArray[CpsFuture[T]],
+                          timeoutMs: int): CpsVoidFuture {.inline.} =
+  ## Complete when all typed futures complete or timeout elapses.
+  waitAllOrSignalImpl(futures, timeoutMs, nil)
+
+proc waitAllOrTimeout*(futures: openArray[CpsVoidFuture],
+                       timeoutMs: int): CpsVoidFuture {.inline.} =
+  ## Complete when all void futures complete or timeout elapses.
+  waitAllOrSignalImpl(futures, timeoutMs, nil)
+
+proc waitAllOrSignal*[T](futures: openArray[CpsFuture[T]],
+                         timeoutMs: int,
+                         signal: CpsVoidFuture): CpsVoidFuture {.inline.} =
+  ## Complete when all typed futures complete, timeout elapses, or signal fires.
+  waitAllOrSignalImpl(futures, timeoutMs, signal)
+
+proc waitAllOrSignal*(futures: openArray[CpsVoidFuture],
+                      timeoutMs: int,
+                      signal: CpsVoidFuture): CpsVoidFuture {.inline.} =
+  ## Complete when all void futures complete, timeout elapses, or signal fires.
+  waitAllOrSignalImpl(futures, timeoutMs, signal)
+
+proc waitAll*(): CpsVoidFuture {.inline.} =
+  ## Varargs convenience overload for zero futures.
+  completedVoidFuture()
+
+proc waitAll*[T](first: CpsFuture[T], rest: varargs[CpsFuture[T]]): CpsVoidFuture {.inline.} =
+  ## Varargs convenience overload for typed futures.
+  var futures = newSeqOfCap[CpsFuture[T]](rest.len + 1)
+  futures.add(first)
+  for fut in rest:
+    futures.add(fut)
+  waitAll(futures)
+
+proc waitAll*(first: CpsVoidFuture, rest: varargs[CpsVoidFuture]): CpsVoidFuture {.inline.} =
+  ## Varargs convenience overload for void futures.
+  var futures = newSeqOfCap[CpsVoidFuture](rest.len + 1)
+  futures.add(first)
+  for fut in rest:
+    futures.add(fut)
+  waitAll(futures)
 
 # ============================================================
 # Tasks - concurrent units of work

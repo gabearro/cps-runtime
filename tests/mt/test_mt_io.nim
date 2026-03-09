@@ -11,6 +11,7 @@ import cps/io/streams
 import cps/io/tcp
 import cps/io/udp
 import std/[nativesockets, strutils]
+import std/posix as posix
 from std/posix import Sockaddr_in, getsockname, SockLen
 
 let loop = initMtRuntime(numWorkers = 2)
@@ -22,7 +23,7 @@ block testMtTcpEcho:
   var addrLen: SockLen = sizeof(localAddr).SockLen
   let rc = getsockname(listener.fd, cast[ptr SockAddr](addr localAddr), addr addrLen)
   assert rc == 0, "getsockname failed"
-  let port = ntohs(localAddr.sin_port).int
+  let port = nativesockets.ntohs(localAddr.sin_port).int
 
   proc serverTask(l: TcpListener): CpsFuture[string] {.cps.} =
     let client = await l.accept()
@@ -57,7 +58,7 @@ block testMtUdp:
   var addrLen: SockLen = sizeof(localAddr).SockLen
   let rc = getsockname(recvSock.fd, cast[ptr SockAddr](addr localAddr), addr addrLen)
   assert rc == 0, "getsockname failed"
-  let port = ntohs(localAddr.sin_port).int
+  let port = nativesockets.ntohs(localAddr.sin_port).int
 
   let sendSock = newUdpSocket()
 
@@ -86,7 +87,7 @@ block testMtTcpBlocking:
   var addrLen: SockLen = sizeof(localAddr).SockLen
   let rc = getsockname(listener.fd, cast[ptr SockAddr](addr localAddr), addr addrLen)
   assert rc == 0, "getsockname failed"
-  let port = ntohs(localAddr.sin_port).int
+  let port = nativesockets.ntohs(localAddr.sin_port).int
 
   proc uppercaseBlocking(input: string): CpsFuture[string] =
     ## Non-CPS helper: offloads toUpperAscii to a worker thread.
@@ -123,6 +124,98 @@ block testMtTcpBlocking:
   assert clientReply == "HELLO", "Client got: " & clientReply
   listener.close()
   echo "PASS: TCP + spawnBlocking mixed"
+
+# Test 4: Deferred registerRead from non-reactor thread must fire
+# for pre-existing data on kqueue.
+block testMtDeferredRegisterReadPreexisting:
+  var iter = 0
+  while iter < 64:
+    var fds: array[0..1, cint]
+    doAssert posix.pipe(fds) == 0, "pipe failed"
+    let readFd = SocketHandle(fds[0])
+
+    var marker: array[1, byte]
+    marker[0] = byte(iter and 0xFF)
+    doAssert posix.write(fds[1], addr marker[0], 1) == 1, "write to pipe failed"
+
+    let fired = newCpsVoidFuture()
+    fired.pinFutureRuntime()
+    let regFut = spawnBlocking(proc(): int {.gcsafe.} =
+      {.cast(gcsafe).}:
+        let ev = getEventLoop()
+        ev.registerRead(readFd, proc() =
+          var buf: array[8, byte]
+          discard posix.read(cint(int(readFd)), addr buf[0], buf.len)
+          ev.unregister(readFd)
+          if not fired.finished:
+            fired.complete()
+        )
+      return 1
+    )
+
+    var ticks = 0
+    while (not regFut.finished or not fired.finished) and ticks < 5000:
+      loop.tick()
+      inc ticks
+
+    if not fired.finished:
+      try:
+        loop.unregister(readFd)
+      except Exception:
+        discard
+
+    discard posix.close(fds[0])
+    discard posix.close(fds[1])
+
+    doAssert regFut.finished, "blocking registration did not complete"
+    doAssert not regFut.hasError(), "blocking registration failed"
+    doAssert fired.finished,
+      "deferred registerRead missed pre-existing data (iter " & $iter & ")"
+    inc iter
+  echo "PASS: MT deferred registerRead handles pre-existing readability"
+
+# Test 5: Deferred registerWrite from non-reactor thread must fire
+# for pre-existing writability on kqueue.
+block testMtDeferredRegisterWritePreexisting:
+  var iter = 0
+  while iter < 64:
+    var fds: array[0..1, cint]
+    doAssert posix.pipe(fds) == 0, "pipe failed"
+    let writeFd = SocketHandle(fds[1])
+
+    let fired = newCpsVoidFuture()
+    fired.pinFutureRuntime()
+    let regFut = spawnBlocking(proc(): int {.gcsafe.} =
+      {.cast(gcsafe).}:
+        let ev = getEventLoop()
+        ev.registerWrite(writeFd, proc() =
+          ev.unregister(writeFd)
+          if not fired.finished:
+            fired.complete()
+        )
+      return 1
+    )
+
+    var ticks = 0
+    while (not regFut.finished or not fired.finished) and ticks < 5000:
+      loop.tick()
+      inc ticks
+
+    if not fired.finished:
+      try:
+        loop.unregister(writeFd)
+      except Exception:
+        discard
+
+    discard posix.close(fds[0])
+    discard posix.close(fds[1])
+
+    doAssert regFut.finished, "blocking registration did not complete"
+    doAssert not regFut.hasError(), "blocking registration failed"
+    doAssert fired.finished,
+      "deferred registerWrite missed pre-existing writability (iter " & $iter & ")"
+    inc iter
+  echo "PASS: MT deferred registerWrite handles pre-existing writability"
 
 loop.shutdownMtRuntime()
 

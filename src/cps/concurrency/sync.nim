@@ -7,13 +7,15 @@
 ## - AsyncEvent: manual-reset event for signaling
 ##
 ## All primitives support both single-threaded and multi-threaded modes.
-## MT safety uses Lock from std/locks when mtModeEnabled is true.
+## MT safety uses a CAS-based SpinLock (not pthread_mutex) to ensure the
+## reactor thread is never blocked by a syscall on contended paths.
 ##
 ## Performance: fast paths (permit available, mutex unlocked, event set)
 ## complete synchronously with no future allocation for waiters.
 
-import std/[deques, locks]
+import std/deques
 import ../runtime
+import ../private/spinlock
 
 proc runtimeMtEnabled(): bool {.inline.} =
   let rt = currentRuntime().runtime
@@ -35,7 +37,7 @@ type
     maxPermits: int
     waiters: Deque[CpsVoidFuture]
     closed: bool
-    lock: Lock
+    lock: SpinLock
     mtEnabled: bool
 
 proc newAsyncSemaphore*(permits: int): AsyncSemaphore =
@@ -49,7 +51,7 @@ proc newAsyncSemaphore*(permits: int): AsyncSemaphore =
     mtEnabled: runtimeMtEnabled()
   )
   if result.mtEnabled:
-    initLock(result.lock)
+    initSpinLock(result.lock)
 
 proc acquire*(sem: AsyncSemaphore): CpsVoidFuture =
   ## Acquire a permit from the semaphore.
@@ -183,7 +185,7 @@ type
     locked: bool
     waiters: Deque[CpsVoidFuture]
     closed: bool
-    lock: Lock
+    lock: SpinLock
     mtEnabled: bool
 
 proc newAsyncMutex*(): AsyncMutex =
@@ -195,7 +197,7 @@ proc newAsyncMutex*(): AsyncMutex =
     mtEnabled: runtimeMtEnabled()
   )
   if result.mtEnabled:
-    initLock(result.lock)
+    initSpinLock(result.lock)
 
 proc lock*(m: AsyncMutex): CpsVoidFuture =
   ## Acquire the mutex. If unlocked, completes synchronously.
@@ -326,7 +328,7 @@ type
     flag: bool
     waiters: seq[CpsVoidFuture]
     closed: bool
-    lock: Lock
+    lock: SpinLock
     mtEnabled: bool
 
 proc newAsyncEvent*(): AsyncEvent =
@@ -338,7 +340,7 @@ proc newAsyncEvent*(): AsyncEvent =
     mtEnabled: runtimeMtEnabled()
   )
   if result.mtEnabled:
-    initLock(result.lock)
+    initSpinLock(result.lock)
 
 proc wait*(ev: AsyncEvent): CpsVoidFuture =
   ## Wait for the event to be set. If already set, completes immediately.
@@ -432,7 +434,7 @@ proc close*(ev: AsyncEvent) =
 # RAII-style helpers (for use inside CPS procs only)
 # ============================================================
 
-template withPermit*(sem: AsyncSemaphore, body: untyped) =
+template withPermit*(sem: AsyncSemaphore, body: untyped) {.dirty.} =
   ## Acquire a semaphore permit, execute body, then release.
   ## Must be used inside a {.cps.} proc.
   await acquire(sem)
@@ -441,7 +443,7 @@ template withPermit*(sem: AsyncSemaphore, body: untyped) =
   finally:
     release(sem)
 
-template withLock*(m: AsyncMutex, body: untyped) =
+template withLock*(m: AsyncMutex, body: untyped) {.dirty.} =
   ## Acquire a mutex, execute body, then release.
   ## Must be used inside a {.cps.} proc.
   await lock(m)

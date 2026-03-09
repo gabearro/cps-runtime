@@ -10,11 +10,13 @@
 ## Unbounded channels never block senders — they grow as needed.
 ##
 ## Thread safety: when mtModeEnabled is true (MT runtime active), channel
-## state is protected by a Lock with minimal hold time. Future completions
+## state is protected by a CAS-based SpinLock (not pthread_mutex) to ensure
+## the reactor thread is never blocked by a syscall. Future completions
 ## happen outside the lock to avoid deadlocks.
 
-import std/[options, deques, locks]
+import std/[options, deques]
 import ../runtime
+import ../private/spinlock
 
 proc runtimeMtEnabled(): bool {.inline.} =
   let rt = currentRuntime().runtime
@@ -48,7 +50,7 @@ type
     waitingReceivers: Deque[WaitingReceiver[T]]
     waitingSenders: Deque[WaitingSender[T]]
     # MT safety
-    lock: Lock
+    lock: SpinLock
     mtEnabled: bool
 
 # ============================================================
@@ -72,7 +74,7 @@ proc newAsyncChannel*[T](capacity: int): AsyncChannel[T] =
   )
   if runtimeMtEnabled():
     result.mtEnabled = true
-    initLock(result.lock)
+    initSpinLock(result.lock)
 
 proc newAsyncChannel*[T](): AsyncChannel[T] =
   ## Create an unbounded async channel. Senders never block.
@@ -86,7 +88,7 @@ proc newAsyncChannel*[T](): AsyncChannel[T] =
   )
   if runtimeMtEnabled():
     result.mtEnabled = true
-    initLock(result.lock)
+    initSpinLock(result.lock)
 
 # ============================================================
 # Stats

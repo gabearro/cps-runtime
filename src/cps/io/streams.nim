@@ -128,3 +128,39 @@ proc signalEof*(bs: BufferStream) =
   ## Completes all waiting readers with "".
   bs.eofSignaled = true
   bs.tryWakeWaiters()
+
+# ============================================================
+# PrefixedStream - replays prefix data before inner stream
+# ============================================================
+
+type
+  PrefixedStream* = ref object of AsyncStream
+    inner*: AsyncStream
+    prefix: string
+    prefixPos: int
+
+proc prefixedStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
+  let ps = PrefixedStream(s)
+  let remaining = ps.prefix.len - ps.prefixPos
+  if remaining > 0:
+    let n = min(size, remaining)
+    let data = ps.prefix[ps.prefixPos ..< ps.prefixPos + n]
+    ps.prefixPos += n
+    let fut = newCpsFuture[string]()
+    fut.complete(data)
+    return fut
+  return ps.inner.read(size)
+
+proc prefixedStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
+  PrefixedStream(s).inner.write(data)
+
+proc prefixedStreamClose(s: AsyncStream) =
+  PrefixedStream(s).inner.close()
+
+proc newPrefixedStream*(inner: AsyncStream, prefix: string): PrefixedStream =
+  ## Wrap a stream with prefix data that is read first.
+  ## After the prefix is consumed, reads pass through to the inner stream.
+  result = PrefixedStream(inner: inner, prefix: prefix, prefixPos: 0)
+  result.readProc = prefixedStreamRead
+  result.writeProc = prefixedStreamWrite
+  result.closeProc = prefixedStreamClose

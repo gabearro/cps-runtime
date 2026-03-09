@@ -77,6 +77,14 @@ proc isEmpty*(q: var MpscQueue): bool =
   # Non-stub head always means data
   return false
 
+proc hasPending*(q: var MpscQueue): bool {.inline.} =
+  ## True when data is available or a producer is in-flight between tail
+  ## exchange and link publication. Use this to avoid treating transient
+  ## dequeue(nil) as permanently empty.
+  if not q.isEmpty():
+    return true
+  q.head != cast[ptr MpscNode](q.tail.load(moAcquire))
+
 proc allocNode*(cb: CrossThreadCallback): ptr MpscNode =
   ## Allocate and initialize a queue node with the given callback.
   result = cast[ptr MpscNode](allocShared0(sizeof(MpscNode)))

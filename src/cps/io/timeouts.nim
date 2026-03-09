@@ -16,6 +16,16 @@ type
   ResolvedFlag = ref object
     value: Atomic[bool]
 
+  TimeoutState[T] = ref object
+    inner: CpsFuture[T]
+    result: CpsFuture[T]
+    resolved: ResolvedFlag
+
+  TimeoutVoidState = ref object
+    inner: CpsVoidFuture
+    result: CpsVoidFuture
+    resolved: ResolvedFlag
+
 proc withTimeout*[T](fut: CpsFuture[T], ms: int): CpsFuture[T] =
   ## Race a future against a timer. Returns the future's value if it
   ## completes within `ms` milliseconds, or fails with TimeoutError.
@@ -24,29 +34,42 @@ proc withTimeout*[T](fut: CpsFuture[T], ms: int): CpsFuture[T] =
   resultFut.pinFutureRuntime()
   let resolved = ResolvedFlag()
   resolved.value.store(false)
+  let state = TimeoutState[T](inner: fut, result: resultFut, resolved: resolved)
   var timerHandle: TimerHandle
 
-  proc makeTimerCb(f: CpsFuture[T], rf: CpsFuture[T], flag: ResolvedFlag): proc() {.closure.} =
+  proc makeTimerCb(st: TimeoutState[T]): proc() {.closure.} =
     result = proc() =
       var expected = false
-      if flag.value.compareExchange(expected, true):
-        f.cancel()
-        rf.fail(newException(TimeoutError, "Operation timed out"))
+      if st.resolved.value.compareExchange(expected, true):
+        let inner = st.inner
+        let rf = st.result
+        # Release captures immediately so cancelled timer pruning does not need
+        # to tear down deep closure graphs on the timer heap path.
+        st.inner = nil
+        st.result = nil
+        if inner != nil:
+          inner.cancel()
+        if rf != nil:
+          rf.fail(newException(TimeoutError, "Operation timed out"))
 
-  proc makeFutCb(f: CpsFuture[T], rf: CpsFuture[T], flag: ResolvedFlag,
-                 t: TimerHandle): proc() {.closure.} =
+  proc makeFutCb(st: TimeoutState[T], t: TimerHandle): proc() {.closure.} =
     result = proc() =
       var expected = false
-      if flag.value.compareExchange(expected, true):
+      if st.resolved.value.compareExchange(expected, true):
         t.cancel()
-        if f.hasError():
-          rf.fail(f.getError())
-        else:
-          rf.complete(f.read())
+        let inner = st.inner
+        let rf = st.result
+        st.inner = nil
+        st.result = nil
+        if inner != nil and rf != nil:
+          if inner.hasError():
+            rf.fail(inner.getError())
+          else:
+            rf.complete(inner.read())
 
   let loop = getEventLoop()
-  timerHandle = loop.registerTimer(ms, makeTimerCb(fut, resultFut, resolved))
-  fut.addCallback(makeFutCb(fut, resultFut, resolved, timerHandle))
+  timerHandle = loop.registerTimer(ms, makeTimerCb(state))
+  fut.addCallback(makeFutCb(state, timerHandle))
   result = resultFut
 
 proc withTimeout*(fut: CpsVoidFuture, ms: int): CpsVoidFuture =
@@ -57,27 +80,38 @@ proc withTimeout*(fut: CpsVoidFuture, ms: int): CpsVoidFuture =
   resultFut.pinFutureRuntime()
   let resolved = ResolvedFlag()
   resolved.value.store(false)
+  let state = TimeoutVoidState(inner: fut, result: resultFut, resolved: resolved)
   var timerHandle: TimerHandle
 
-  proc makeTimerCb(f: CpsVoidFuture, rf: CpsVoidFuture, flag: ResolvedFlag): proc() {.closure.} =
+  proc makeTimerCb(st: TimeoutVoidState): proc() {.closure.} =
     result = proc() =
       var expected = false
-      if flag.value.compareExchange(expected, true):
-        f.cancel()
-        rf.fail(newException(TimeoutError, "Operation timed out"))
+      if st.resolved.value.compareExchange(expected, true):
+        let inner = st.inner
+        let rf = st.result
+        st.inner = nil
+        st.result = nil
+        if inner != nil:
+          inner.cancel()
+        if rf != nil:
+          rf.fail(newException(TimeoutError, "Operation timed out"))
 
-  proc makeFutCb(f: CpsVoidFuture, rf: CpsVoidFuture, flag: ResolvedFlag,
-                 t: TimerHandle): proc() {.closure.} =
+  proc makeFutCb(st: TimeoutVoidState, t: TimerHandle): proc() {.closure.} =
     result = proc() =
       var expected = false
-      if flag.value.compareExchange(expected, true):
+      if st.resolved.value.compareExchange(expected, true):
         t.cancel()
-        if f.hasError():
-          rf.fail(f.getError())
-        else:
-          rf.complete()
+        let inner = st.inner
+        let rf = st.result
+        st.inner = nil
+        st.result = nil
+        if inner != nil and rf != nil:
+          if inner.hasError():
+            rf.fail(inner.getError())
+          else:
+            rf.complete()
 
   let loop = getEventLoop()
-  timerHandle = loop.registerTimer(ms, makeTimerCb(fut, resultFut, resolved))
-  fut.addCallback(makeFutCb(fut, resultFut, resolved, timerHandle))
+  timerHandle = loop.registerTimer(ms, makeTimerCb(state))
+  fut.addCallback(makeFutCb(state, timerHandle))
   result = resultFut

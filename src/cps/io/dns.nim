@@ -309,12 +309,25 @@ proc parseResolvConf(): seq[Nameserver] =
 
 proc getNameservers(): seq[Nameserver] =
   if not gNameserversInitialized:
-    gNameservers = parseResolvConf()
-    if gNameservers.len == 0:
-      gNameservers = @[
-        Nameserver(address: "8.8.8.8", family: AF_INET),
-        Nameserver(address: "8.8.4.4", family: AF_INET)
-      ]
+    let parsed = parseResolvConf()
+    # Include both IPv4 and IPv6 nameservers (dual-stack DNS)
+    for ns in parsed:
+      gNameservers.add(ns)
+    # Always append public DNS as fallback (after system nameservers)
+    let publicFallbacks = @[
+      Nameserver(address: "8.8.8.8", family: AF_INET),
+      Nameserver(address: "8.8.4.4", family: AF_INET),
+      Nameserver(address: "2001:4860:4860::8888", family: AF_INET6),
+      Nameserver(address: "2001:4860:4860::8844", family: AF_INET6)
+    ]
+    for fb in publicFallbacks:
+      var found = false
+      for ns in gNameservers:
+        if ns.address == fb.address:
+          found = true
+          break
+      if not found:
+        gNameservers.add(fb)
     gNameserversInitialized = true
   result = gNameservers
 
@@ -325,8 +338,9 @@ proc getNameservers(): seq[Nameserver] =
 var gDnsCache: DnsCache = nil
 var gRngInitialized = false
 
-# UDP socket for DNS queries (lazily created via UdpSocket API)
-var gDnsSock: UdpSocket = nil
+# UDP sockets for DNS queries (lazily created via UdpSocket API)
+var gDnsSock: UdpSocket = nil    # IPv4 nameservers
+var gDnsSock6: UdpSocket = nil   # IPv6 nameservers (nil if no IPv6 stack)
 
 # Pending queries table: txId -> future
 var gPendingQueries: Table[uint16, CpsFuture[DnsResponse]]
@@ -417,8 +431,22 @@ proc deinitDnsResolver*() {.deprecated: "DNS resolver no longer needs deinitiali
 # UDP socket setup and dispatch (uses UdpSocket API from udp.nim)
 # ============================================================
 
+proc dnsRecvHandler(data: string, srcAddr: Sockaddr_storage, addrLen: SockLen) =
+  ## Shared receive handler for both IPv4 and IPv6 DNS sockets.
+  try:
+    let resp = parseResponse(data)
+    if resp.id in gPendingQueries:
+      let fut = gPendingQueries[resp.id]
+      gPendingQueries.del(resp.id)
+      fut.complete(resp)
+    else:
+      discard
+  except CatchableError:
+    discard
+
 proc ensureDnsReady() =
-  ## Create the DNS UDP socket and register the persistent read callback.
+  ## Create the DNS UDP sockets and register persistent read callbacks.
+  ## Creates both IPv4 and IPv6 sockets for dual-stack DNS resolution.
   if gDnsSock != nil:
     return
 
@@ -427,19 +455,17 @@ proc ensureDnsReady() =
     gRngInitialized = true
 
   gDnsSock = newUdpSocket(AF_INET)
+  gDnsSock.bindAddr("0.0.0.0", 0)
   gPendingQueries = initTable[uint16, CpsFuture[DnsResponse]]()
+  gDnsSock.onRecv(MaxUdpSize + 512, dnsRecvHandler)
 
-  gDnsSock.onRecv(MaxUdpSize + 512, proc(data: string, srcAddr: Sockaddr_storage, addrLen: SockLen) =
-    try:
-      let resp = parseResponse(data)
-      if resp.id in gPendingQueries:
-        let fut = gPendingQueries[resp.id]
-        gPendingQueries.del(resp.id)
-        fut.complete(resp)
-    except CatchableError:
-      # Malformed response — ignore
-      discard
-  )
+  # Try to create IPv6 socket; skip if no IPv6 stack available
+  try:
+    gDnsSock6 = newUdpSocket(AF_INET6)
+    gDnsSock6.bindAddr("::", 0)
+    gDnsSock6.onRecv(MaxUdpSize + 512, dnsRecvHandler)
+  except CatchableError:
+    gDnsSock6 = nil  # No IPv6 — all queries go through IPv4 socket
 
 # ============================================================
 # Send DNS query via UdpSocket
@@ -447,10 +473,13 @@ proc ensureDnsReady() =
 
 proc sendDnsQueryRaw(query: string, ns: Nameserver) =
   ## Send a DNS query packet to a nameserver.
+  ## Routes to the IPv4 or IPv6 socket based on the nameserver's address family.
   ## Non-blocking; drops silently on EAGAIN (will retry on timeout).
   ensureDnsReady()
+  let sock = if ns.family == AF_INET6 and gDnsSock6 != nil: gDnsSock6
+             else: gDnsSock
   try:
-    discard gDnsSock.trySendToAddr(query, ns.address, 53, ns.family)
+    discard sock.trySendToAddr(query, ns.address, 53, ns.family)
   except streams.AsyncIoError:
     discard
 
@@ -460,48 +489,51 @@ proc sendDnsQueryRaw(query: string, ns: Nameserver) =
 
 proc queryNameserver(name: string, qtype: uint16, ns: Nameserver, timeoutMs: int): CpsFuture[DnsResponse] =
   ## Send a query to a single nameserver and wait for a response with timeout.
-  let txId = nextTxId()
-  let query = buildQuery(name, qtype, txId)
-  let responseFut = newCpsFuture[DnsResponse]()
-  responseFut.pinFutureRuntime()
-
-  ensureDnsReady()
-
-  gPendingQueries[txId] = responseFut
-
-  sendDnsQueryRaw(query, ns)
-
-  # Set up timeout
-  let loop = getEventLoop()
+  ## Thread-safe: all DNS global state access is proxied to the reactor thread
+  ## via scheduleCallback, preventing data races on gPendingQueries/gDnsSock/gRng.
   let resultFut = newCpsFuture[DnsResponse]()
   resultFut.pinFutureRuntime()
-  var resolved: Atomic[bool]
-  resolved.store(false, moRelaxed)
-  var timerHandle: TimerHandle
+  let loop = getEventLoop()
 
-  proc makeTimerCb(tid: uint16, rf: CpsFuture[DnsResponse]): proc() {.closure.} =
-    result = proc() =
-      var expected = false
-      if resolved.compareExchange(expected, true):
-        # Clean up pending entry
-        if tid in gPendingQueries:
-          gPendingQueries.del(tid)
-        rf.fail(newException(DnsError, "DNS query timed out"))
+  proc doQueryOnReactor() {.closure.} =
+    ## Runs on the reactor thread — safe to access gPendingQueries, gDnsSock, gRng.
+    ensureDnsReady()
+    let txId = nextTxId()
+    let query = buildQuery(name, qtype, txId)
+    let responseFut = newCpsFuture[DnsResponse]()
+    responseFut.pinFutureRuntime()
 
-  proc makeRespCb(inner: CpsFuture[DnsResponse], rf: CpsFuture[DnsResponse],
-                  timer: TimerHandle): proc() {.closure.} =
-    result = proc() =
-      var expected = false
-      if resolved.compareExchange(expected, true):
-        timer.cancel()
-        if inner.hasError():
-          rf.fail(inner.getError())
-        else:
-          rf.complete(inner.read())
+    gPendingQueries[txId] = responseFut
+    sendDnsQueryRaw(query, ns)
 
-  timerHandle = loop.registerTimer(timeoutMs, makeTimerCb(txId, resultFut))
-  responseFut.addCallback(makeRespCb(responseFut, resultFut, timerHandle))
+    var resolved: Atomic[bool]
+    resolved.store(false, moRelaxed)
+    var timerHandle: TimerHandle
 
+    proc makeTimerCb(tid: uint16, rf: CpsFuture[DnsResponse]): proc() {.closure.} =
+      result = proc() =
+        var expected = false
+        if resolved.compareExchange(expected, true):
+          # Clean up pending entry
+          if tid in gPendingQueries:
+            gPendingQueries.del(tid)
+          rf.fail(newException(DnsError, "DNS query timed out"))
+
+    proc makeRespCb(inner: CpsFuture[DnsResponse], rf: CpsFuture[DnsResponse],
+                    timer: TimerHandle): proc() {.closure.} =
+      result = proc() =
+        var expected = false
+        if resolved.compareExchange(expected, true):
+          timer.cancel()
+          if inner.hasError():
+            rf.fail(inner.getError())
+          else:
+            rf.complete(inner.read())
+
+    timerHandle = loop.registerTimer(timeoutMs, makeTimerCb(txId, resultFut))
+    responseFut.addCallback(makeRespCb(responseFut, resultFut, timerHandle))
+
+  loop.scheduleCallback(doQueryOnReactor)
   result = resultFut
 
 proc dnsQuery(name: string, qtype: uint16): CpsFuture[DnsResponse] =
