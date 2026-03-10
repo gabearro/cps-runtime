@@ -343,6 +343,7 @@ proc newTorrentClient*(metainfo: TorrentMetainfo,
     isPrivate: metainfo.info.isPrivate,
     dhtNodeId: dhtId,
     dhtRoutingTable: newRoutingTable(dhtId),
+    dhtRoutingTable6: newRoutingTable(dhtId),
     dhtEnabled: not metainfo.info.isPrivate and config.enableDht,
     webSeeds: seeds,
     pexPeerFlags: initTable[string, uint8](),
@@ -384,6 +385,7 @@ proc newMagnetClient*(infoHash: array[20, byte],
     metadataExchange: newMetadataExchange(infoHash),
     dhtNodeId: dhtId,
     dhtRoutingTable: newRoutingTable(dhtId),
+    dhtRoutingTable6: newRoutingTable(dhtId),
     dhtEnabled: config.enableDht,
     pexPeerFlags: initTable[string, uint8](),
     hp: initHolepunchState(),
@@ -2950,17 +2952,48 @@ proc generateDhtSecret(client: TorrentClient)  # forward decl for dhtRotateSecre
 # acquiring a lock, so dhtSpinLock only serializes CPS-to-CPS access.
 # ---------------------------------------------------------------------------
 
+proc dhtIsIpv6Node(ip: string): bool {.inline.} =
+  ':' in ip
+
 proc dhtFindClosest(client: TorrentClient, target: NodeId, count: int): seq[DhtNode] =
+  ## Find closest nodes from BOTH routing tables, merged by XOR distance.
+  var v4: seq[DhtNode]
+  var v6: seq[DhtNode]
   withSpinLock(client.dhtSpinLock):
-    result = client.dhtRoutingTable.findClosest(target, count)
+    v4 = client.dhtRoutingTable.findClosest(target, count)
+    v6 = client.dhtRoutingTable6.findClosest(target, count)
+  # Merge: take up to `count` total, sorted by distance
+  var merged = v4
+  merged.add(v6)
+  if merged.len <= count:
+    result = merged
+  else:
+    # Partial selection sort — keep `count` closest
+    var si = 0
+    while si < count and si < merged.len - 1:
+      var minIdx = si
+      var mi = si + 1
+      while mi < merged.len:
+        if xorDistance(merged[mi].id, target) < xorDistance(merged[minIdx].id, target):
+          minIdx = mi
+        mi += 1
+      if minIdx != si:
+        swap(merged[si], merged[minIdx])
+      si += 1
+    merged.setLen(count)
+    result = merged
 
 proc dhtAddNode(client: TorrentClient, node: DhtNode): bool =
   withSpinLock(client.dhtSpinLock):
-    result = client.dhtRoutingTable.addNode(node)
+    if dhtIsIpv6Node(node.ip):
+      result = client.dhtRoutingTable6.addNode(node)
+    else:
+      result = client.dhtRoutingTable.addNode(node)
 
 proc dhtMarkFailed(client: TorrentClient, nodeId: NodeId) =
   withSpinLock(client.dhtSpinLock):
     client.dhtRoutingTable.markFailed(nodeId)
+    client.dhtRoutingTable6.markFailed(nodeId)
 
 proc dhtRegisterPending(client: TorrentClient, key: string, fut: CpsFuture[DhtMessage]) =
   withSpinLock(client.dhtSpinLock):
@@ -2972,15 +3005,23 @@ proc dhtRemovePending(client: TorrentClient, key: string) =
 
 proc dhtTotalNodes(client: TorrentClient): int =
   withSpinLock(client.dhtSpinLock):
-    result = client.dhtRoutingTable.totalNodes
+    result = client.dhtRoutingTable.totalNodes + client.dhtRoutingTable6.totalNodes
 
 proc dhtStaleBuckets(client: TorrentClient, thresholdSec: float): seq[int] =
   withSpinLock(client.dhtSpinLock):
     result = client.dhtRoutingTable.staleBuckets(thresholdSec)
 
+proc dhtStaleBuckets6(client: TorrentClient, thresholdSec: float): seq[int] =
+  withSpinLock(client.dhtSpinLock):
+    result = client.dhtRoutingTable6.staleBuckets(thresholdSec)
+
 proc dhtLeastRecentlySeenNode(client: TorrentClient, bucketIdx: int): DhtNode =
   withSpinLock(client.dhtSpinLock):
     result = client.dhtRoutingTable.leastRecentlySeenNode(bucketIdx)
+
+proc dhtLeastRecentlySeenNode6(client: TorrentClient, bucketIdx: int): DhtNode =
+  withSpinLock(client.dhtSpinLock):
+    result = client.dhtRoutingTable6.leastRecentlySeenNode(bucketIdx)
 
 proc dhtRotateSecret(client: TorrentClient) =
   withSpinLock(client.dhtSpinLock):
@@ -3040,6 +3081,7 @@ proc refreshSecureDhtIdentity(client: TorrentClient) =
   try:
     client.dhtNodeId = generateSecureNodeId(publicIp)
     client.dhtRoutingTable = newRoutingTable(client.dhtNodeId)
+    client.dhtRoutingTable6 = newRoutingTable(client.dhtNodeId)
   except CatchableError:
     discard
 
@@ -3571,14 +3613,17 @@ proc dhtProcessRecvBatch(client: TorrentClient) =
     let msg = item.msg
     if msg.isQuery:
       let (senderIp, senderPort) = extractIpPort(item.srcAddr, item.addrLen)
-      # Update routing table with querying node
+      # Update correct routing table (BEP 32: separate IPv4/IPv6 tables)
       var accepted: bool
       withSpinLock(client.dhtSpinLock):
         accepted = client.shouldAcceptDhtNode(msg.queryerId, senderIp)
         if accepted:
-          discard client.dhtRoutingTable.addNode(DhtNode(
-            id: msg.queryerId, ip: senderIp, port: senderPort, lastSeen: epochTime()
-          ))
+          let senderNode = DhtNode(
+            id: msg.queryerId, ip: senderIp, port: senderPort, lastSeen: epochTime())
+          if dhtIsIpv6Node(senderIp):
+            discard client.dhtRoutingTable6.addNode(senderNode)
+          else:
+            discard client.dhtRoutingTable.addNode(senderNode)
       # Send responses outside the spinlock (network I/O)
       case msg.queryType
       of "ping":
@@ -3586,10 +3631,14 @@ proc dhtProcessRecvBatch(client: TorrentClient) =
         discard client.dhtSock.trySendToAddr(resp, senderIp, senderPort.int)
       of "find_node":
         var closest: seq[DhtNode]
+        var closest6: seq[DhtNode]
         withSpinLock(client.dhtSpinLock):
           closest = client.dhtRoutingTable.findClosest(msg.targetId, K)
+          closest6 = client.dhtRoutingTable6.findClosest(msg.targetId, K)
         var compactNodes: seq[CompactNodeInfo]
         for n in closest:
+          compactNodes.add(CompactNodeInfo(id: n.id, ip: n.ip, port: n.port))
+        for n in closest6:
           compactNodes.add(CompactNodeInfo(id: n.id, ip: n.ip, port: n.port))
         let resp = encodeFindNodeResponse(msg.transactionId, client.dhtNodeId, compactNodes)
         discard client.dhtSock.trySendToAddr(resp, senderIp, senderPort.int)
@@ -3605,10 +3654,14 @@ proc dhtProcessRecvBatch(client: TorrentClient) =
           discard client.dhtSock.trySendToAddr(resp, senderIp, senderPort.int)
         else:
           var closest: seq[DhtNode]
+          var closest6: seq[DhtNode]
           withSpinLock(client.dhtSpinLock):
             closest = client.dhtRoutingTable.findClosest(msg.infoHash, K)
+            closest6 = client.dhtRoutingTable6.findClosest(msg.infoHash, K)
           var compactNodes: seq[CompactNodeInfo]
           for n in closest:
+            compactNodes.add(CompactNodeInfo(id: n.id, ip: n.ip, port: n.port))
+          for n in closest6:
             compactNodes.add(CompactNodeInfo(id: n.id, ip: n.ip, port: n.port))
           let resp = encodeGetPeersResponse(msg.transactionId, client.dhtNodeId,
                                              token, nodes = compactNodes)
@@ -3746,6 +3799,23 @@ proc dhtLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
           sendOk = false
         if not sendOk:
           client.dhtMarkFailed(staleNode.id)
+
+      # IPv6 routing table maintenance (BEP 32)
+      let staleBucketIdxs6: seq[int] = client.dhtStaleBuckets6(DhtBucketRefreshSec)
+      var sbi6: int = 0
+      while sbi6 < staleBucketIdxs6.len and sbi6 < 3:
+        let bucketIdx6: int = staleBucketIdxs6[sbi6]
+        sbi6 += 1
+        let staleNode6: DhtNode = client.dhtLeastRecentlySeenNode6(bucketIdx6)
+        let transId6: string = client.nextDhtTransId()
+        let pingData6: string = encodePingQuery(transId6, client.dhtNodeId)
+        var sendOk6: bool = false
+        try:
+          sendOk6 = client.dhtSock.trySendToAddr(pingData6, staleNode6.ip, staleNode6.port.int)
+        except Exception:
+          sendOk6 = false
+        if not sendOk6:
+          client.dhtMarkFailed(staleNode6.id)
 
       # First 5 lookups at shorter intervals for fast initial discovery.
       # When seeding with healthy peer count, slow down to avoid discovering
