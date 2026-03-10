@@ -24,6 +24,16 @@ elif defined(windows):
   import std/winlean
 
 # ============================================================
+# Windows socket error codes
+# ============================================================
+
+when defined(windows):
+  const
+    WSAEWOULDBLOCK* = 10035.cint
+    WSAEINPROGRESS* = 10036.cint
+    WSAECONNRESET* = 10054.cint
+
+# ============================================================
 # Error code helpers
 # ============================================================
 
@@ -32,16 +42,18 @@ proc isWouldBlock*(err: OSErrorCode): bool {.inline.} =
   when defined(posix):
     err.int == EAGAIN or err.int == EWOULDBLOCK
   elif defined(windows):
-    err.int == 10035  # WSAEWOULDBLOCK
+    err.int == WSAEWOULDBLOCK
   else:
     false
 
 proc isInProgress*(err: OSErrorCode): bool {.inline.} =
   ## True if the error indicates a connect() is in progress.
+  ## Includes EWOULDBLOCK/WSAEWOULDBLOCK — some BSD implementations
+  ## return it for non-blocking connect().
   when defined(posix):
     err.int == EINPROGRESS or err.int == EWOULDBLOCK
   elif defined(windows):
-    err.int == 10035 or err.int == 10036  # WSAEWOULDBLOCK or WSAEINPROGRESS
+    err.int == WSAEWOULDBLOCK or err.int == WSAEINPROGRESS
   else:
     false
 
@@ -50,14 +62,14 @@ proc isInterrupted*(err: OSErrorCode): bool {.inline.} =
   when defined(posix):
     err.int == EINTR
   else:
-    false  # Windows doesn't have EINTR for socket operations
+    false
 
 proc isEPipe*(err: OSErrorCode): bool {.inline.} =
   ## True if the error indicates a broken pipe / connection reset.
   when defined(posix):
     err.int == EPIPE
   elif defined(windows):
-    err.int == 10054  # WSAECONNRESET
+    err.int == WSAECONNRESET
   else:
     false
 
@@ -65,36 +77,38 @@ proc isEPipe*(err: OSErrorCode): bool {.inline.} =
 # Wake pipe abstraction
 # ============================================================
 
+const WakeBufSize = 4096
+
 when defined(posix):
+  proc setNonBlocking(fd: cint) {.inline.} =
+    let flags = posix.fcntl(fd, F_GETFL, 0)
+    discard posix.fcntl(fd, F_SETFL, flags or O_NONBLOCK)
+
   proc createWakePipe*(): (SocketHandle, SocketHandle) =
     ## Create a wake pipe for event loop cross-thread signaling.
     ## Returns (readEnd, writeEnd) as SocketHandles.
     var pipeFds: array[2, cint]
     if posix.pipe(pipeFds) != 0:
       raise newException(OSError, "Failed to create wake pipe")
-    let readFlags = posix.fcntl(pipeFds[0], F_GETFL, 0)
-    discard posix.fcntl(pipeFds[0], F_SETFL, readFlags or O_NONBLOCK)
-    let writeFlags = posix.fcntl(pipeFds[1], F_GETFL, 0)
-    discard posix.fcntl(pipeFds[1], F_SETFL, writeFlags or O_NONBLOCK)
+    setNonBlocking(pipeFds[0])
+    setNonBlocking(pipeFds[1])
     result = (SocketHandle(pipeFds[0]), SocketHandle(pipeFds[1]))
 
   proc wakePipeSignal*(fd: SocketHandle) =
     ## Write 1 byte to the wake pipe to unblock the reactor's select().
+    ## Best-effort: if the pipe is full or closed, the reactor is already
+    ## signaled (or shutting down).
     var buf: array[1, byte] = [1'u8]
     while true:
       let n = posix.write(fd.cint, addr buf[0], 1)
-      if n == 1:
-        return
-      let err = osLastError()
-      if err.int == EINTR:
-        continue
-      # Pipe full or other error — reactor is already signaled
+      if n == 1: return
+      if osLastError().isInterrupted: continue
       return
 
   proc wakePipeDrain*(fd: SocketHandle) =
     ## Read all pending bytes from the wake pipe.
-    var buf: array[64, byte]
-    while posix.read(fd.cint, addr buf[0], 64) > 0:
+    var buf: array[WakeBufSize, byte]
+    while posix.read(fd.cint, addr buf[0], WakeBufSize) > 0:
       discard
 
   proc closePipeFd*(fd: SocketHandle) =
@@ -102,6 +116,8 @@ when defined(posix):
     discard posix.close(fd.cint)
 
 elif defined(windows):
+  const LoopbackAddr = 0x0100007F'u32  ## 127.0.0.1 in network byte order
+
   proc createWakePipe*(): (SocketHandle, SocketHandle) =
     ## Create a wake "pipe" using a TCP loopback socket pair.
     ## Windows has no pipe() that works with select(); use a connected
@@ -117,8 +133,7 @@ elif defined(windows):
     var sAddr: Sockaddr_in
     zeroMem(addr sAddr, sizeof(sAddr))
     sAddr.sin_family = AF_INET.TSa_Family
-    sAddr.sin_port = 0  # OS assigns port
-    sAddr.sin_addr.s_addr = 0x0100007F'u32  # 127.0.0.1 in network byte order
+    sAddr.sin_addr.s_addr = LoopbackAddr
 
     if bindAddr(listener, cast[ptr SockAddr](addr sAddr),
                 sizeof(sAddr).SockLen) != 0:
@@ -129,10 +144,11 @@ elif defined(windows):
       listener.close()
       raise newException(OSError, "Failed to listen on wake pipe")
 
-    # Get the bound port
     var localAddr: Sockaddr_in
     var addrLen: SockLen = sizeof(localAddr).SockLen
-    discard getsockname(listener, cast[ptr SockAddr](addr localAddr), addr addrLen)
+    if getsockname(listener, cast[ptr SockAddr](addr localAddr), addr addrLen) != 0:
+      listener.close()
+      raise newException(OSError, "Failed to get wake pipe bound address")
 
     let writer = createNativeSocket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
     if writer == osInvalidSocket:
@@ -143,7 +159,7 @@ elif defined(windows):
     zeroMem(addr connAddr, sizeof(connAddr))
     connAddr.sin_family = AF_INET.TSa_Family
     connAddr.sin_port = localAddr.sin_port
-    connAddr.sin_addr.s_addr = 0x0100007F'u32
+    connAddr.sin_addr.s_addr = LoopbackAddr
 
     if connect(writer, cast[ptr SockAddr](addr connAddr),
                sizeof(connAddr).SockLen) != 0:
@@ -154,25 +170,30 @@ elif defined(windows):
     var clientAddr: Sockaddr_in
     addrLen = sizeof(clientAddr).SockLen
     let reader = accept(listener, cast[ptr SockAddr](addr clientAddr), addr addrLen)
-    listener.close()  # No longer needed
+    listener.close()
 
     if reader == osInvalidSocket:
       writer.close()
       raise newException(OSError, "Failed to accept wake pipe connection")
 
+    # Disable Nagle and set non-blocking for minimal signal latency
+    var nodelay: cint = 1
+    discard setsockopt(writer, IPPROTO_TCP.cint, TCP_NODELAY,
+                       addr nodelay, sizeof(nodelay).SockLen)
     reader.setBlocking(false)
     writer.setBlocking(false)
     result = (reader, writer)
 
   proc wakePipeSignal*(fd: SocketHandle) =
     ## Send 1 byte on the wake socket to unblock select().
+    ## Best-effort: if the buffer is full, the reactor is already signaled.
     var buf: array[1, byte] = [1'u8]
     discard send(fd, addr buf[0], 1, 0'i32)
 
   proc wakePipeDrain*(fd: SocketHandle) =
     ## Recv all pending bytes from the wake socket.
-    var buf: array[64, byte]
-    while recv(fd, addr buf[0], 64, 0'i32) > 0:
+    var buf: array[WakeBufSize, byte]
+    while recv(fd, addr buf[0], WakeBufSize, 0'i32) > 0:
       discard
 
   proc closePipeFd*(fd: SocketHandle) =
@@ -222,14 +243,14 @@ proc getProcessId*(): int =
 # File system paths
 # ============================================================
 
-proc hostsFilePath*(): string =
+func hostsFilePath*(): string =
   ## Path to the system hosts file.
   when defined(windows):
     r"C:\Windows\System32\drivers\etc\hosts"
   else:
     "/etc/hosts"
 
-proc resolvConfPath*(): string =
+func resolvConfPath*(): string =
   ## Path to the DNS resolver config. Empty on Windows (no resolv.conf).
   when defined(windows):
     ""

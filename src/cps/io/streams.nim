@@ -4,6 +4,7 @@
 ## AsyncStream uses proc-field vtable dispatch (matching the Continuation.fn pattern).
 ## BufferStream is an in-memory stream for testing and piping.
 
+import std/deques
 import ../runtime
 import ../eventloop
 
@@ -33,17 +34,27 @@ type
 
 proc read*(s: AsyncStream, size: int): CpsFuture[string] =
   ## Read up to `size` bytes from the stream. Returns "" on EOF.
-  assert s.readProc != nil, "Stream does not support reading"
+  if s == nil:
+    return failedFuture[string](newException(AsyncIoError, "Cannot read from nil stream"))
+  if s.closed:
+    return failedFuture[string](newException(AsyncIoError, "Cannot read from closed stream"))
+  if s.readProc == nil:
+    return failedFuture[string](newException(AsyncIoError, "Stream does not support reading"))
   s.readProc(s, size)
 
 proc write*(s: AsyncStream, data: string): CpsVoidFuture =
   ## Write `data` to the stream.
-  assert s.writeProc != nil, "Stream does not support writing"
+  if s == nil:
+    return failedVoidFuture(newException(AsyncIoError, "Cannot write to nil stream"))
+  if s.closed:
+    return failedVoidFuture(newException(AsyncIoError, "Cannot write to closed stream"))
+  if s.writeProc == nil:
+    return failedVoidFuture(newException(AsyncIoError, "Stream does not support writing"))
   s.writeProc(s, data)
 
 proc close*(s: AsyncStream) =
   ## Close the stream.
-  if not s.closed:
+  if s != nil and not s.closed:
     s.closed = true
     if s.closeProc != nil:
       s.closeProc(s)
@@ -59,52 +70,51 @@ type
 
   BufferStream* = ref object of AsyncStream
     buffer: string
-    waiters: seq[BufferWaiter]
+    pos: int
+    waiters: Deque[BufferWaiter]
     eofSignaled: bool
+
+proc bufferAvail(bs: BufferStream): int {.inline.} =
+  bs.buffer.len - bs.pos
+
+proc consumeBuffer(bs: BufferStream, size: int): string =
+  ## Consume up to `size` bytes from the buffer. Compacts when half consumed.
+  let avail = bs.bufferAvail
+  let toRead = min(size, avail)
+  result = bs.buffer[bs.pos ..< bs.pos + toRead]
+  bs.pos += toRead
+  if bs.pos > 0 and bs.pos >= bs.buffer.len div 2:
+    bs.buffer = bs.buffer[bs.pos .. ^1]
+    bs.pos = 0
 
 proc tryWakeWaiters(bs: BufferStream) =
   ## Try to fulfill pending read waiters from the buffer.
-  var i = 0
-  while i < bs.waiters.len:
-    if bs.eofSignaled and bs.buffer.len == 0:
-      # EOF: complete all waiters with empty string
-      let fut = bs.waiters[i].future
-      bs.waiters.delete(i)
-      fut.complete("")
-    elif bs.buffer.len > 0:
-      let waiter = bs.waiters[i]
-      let toRead = min(waiter.size, bs.buffer.len)
-      let data = bs.buffer[0 ..< toRead]
-      bs.buffer = bs.buffer[toRead .. ^1]
-      bs.waiters.delete(i)
-      waiter.future.complete(data)
+  while bs.waiters.len > 0:
+    if bs.eofSignaled and bs.bufferAvail == 0:
+      bs.waiters.popFirst().future.complete("")
+    elif bs.bufferAvail > 0:
+      let waiter = bs.waiters.popFirst()
+      waiter.future.complete(bs.consumeBuffer(waiter.size))
     else:
-      inc i
+      break
 
 proc bufferStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
   let bs = BufferStream(s)
+  if bs.bufferAvail > 0:
+    return completedFuture(bs.consumeBuffer(size))
+  if bs.eofSignaled:
+    return completedFuture("")
   let fut = newCpsFuture[string]()
-  if bs.buffer.len > 0:
-    let toRead = min(size, bs.buffer.len)
-    let data = bs.buffer[0 ..< toRead]
-    bs.buffer = bs.buffer[toRead .. ^1]
-    fut.complete(data)
-  elif bs.eofSignaled:
-    fut.complete("")
-  else:
-    bs.waiters.add(BufferWaiter(size: size, future: fut))
-  result = fut
+  bs.waiters.addLast(BufferWaiter(size: size, future: fut))
+  fut
 
 proc bufferStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
   let bs = BufferStream(s)
-  let fut = newCpsVoidFuture()
   if bs.closed or bs.eofSignaled:
-    fut.fail(newException(AsyncIoError, "Cannot write to closed/EOF stream"))
-    return fut
+    return failedVoidFuture(newException(AsyncIoError, "Cannot write to closed/EOF stream"))
   bs.buffer.add(data)
   bs.tryWakeWaiters()
-  fut.complete()
-  result = fut
+  completedVoidFuture()
 
 proc bufferStreamClose(s: AsyncStream) =
   let bs = BufferStream(s)
@@ -116,7 +126,7 @@ proc newBufferStream*(): BufferStream =
   result = BufferStream(
     closed: false,
     buffer: "",
-    waiters: @[],
+    pos: 0,
     eofSignaled: false
   )
   result.readProc = bufferStreamRead
@@ -146,10 +156,8 @@ proc prefixedStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
     let n = min(size, remaining)
     let data = ps.prefix[ps.prefixPos ..< ps.prefixPos + n]
     ps.prefixPos += n
-    let fut = newCpsFuture[string]()
-    fut.complete(data)
-    return fut
-  return ps.inner.read(size)
+    return completedFuture(data)
+  ps.inner.read(size)
 
 proc prefixedStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
   PrefixedStream(s).inner.write(data)

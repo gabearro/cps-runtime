@@ -1,23 +1,27 @@
 ## CPS I/O DNS
 ##
-## Provides async DNS resolution using the DNS wire protocol (RFC 1035)
-## over async UDP, driven entirely by the CPS event loop with zero threads.
+## Async DNS resolution using DNS wire protocol (RFC 1035) over UDP,
+## driven by the CPS event loop.
 ##
 ## Features:
-##   - Non-blocking: DNS queries use async UDP via the event loop
-##   - Caching: results are cached with configurable TTL
-##   - /etc/hosts: checks hosts file before sending DNS queries
-##   - /etc/resolv.conf: reads system nameservers (falls back to 8.8.8.8)
-##   - IPv4/IPv6: supports both address families
-##   - CNAME following: follows CNAME chains up to 8 levels deep
-##   - Concurrent queries: multiple in-flight queries via transaction ID table
+##   - Non-blocking: async UDP via event loop
+##   - Caching: TTL-based with configurable duration
+##   - /etc/hosts: parsed once into table for O(1) lookup
+##   - /etc/resolv.conf: system nameservers (falls back to 8.8.8.8)
+##   - IPv4/IPv6: both address families
+##   - CNAME following: chains up to 8 deep with cycle detection
+##   - Concurrent queries: multiplexed via transaction ID
 
-import std/[nativesockets, net, os, tables, times, strutils, atomics]
+import std/[nativesockets, os, tables, times, strutils]
+import std/net except TimeoutError
 import ../runtime
+import ../transform
 import ../eventloop
 import ../private/platform
+import ../private/xorshift
 import ./streams
 import ./udp
+import ./timeouts
 
 # ============================================================
 # Types
@@ -57,35 +61,7 @@ type
     truncated: bool
 
 # ============================================================
-# XorShift32 PRNG (avoids std/random — OpenSSL conflict on macOS)
-# ============================================================
-
-type XorShift32 = object
-  state: uint32
-
-proc initXorShift32(seed: int): XorShift32 =
-  result.state = uint32(seed)
-  if result.state == 0: result.state = 1  # must be non-zero
-
-proc next(rng: var XorShift32): uint32 =
-  var x = rng.state
-  x = x xor (x shl 13)
-  x = x xor (x shr 17)
-  x = x xor (x shl 5)
-  rng.state = x
-  result = x
-
-var gRng: XorShift32
-
-proc initRng() =
-  let seed = int(epochTime() * 1e9) xor platform.getProcessId()
-  gRng = initXorShift32(seed)
-
-proc nextTxId(): uint16 =
-  result = uint16(gRng.next() and 0xFFFF'u32)
-
-# ============================================================
-# DNS wire format constants
+# Constants
 # ============================================================
 
 const
@@ -103,12 +79,30 @@ const
   MaxCnameDepth = 8
 
 # ============================================================
-# DNS message encoder
+# Globals
+# ============================================================
+
+# Reactor-thread only (accessed via scheduleCallback):
+var gRng: XorShift32
+var gDnsSock: UdpSocket
+var gDnsSock6: UdpSocket
+var gPendingQueries: Table[uint16, CpsFuture[DnsResponse]]
+var gSocketsReady = false
+
+# Lazy-loaded (read-mostly after init, benign races in MT):
+var gNameservers: seq[Nameserver]
+var gNameserversLoaded = false
+var gHostsEntries: Table[string, seq[string]]
+var gHostsLoaded = false
+var gDnsCache: DnsCache
+
+# ============================================================
+# DNS wire format encoder
 # ============================================================
 
 proc encodeName(name: string): string =
   ## Encode a domain name in DNS wire format (label-length-prefixed).
-  result = ""
+  result = newStringOfCap(name.len + 2)
   for label in name.split('.'):
     if label.len > 63:
       raise newException(DnsError, "DNS label too long: " & label)
@@ -117,33 +111,28 @@ proc encodeName(name: string): string =
   result.add('\0')
 
 proc buildQuery(name: string, qtype: uint16, txId: uint16): string =
-  ## Build a complete DNS query packet.
-  result = newString(DnsHeaderSize)
+  ## Build a complete DNS query packet (single allocation).
+  let encoded = encodeName(name)
+  result = newString(DnsHeaderSize + encoded.len + 4)
   # Transaction ID
   result[0] = char((txId shr 8) and 0xFF)
   result[1] = char(txId and 0xFF)
   # Flags: RD=1
-  let flags = FlagRD
-  result[2] = char((flags shr 8) and 0xFF)
-  result[3] = char(flags and 0xFF)
-  # QDCOUNT = 1
-  result[4] = '\0'
-  result[5] = char(1)
-  # ANCOUNT, NSCOUNT, ARCOUNT = 0
-  result[6] = '\0'; result[7] = '\0'
-  result[8] = '\0'; result[9] = '\0'
-  result[10] = '\0'; result[11] = '\0'
-  # Question section
-  result.add(encodeName(name))
-  # QTYPE
-  result.add(char((qtype shr 8) and 0xFF))
-  result.add(char(qtype and 0xFF))
-  # QCLASS = IN
-  result.add(char((ClassIN shr 8) and 0xFF))
-  result.add(char(ClassIN and 0xFF))
+  result[2] = char((FlagRD shr 8) and 0xFF)
+  result[3] = char(FlagRD and 0xFF)
+  # QDCOUNT = 1, ANCOUNT/NSCOUNT/ARCOUNT = 0
+  result[4] = '\0'; result[5] = char(1)
+  for i in 6 .. 11: result[i] = '\0'
+  # Question section: encoded name + QTYPE + QCLASS
+  copyMem(addr result[DnsHeaderSize], unsafeAddr encoded[0], encoded.len)
+  let off = DnsHeaderSize + encoded.len
+  result[off] = char((qtype shr 8) and 0xFF)
+  result[off + 1] = char(qtype and 0xFF)
+  result[off + 2] = char((ClassIN shr 8) and 0xFF)
+  result[off + 3] = char(ClassIN and 0xFF)
 
 # ============================================================
-# DNS message decoder
+# DNS wire format decoder
 # ============================================================
 
 proc decodeName(data: string, offset: int): tuple[name: string, newOffset: int] =
@@ -177,24 +166,31 @@ proc decodeName(data: string, offset: int): tuple[name: string, newOffset: int] 
       parts.add(data[pos ..< pos + length])
       pos += length
 
-  let finalPos = if jumped: savedPos else: pos
-  result = (name: parts.join("."), newOffset: finalPos)
+  (name: parts.join("."), newOffset: if jumped: savedPos else: pos)
 
 proc parseIpv4(rdata: string): string =
-  ## Convert 4-byte rdata to dotted decimal.
+  ## Convert 4-byte rdata to dotted decimal (single allocation).
   if rdata.len != 4:
-    raise newException(DnsError, "Invalid A record length: " & $rdata.len)
-  result = $rdata[0].uint8 & "." & $rdata[1].uint8 & "." & $rdata[2].uint8 & "." & $rdata[3].uint8
+    raise newException(DnsError, "Invalid A record: " & $rdata.len & " bytes")
+  result = newStringOfCap(15)
+  result.add($rdata[0].uint8)
+  result.add('.')
+  result.add($rdata[1].uint8)
+  result.add('.')
+  result.add($rdata[2].uint8)
+  result.add('.')
+  result.add($rdata[3].uint8)
 
 proc parseIpv6(rdata: string): string =
   ## Convert 16-byte rdata to IPv6 string via inet_ntop.
   if rdata.len != 16:
-    raise newException(DnsError, "Invalid AAAA record length: " & $rdata.len)
+    raise newException(DnsError, "Invalid AAAA record: " & $rdata.len & " bytes")
   var buf: array[46, char]  # INET6_ADDRSTRLEN
-  let p = inet_ntop(AF_INET6.cint, cast[pointer](unsafeAddr rdata[0]), cast[cstring](addr buf[0]), 46.int32)
+  let p = inet_ntop(AF_INET6.cint, cast[pointer](unsafeAddr rdata[0]),
+                     cast[cstring](addr buf[0]), 46.int32)
   if p == nil:
-    raise newException(DnsError, "inet_ntop failed for IPv6 address")
-  result = $cast[cstring](addr buf[0])
+    raise newException(DnsError, "inet_ntop failed for IPv6")
+  $cast[cstring](addr buf[0])
 
 proc parseResponse(data: string): DnsResponse =
   ## Parse a DNS response packet.
@@ -217,12 +213,10 @@ proc parseResponse(data: string): DnsResponse =
   # Parse answer RRs
   result.answers = @[]
   for i in 0 ..< ancount:
-    if pos >= data.len:
-      break
+    if pos >= data.len: break
     let (rrName, nameEnd) = decodeName(data, pos)
     pos = nameEnd
-    if pos + 10 > data.len:
-      break
+    if pos + 10 > data.len: break
 
     let rrtype = (uint16(data[pos].uint8) shl 8) or uint16(data[pos + 1].uint8)
     let rrclass = (uint16(data[pos + 2].uint8) shl 8) or uint16(data[pos + 3].uint8)
@@ -230,9 +224,7 @@ proc parseResponse(data: string): DnsResponse =
               (uint32(data[pos + 6].uint8) shl 8) or uint32(data[pos + 7].uint8)
     let rdlength = int((uint16(data[pos + 8].uint8) shl 8) or uint16(data[pos + 9].uint8))
     pos += 10
-
-    if pos + rdlength > data.len:
-      break
+    if pos + rdlength > data.len: break
 
     var rdata: string
     if rrtype == TypeCNAME:
@@ -247,103 +239,81 @@ proc parseResponse(data: string): DnsResponse =
     pos += rdlength
 
 # ============================================================
-# /etc/hosts lookup
+# /etc/hosts (parsed once into table for O(1) lookup)
 # ============================================================
+
+proc loadHostsFile() =
+  gHostsEntries = initTable[string, seq[string]]()
+  gHostsLoaded = true
+  let path = platform.hostsFilePath()
+  if not fileExists(path): return
+  try:
+    for line in readFile(path).splitLines():
+      let stripped = line.strip()
+      if stripped.len == 0 or stripped[0] == '#': continue
+      let parts = stripped.splitWhitespace()
+      if parts.len < 2: continue
+      let ip = parts[0]
+      let familyInt = if ':' in ip: AF_INET6.int else: AF_INET.int
+      for i in 1 ..< parts.len:
+        let key = parts[i].toLowerAscii() & ":" & $familyInt
+        if key notin gHostsEntries:
+          gHostsEntries[key] = @[ip]
+        elif ip notin gHostsEntries[key]:
+          gHostsEntries[key].add(ip)
+  except CatchableError:
+    discard
 
 proc checkHostsFile(host: string, family: Domain): seq[string] =
-  ## Check the system hosts file for the given hostname.
-  result = @[]
-  let path = platform.hostsFilePath()
-  if not fileExists(path):
-    return
-  try:
-    let content = readFile(path)
-    for line in content.splitLines():
-      let stripped = line.strip()
-      if stripped.len == 0 or stripped[0] == '#':
-        continue
-      let parts = stripped.splitWhitespace()
-      if parts.len < 2:
-        continue
-      let ip = parts[0]
-      for i in 1 ..< parts.len:
-        if parts[i].toLowerAscii() == host.toLowerAscii():
-          # Check IP matches requested family
-          if family == AF_INET and ':' notin ip:
-            if ip notin result:
-              result.add(ip)
-          elif family == AF_INET6 and ':' in ip:
-            if ip notin result:
-              result.add(ip)
-          break
-  except CatchableError:
-    discard
+  ## Look up a host in the cached /etc/hosts table.
+  if not gHostsLoaded:
+    loadHostsFile()
+  let key = host.toLowerAscii() & ":" & $family.int
+  gHostsEntries.getOrDefault(key)
 
 # ============================================================
-# /etc/resolv.conf parser
+# /etc/resolv.conf
 # ============================================================
 
-var gNameservers: seq[Nameserver]
-var gNameserversInitialized = false
-
-proc parseResolvConf(): seq[Nameserver] =
-  ## Parse the system resolver config for nameserver entries.
-  result = @[]
+proc loadNameservers() =
+  gNameservers = @[]
   let path = platform.resolvConfPath()
-  if path.len == 0:
-    return  # No resolv.conf on this platform (e.g., Windows)
-  if not fileExists(path):
-    return
-  try:
-    let content = readFile(path)
-    for line in content.splitLines():
-      let stripped = line.strip()
-      if stripped.startsWith("nameserver"):
-        let parts = stripped.splitWhitespace()
-        if parts.len >= 2:
-          let nsAddr = parts[1]
-          let fam = if ':' in nsAddr: AF_INET6 else: AF_INET
-          result.add(Nameserver(address: nsAddr, family: fam))
-  except CatchableError:
-    discard
+  if path.len > 0 and fileExists(path):
+    try:
+      for line in readFile(path).splitLines():
+        let stripped = line.strip()
+        if stripped.startsWith("nameserver"):
+          let parts = stripped.splitWhitespace()
+          if parts.len >= 2:
+            let nsAddr = parts[1]
+            gNameservers.add(Nameserver(
+              address: nsAddr,
+              family: if ':' in nsAddr: AF_INET6 else: AF_INET
+            ))
+    except CatchableError:
+      discard
+
+  # Append public DNS fallbacks (deduplicated)
+  let fallbacks = [
+    Nameserver(address: "8.8.8.8", family: AF_INET),
+    Nameserver(address: "8.8.4.4", family: AF_INET),
+    Nameserver(address: "2001:4860:4860::8888", family: AF_INET6),
+    Nameserver(address: "2001:4860:4860::8844", family: AF_INET6)
+  ]
+  for fb in fallbacks:
+    var found = false
+    for ns in gNameservers:
+      if ns.address == fb.address:
+        found = true
+        break
+    if not found:
+      gNameservers.add(fb)
 
 proc getNameservers(): seq[Nameserver] =
-  if not gNameserversInitialized:
-    let parsed = parseResolvConf()
-    # Include both IPv4 and IPv6 nameservers (dual-stack DNS)
-    for ns in parsed:
-      gNameservers.add(ns)
-    # Always append public DNS as fallback (after system nameservers)
-    let publicFallbacks = @[
-      Nameserver(address: "8.8.8.8", family: AF_INET),
-      Nameserver(address: "8.8.4.4", family: AF_INET),
-      Nameserver(address: "2001:4860:4860::8888", family: AF_INET6),
-      Nameserver(address: "2001:4860:4860::8844", family: AF_INET6)
-    ]
-    for fb in publicFallbacks:
-      var found = false
-      for ns in gNameservers:
-        if ns.address == fb.address:
-          found = true
-          break
-      if not found:
-        gNameservers.add(fb)
-    gNameserversInitialized = true
-  result = gNameservers
-
-# ============================================================
-# Globals
-# ============================================================
-
-var gDnsCache: DnsCache = nil
-var gRngInitialized = false
-
-# UDP sockets for DNS queries (lazily created via UdpSocket API)
-var gDnsSock: UdpSocket = nil    # IPv4 nameservers
-var gDnsSock6: UdpSocket = nil   # IPv6 nameservers (nil if no IPv6 stack)
-
-# Pending queries table: txId -> future
-var gPendingQueries: Table[uint16, CpsFuture[DnsResponse]]
+  if not gNameserversLoaded:
+    loadNameservers()
+    gNameserversLoaded = true
+  gNameservers
 
 # ============================================================
 # DNS Cache
@@ -351,16 +321,13 @@ var gPendingQueries: Table[uint16, CpsFuture[DnsResponse]]
 
 proc initDnsCache*(ttlSeconds: int = 300): DnsCache =
   ## Create a new DNS cache with the given TTL (default 5 minutes).
-  result = DnsCache(
-    entries: initTable[string, DnsCacheEntry](),
-    ttlSeconds: ttlSeconds
-  )
+  DnsCache(entries: initTable[string, DnsCacheEntry](), ttlSeconds: ttlSeconds)
 
 proc getDnsCache*(): DnsCache =
   ## Get the global DNS cache, creating one if needed.
   if gDnsCache.isNil:
     gDnsCache = initDnsCache()
-  result = gDnsCache
+  gDnsCache
 
 proc clearDnsCache*() =
   ## Clear all entries from the global DNS cache.
@@ -369,11 +336,10 @@ proc clearDnsCache*() =
 
 proc setDnsCacheTtl*(ttlSeconds: int) =
   ## Set the TTL for the global DNS cache.
-  let cache = getDnsCache()
-  cache.ttlSeconds = ttlSeconds
+  getDnsCache().ttlSeconds = ttlSeconds
 
 proc cacheKey(host: string, family: Domain): string =
-  result = host & ":" & $family.int
+  host & ":" & $family.int
 
 proc cacheLookup(cache: DnsCache, host: string, family: Domain): seq[string] =
   ## Look up a host in the cache. Returns empty seq on miss or expiry.
@@ -382,14 +348,12 @@ proc cacheLookup(cache: DnsCache, host: string, family: Domain): seq[string] =
     let entry = cache.entries[key]
     if epochTime() < entry.expireTime:
       return entry.addresses
-    else:
-      cache.entries.del(key)
-  result = @[]
+    cache.entries.del(key)
+  @[]
 
 proc cacheStore(cache: DnsCache, host: string, family: Domain, addresses: seq[string]) =
   ## Store resolved addresses in the cache.
-  let key = cacheKey(host, family)
-  cache.entries[key] = DnsCacheEntry(
+  cache.entries[cacheKey(host, family)] = DnsCacheEntry(
     addresses: addresses,
     expireTime: epochTime() + float(cache.ttlSeconds),
     family: family
@@ -401,81 +365,92 @@ proc cacheStore(cache: DnsCache, host: string, family: Domain, addresses: seq[st
 
 proc isIpAddress*(host: string): bool =
   ## Check if the string is already an IP address (v4 or v6).
-  if host.len == 0:
-    return false
-  # IPv6: contains colons
-  if ':' in host:
-    return true
-  # IPv4: all chars are digits or dots, at least one dot
+  if host.len == 0: return false
+  if ':' in host: return true
   var hasDot = false
   for c in host:
-    if c == '.':
-      hasDot = true
-    elif c < '0' or c > '9':
-      return false
-  return hasDot
+    if c == '.': hasDot = true
+    elif c < '0' or c > '9': return false
+  hasDot
 
 # ============================================================
-# Deprecated stubs (no-op for backward compatibility)
-# ============================================================
-
-proc initDnsResolver*(numThreads: int = 2) {.deprecated: "DNS resolver no longer needs initialization".} =
-  ## No-op. Kept for backward compatibility.
-  discard
-
-proc deinitDnsResolver*() {.deprecated: "DNS resolver no longer needs deinitialization".} =
-  ## No-op. Kept for backward compatibility.
-  discard
-
-# ============================================================
-# UDP socket setup and dispatch (uses UdpSocket API from udp.nim)
+# Initialization & cleanup
 # ============================================================
 
 proc dnsRecvHandler(data: string, srcAddr: Sockaddr_storage, addrLen: SockLen) =
   ## Shared receive handler for both IPv4 and IPv6 DNS sockets.
+  ## Dispatches responses to pending futures by transaction ID.
   try:
     let resp = parseResponse(data)
     if resp.id in gPendingQueries:
       let fut = gPendingQueries[resp.id]
       gPendingQueries.del(resp.id)
       fut.complete(resp)
-    else:
-      discard
   except CatchableError:
     discard
 
 proc ensureDnsReady() =
-  ## Create the DNS UDP sockets and register persistent read callbacks.
-  ## Creates both IPv4 and IPv6 sockets for dual-stack DNS resolution.
-  if gDnsSock != nil:
-    return
+  ## Initialize DNS UDP sockets and PRNG. Must be called from reactor thread.
+  if gSocketsReady: return
+  gSocketsReady = true
 
-  if not gRngInitialized:
-    initRng()
-    gRngInitialized = true
+  gRng = initXorShift32(int(epochTime() * 1e9) xor platform.getProcessId())
+  gPendingQueries = initTable[uint16, CpsFuture[DnsResponse]]()
 
   gDnsSock = newUdpSocket(AF_INET)
   gDnsSock.bindAddr("0.0.0.0", 0)
-  gPendingQueries = initTable[uint16, CpsFuture[DnsResponse]]()
   gDnsSock.onRecv(MaxUdpSize + 512, dnsRecvHandler)
 
-  # Try to create IPv6 socket; skip if no IPv6 stack available
+  # Try IPv6 socket; skip if no IPv6 stack
   try:
     gDnsSock6 = newUdpSocket(AF_INET6)
     gDnsSock6.bindAddr("::", 0)
     gDnsSock6.onRecv(MaxUdpSize + 512, dnsRecvHandler)
   except CatchableError:
-    gDnsSock6 = nil  # No IPv6 — all queries go through IPv4 socket
+    gDnsSock6 = nil
+
+proc resetDnsResolver*() =
+  ## Reset DNS resolver state. Closes sockets, clears pending queries and caches.
+  if gSocketsReady:
+    for _, fut in gPendingQueries:
+      fut.cancel()
+    gPendingQueries.clear()
+    if gDnsSock != nil:
+      gDnsSock.close()
+      gDnsSock = nil
+    if gDnsSock6 != nil:
+      gDnsSock6.close()
+      gDnsSock6 = nil
+    gSocketsReady = false
+  clearDnsCache()
+  gHostsEntries.clear()
+  gHostsLoaded = false
+  gNameservers = @[]
+  gNameserversLoaded = false
 
 # ============================================================
-# Send DNS query via UdpSocket
+# Deprecated stubs
 # ============================================================
 
-proc sendDnsQueryRaw(query: string, ns: Nameserver) =
-  ## Send a DNS query packet to a nameserver.
-  ## Routes to the IPv4 or IPv6 socket based on the nameserver's address family.
-  ## Non-blocking; drops silently on EAGAIN (will retry on timeout).
-  ensureDnsReady()
+proc initDnsResolver*(numThreads: int = 2) {.deprecated: "DNS resolver no longer needs initialization".} =
+  discard
+
+proc deinitDnsResolver*() {.deprecated: "DNS resolver no longer needs deinitialization".} =
+  discard
+
+# ============================================================
+# Single-query engine (manual future — interfaces with reactor I/O)
+# ============================================================
+
+proc nextTxId(): uint16 =
+  ## Generate a transaction ID, avoiding collisions with in-flight queries.
+  var id = uint16(gRng.next() and 0xFFFF'u32)
+  while id in gPendingQueries:
+    id = uint16(gRng.next() and 0xFFFF'u32)
+  id
+
+proc sendDnsQuery(query: string, ns: Nameserver) =
+  ## Send a DNS query to a nameserver. Non-blocking, drops on EAGAIN.
   let sock = if ns.family == AF_INET6 and gDnsSock6 != nil: gDnsSock6
              else: gDnsSock
   try:
@@ -483,231 +458,121 @@ proc sendDnsQueryRaw(query: string, ns: Nameserver) =
   except streams.AsyncIoError:
     discard
 
-# ============================================================
-# Async query engine
-# ============================================================
-
-proc queryNameserver(name: string, qtype: uint16, ns: Nameserver, timeoutMs: int): CpsFuture[DnsResponse] =
-  ## Send a query to a single nameserver and wait for a response with timeout.
-  ## Thread-safe: all DNS global state access is proxied to the reactor thread
-  ## via scheduleCallback, preventing data races on gPendingQueries/gDnsSock/gRng.
-  let resultFut = newCpsFuture[DnsResponse]()
-  resultFut.pinFutureRuntime()
+proc queryNameserver(name: string, qtype: uint16, ns: Nameserver,
+                     timeoutMs: int): CpsFuture[DnsResponse] =
+  ## Send a query to a nameserver with timeout via withTimeout combinator.
+  ## Proxied to reactor thread via scheduleCallback for thread safety.
+  let responseFut = newCpsFuture[DnsResponse]()
+  responseFut.pinFutureRuntime()
   let loop = getEventLoop()
 
-  proc doQueryOnReactor() {.closure.} =
-    ## Runs on the reactor thread — safe to access gPendingQueries, gDnsSock, gRng.
-    ensureDnsReady()
-    let txId = nextTxId()
-    let query = buildQuery(name, qtype, txId)
-    let responseFut = newCpsFuture[DnsResponse]()
-    responseFut.pinFutureRuntime()
-
-    gPendingQueries[txId] = responseFut
-    sendDnsQueryRaw(query, ns)
-
-    var resolved: Atomic[bool]
-    resolved.store(false, moRelaxed)
-    var timerHandle: TimerHandle
-
-    proc makeTimerCb(tid: uint16, rf: CpsFuture[DnsResponse]): proc() {.closure.} =
-      result = proc() =
-        var expected = false
-        if resolved.compareExchange(expected, true):
-          # Clean up pending entry
-          if tid in gPendingQueries:
-            gPendingQueries.del(tid)
-          rf.fail(newException(DnsError, "DNS query timed out"))
-
-    proc makeRespCb(inner: CpsFuture[DnsResponse], rf: CpsFuture[DnsResponse],
-                    timer: TimerHandle): proc() {.closure.} =
-      result = proc() =
-        var expected = false
-        if resolved.compareExchange(expected, true):
-          timer.cancel()
-          if inner.hasError():
-            rf.fail(inner.getError())
-          else:
-            rf.complete(inner.read())
-
-    timerHandle = loop.registerTimer(timeoutMs, makeTimerCb(txId, resultFut))
-    responseFut.addCallback(makeRespCb(responseFut, resultFut, timerHandle))
-
-  loop.scheduleCallback(doQueryOnReactor)
-  result = resultFut
-
-proc dnsQuery(name: string, qtype: uint16): CpsFuture[DnsResponse] =
-  ## Query DNS with retry across nameservers and exponential backoff.
-  let nameservers = getNameservers()
-  let outerFut = newCpsFuture[DnsResponse]()
-  outerFut.pinFutureRuntime()
-  var attempt = 0
-  let totalAttempts = MaxRetries * nameservers.len
-
-  proc tryNext()
-
-  proc tryNext() =
-    if attempt >= totalAttempts:
-      outerFut.fail(newException(DnsError, "DNS resolution failed for '" & name & "': all nameservers timed out"))
-      return
-
-    let nsIdx = attempt mod nameservers.len
-    let retryNum = attempt div nameservers.len
-    let timeoutMs = BaseTimeoutMs * (1 shl retryNum)  # 2s, 4s, 8s
-    attempt += 1
-
-    let queryFut = queryNameserver(name, qtype, nameservers[nsIdx], timeoutMs)
-
-    proc makeQueryCb(qf: CpsFuture[DnsResponse], of2: CpsFuture[DnsResponse]): proc() {.closure.} =
-      result = proc() =
-        if qf.hasError():
-          # Timeout or error — try next
-          tryNext()
-        else:
-          let resp = qf.read()
-          if resp.rcode == 0 or resp.rcode == 3:
-            # Success or NXDOMAIN — return the response
-            of2.complete(resp)
-          else:
-            # Server error — try next
-            tryNext()
-
-    queryFut.addCallback(makeQueryCb(queryFut, outerFut))
-
-  tryNext()
-  result = outerFut
-
-# ============================================================
-# CNAME resolution
-# ============================================================
-
-proc resolveWithCname(name: string, qtype: uint16, depth: int): CpsFuture[seq[string]] =
-  ## Resolve a name, following CNAME chains up to MaxCnameDepth.
-  let fut = newCpsFuture[seq[string]]()
-  fut.pinFutureRuntime()
-
-  if depth > MaxCnameDepth:
-    fut.fail(newException(DnsError, "CNAME chain too deep for '" & name & "'"))
-    return fut
-
-  let queryFut = dnsQuery(name, qtype)
-
-  proc makeQueryCb(qf: CpsFuture[DnsResponse], rf: CpsFuture[seq[string]],
-                   nm: string, qt: uint16, dep: int): proc() {.closure.} =
+  proc makeDoQuery(rf: CpsFuture[DnsResponse], nm: string, qt: uint16,
+                   server: Nameserver): proc() {.closure.} =
     result = proc() =
-      if qf.hasError():
-        rf.fail(qf.getError())
-        return
+      ensureDnsReady()
+      let txId = nextTxId()
+      gPendingQueries[txId] = rf
+      sendDnsQuery(buildQuery(nm, qt, txId), server)
 
-      let resp = qf.read()
+      # Clean up pending entry when future resolves (success, cancel, or timeout)
+      let tid = txId
+      proc makeCleanup(t: uint16): proc() {.closure.} =
+        result = proc() =
+          if t in gPendingQueries:
+            gPendingQueries.del(t)
+      rf.addCallback(makeCleanup(tid))
 
-      # Check for NXDOMAIN
-      if resp.rcode == 3:
-        rf.fail(newException(DnsError, "DNS resolution failed for '" & nm & "': NXDOMAIN"))
-        return
-
-      # Extract matching records
-      var addresses: seq[string]
-      var cname: string = ""
-      for rr in resp.answers:
-        if rr.rrtype == qt and rr.rrclass == ClassIN:
-          try:
-            if qt == TypeA:
-              addresses.add(parseIpv4(rr.rdata))
-            elif qt == TypeAAAA:
-              addresses.add(parseIpv6(rr.rdata))
-          except CatchableError:
-            discard
-        elif rr.rrtype == TypeCNAME and rr.rrclass == ClassIN:
-          cname = rr.rdata
-
-      if addresses.len > 0:
-        rf.complete(addresses)
-      elif cname.len > 0:
-        # Follow CNAME
-        let innerFut = resolveWithCname(cname, qt, dep + 1)
-        proc makeCnameCb(inf: CpsFuture[seq[string]], rf2: CpsFuture[seq[string]]): proc() {.closure.} =
-          result = proc() =
-            if inf.hasError():
-              rf2.fail(inf.getError())
-            else:
-              rf2.complete(inf.read())
-        innerFut.addCallback(makeCnameCb(innerFut, rf))
-      else:
-        rf.fail(newException(DnsError, "DNS resolution returned no usable addresses for '" & nm & "'"))
-
-  queryFut.addCallback(makeQueryCb(queryFut, fut, name, qtype, depth))
-  result = fut
+  loop.scheduleCallback(makeDoQuery(responseFut, name, qtype, ns))
+  withTimeout(responseFut, timeoutMs)
 
 # ============================================================
-# Async DNS resolution
+# CPS async resolution
 # ============================================================
+
+proc dnsQuery(name: string, qtype: uint16): CpsFuture[DnsResponse] {.cps.} =
+  ## Query DNS with retry across nameservers and exponential backoff.
+  let nameservers: seq[Nameserver] = getNameservers()
+  var retry = 0
+  while retry < MaxRetries:
+    let timeoutMs: int = BaseTimeoutMs * (1 shl retry)
+    var nsIdx = 0
+    while nsIdx < nameservers.len:
+      try:
+        let resp: DnsResponse = await queryNameserver(name, qtype,
+                                                       nameservers[nsIdx], timeoutMs)
+        if resp.rcode == 0 or resp.rcode == 3:
+          return resp
+        # Server error — try next nameserver
+      except TimeoutError:
+        discard
+      except DnsError:
+        discard
+      nsIdx += 1
+    retry += 1
+  raise newException(DnsError,
+    "DNS resolution failed for '" & name & "': all nameservers timed out")
+
+proc resolveWithCname(name: string, qtype: uint16): CpsFuture[seq[string]] {.cps.} =
+  ## Resolve a name, following CNAME chains with cycle detection.
+  var current: string = name
+  var depth = 0
+  var visited: seq[string]
+  while depth < MaxCnameDepth:
+    if current in visited:
+      raise newException(DnsError, "CNAME cycle for '" & current & "'")
+    visited.add(current)
+
+    let resp: DnsResponse = await dnsQuery(current, qtype)
+    if resp.rcode == 3:
+      raise newException(DnsError, "NXDOMAIN: '" & current & "'")
+
+    var addresses: seq[string]
+    var cname: string = ""
+    var rrIdx = 0
+    while rrIdx < resp.answers.len:
+      let rr: DnsRR = resp.answers[rrIdx]
+      if rr.rrtype == qtype and rr.rrclass == ClassIN:
+        try:
+          if qtype == TypeA:
+            addresses.add(parseIpv4(rr.rdata))
+          elif qtype == TypeAAAA:
+            addresses.add(parseIpv6(rr.rdata))
+        except CatchableError:
+          discard
+      elif rr.rrtype == TypeCNAME and rr.rrclass == ClassIN:
+        cname = rr.rdata
+      rrIdx += 1
+
+    if addresses.len > 0:
+      return addresses
+    elif cname.len > 0:
+      current = cname
+    else:
+      raise newException(DnsError, "No addresses for '" & current & "'")
+    depth += 1
+  raise newException(DnsError, "CNAME chain too deep for '" & name & "'")
 
 proc asyncResolve*(host: string, port: Port = Port(0),
-                   family: Domain = AF_INET): CpsFuture[seq[string]] =
+                   family: Domain = AF_INET): CpsFuture[seq[string]] {.cps.} =
   ## Resolve a hostname asynchronously without caching.
-  ## Returns a future with a list of IP addresses.
-  let fut = newCpsFuture[seq[string]]()
-  fut.pinFutureRuntime()
-
-  # Short-circuit for IP addresses
   if isIpAddress(host):
-    fut.complete(@[host])
-    return fut
-
-  # Check /etc/hosts first
-  let hostsResult = checkHostsFile(host, family)
+    return @[host]
+  let hostsResult: seq[string] = checkHostsFile(host, family)
   if hostsResult.len > 0:
-    fut.complete(hostsResult)
-    return fut
-
-  # Determine query type
-  let qtype = if family == AF_INET6: TypeAAAA else: TypeA
-
-  let innerFut = resolveWithCname(host, qtype, 0)
-
-  proc makeCb(inf: CpsFuture[seq[string]], rf: CpsFuture[seq[string]]): proc() {.closure.} =
-    result = proc() =
-      if inf.hasError():
-        rf.fail(inf.getError())
-      else:
-        rf.complete(inf.read())
-
-  innerFut.addCallback(makeCb(innerFut, fut))
-  result = fut
+    return hostsResult
+  let qtype: uint16 = if family == AF_INET6: TypeAAAA else: TypeA
+  let addrs: seq[string] = await resolveWithCname(host, qtype)
+  return addrs
 
 proc resolve*(host: string, port: Port = Port(0),
-              family: Domain = AF_INET): CpsFuture[seq[string]] =
+              family: Domain = AF_INET): CpsFuture[seq[string]] {.cps.} =
   ## Resolve a hostname asynchronously with caching.
-  ## Returns cached results if available and not expired.
-  ## Otherwise performs async resolution and caches the result.
-  let fut = newCpsFuture[seq[string]]()
-  fut.pinFutureRuntime()
-
-  # Short-circuit for IP addresses (no caching needed)
   if isIpAddress(host):
-    fut.complete(@[host])
-    return fut
-
-  # Check cache
-  let cache = getDnsCache()
-  let cached = cacheLookup(cache, host, family)
+    return @[host]
+  let cache: DnsCache = getDnsCache()
+  let cached: seq[string] = cacheLookup(cache, host, family)
   if cached.len > 0:
-    fut.complete(cached)
-    return fut
-
-  # Cache miss - do async resolve
-  let innerFut = asyncResolve(host, port, family)
-
-  proc makeCb(inf: CpsFuture[seq[string]], rf: CpsFuture[seq[string]],
-              c: DnsCache, h: string, f: Domain): proc() {.closure.} =
-    result = proc() =
-      if inf.hasError():
-        rf.fail(inf.getError())
-      else:
-        let addrs = inf.read()
-        cacheStore(c, h, f, addrs)
-        rf.complete(addrs)
-
-  innerFut.addCallback(makeCb(innerFut, fut, cache, host, family))
-  result = fut
+    return cached
+  let addrs: seq[string] = await asyncResolve(host, port, family)
+  cacheStore(cache, host, family, addrs)
+  return addrs

@@ -9,10 +9,10 @@
 ##
 ## Unbounded channels never block senders — they grow as needed.
 ##
-## Thread safety: when mtModeEnabled is true (MT runtime active), channel
-## state is protected by a CAS-based SpinLock (not pthread_mutex) to ensure
-## the reactor thread is never blocked by a syscall. Future completions
-## happen outside the lock to avoid deadlocks.
+## Thread safety: when the MT runtime is active, channel state is protected
+## by a CAS-based SpinLock (not pthread_mutex) to ensure the reactor thread
+## is never blocked by a syscall. Future completions happen outside the lock
+## to avoid deadlocks (callbacks may re-enter the channel).
 
 import std/[options, deques]
 import ../runtime
@@ -21,6 +21,16 @@ import ../private/spinlock
 proc runtimeMtEnabled(): bool {.inline.} =
   let rt = currentRuntime().runtime
   rt != nil and rt.flavor == rfMultiThread
+
+template withLock(lock: var SpinLock, mt: bool, body: untyped) =
+  ## Execute body with conditional spinlock protection.
+  ## When mt is true, acquires the lock and guarantees release via
+  ## try/finally (exception-safe). When false, executes body directly.
+  if mt:
+    withSpinLock(lock):
+      body
+  else:
+    body
 
 type
   ChannelClosed* = object of CatchableError
@@ -63,11 +73,7 @@ proc newAsyncChannel*[T](capacity: int): AsyncChannel[T] =
   assert capacity >= 1, "Channel capacity must be >= 1"
   result = AsyncChannel[T](
     bounded: true,
-    closed: false,
     buf: newSeq[T](capacity),
-    head: 0,
-    tail: 0,
-    count: 0,
     cap: capacity,
     waitingReceivers: initDeque[WaitingReceiver[T]](),
     waitingSenders: initDeque[WaitingSender[T]](),
@@ -79,9 +85,6 @@ proc newAsyncChannel*[T](capacity: int): AsyncChannel[T] =
 proc newAsyncChannel*[T](): AsyncChannel[T] =
   ## Create an unbounded async channel. Senders never block.
   result = AsyncChannel[T](
-    bounded: false,
-    closed: false,
-    cap: 0,
     unboundedBuf: initDeque[T](),
     waitingReceivers: initDeque[WaitingReceiver[T]](),
     waitingSenders: initDeque[WaitingSender[T]](),
@@ -95,12 +98,8 @@ proc newAsyncChannel*[T](): AsyncChannel[T] =
 # ============================================================
 
 proc len*[T](ch: AsyncChannel[T]): int =
-  ## Number of items currently buffered in the channel.
-  if ch.mtEnabled:
-    acquire(ch.lock)
-    result = if ch.bounded: ch.count else: ch.unboundedBuf.len
-    release(ch.lock)
-  else:
+  ## Number of items currently buffered. Snapshot — may be stale under MT.
+  withLock(ch.lock, ch.mtEnabled):
     result = if ch.bounded: ch.count else: ch.unboundedBuf.len
 
 proc capacity*[T](ch: AsyncChannel[T]): int =
@@ -109,36 +108,34 @@ proc capacity*[T](ch: AsyncChannel[T]): int =
 
 proc isClosed*[T](ch: AsyncChannel[T]): bool =
   ## Whether the channel has been closed.
-  if ch.mtEnabled:
-    acquire(ch.lock)
-    result = ch.closed
-    release(ch.lock)
-  else:
+  withLock(ch.lock, ch.mtEnabled):
     result = ch.closed
 
 proc isEmpty*[T](ch: AsyncChannel[T]): bool =
-  ## Whether the channel's buffer is empty (no items to receive).
-  ch.len == 0
+  ## Whether the channel's buffer is empty. Atomic under MT.
+  withLock(ch.lock, ch.mtEnabled):
+    result = if ch.bounded: ch.count == 0 else: ch.unboundedBuf.len == 0
 
 proc isFull*[T](ch: AsyncChannel[T]): bool =
-  ## Whether the channel's buffer is full (bounded channels only).
+  ## Whether the channel's buffer is full. Atomic under MT.
   ## Always returns false for unbounded channels.
-  ch.capacity > 0 and ch.len == ch.capacity
+  withLock(ch.lock, ch.mtEnabled):
+    result = ch.bounded and ch.count == ch.cap
 
 # ============================================================
 # Internal ring buffer operations
 # ============================================================
 
 proc ringPush[T](ch: AsyncChannel[T], value: sink T) {.inline.} =
-  ## Push a value into the ring buffer. Caller must ensure space is available.
   ch.buf[ch.tail] = move(value)
-  ch.tail = (ch.tail + 1) mod ch.cap
+  inc ch.tail
+  if ch.tail == ch.cap: ch.tail = 0
   inc ch.count
 
 proc ringPop[T](ch: AsyncChannel[T]): T {.inline.} =
-  ## Pop a value from the ring buffer. Caller must ensure buffer is non-empty.
   result = move(ch.buf[ch.head])
-  ch.head = (ch.head + 1) mod ch.cap
+  inc ch.head
+  if ch.head == ch.cap: ch.head = 0
   dec ch.count
 
 proc popLiveReceiver[T](ch: AsyncChannel[T], receiver: var WaitingReceiver[T]): bool {.inline.} =
@@ -147,7 +144,7 @@ proc popLiveReceiver[T](ch: AsyncChannel[T], receiver: var WaitingReceiver[T]): 
     if not candidate.fut.finished:
       receiver = candidate
       return true
-  return false
+  false
 
 proc popLiveSender[T](ch: AsyncChannel[T], sender: var WaitingSender[T]): bool {.inline.} =
   while ch.waitingSenders.len > 0:
@@ -155,7 +152,7 @@ proc popLiveSender[T](ch: AsyncChannel[T], sender: var WaitingSender[T]): bool {
     if not candidate.fut.finished:
       sender = candidate
       return true
-  return false
+  false
 
 # ============================================================
 # Close
@@ -167,19 +164,7 @@ proc close*[T](ch: AsyncChannel[T]) =
   ## and tryRecv drains remaining buffered items then returns none.
   var pendingReceivers: seq[CpsFuture[T]]
   var pendingSenders: seq[CpsVoidFuture]
-  if ch.mtEnabled:
-    acquire(ch.lock)
-    ch.closed = true
-    while ch.waitingReceivers.len > 0:
-      let receiver = ch.waitingReceivers.popFirst()
-      if not receiver.fut.finished:
-        pendingReceivers.add(receiver.fut)
-    while ch.waitingSenders.len > 0:
-      let sender = ch.waitingSenders.popFirst()
-      if not sender.fut.finished:
-        pendingSenders.add(sender.fut)
-    release(ch.lock)
-  else:
+  withLock(ch.lock, ch.mtEnabled):
     ch.closed = true
     while ch.waitingReceivers.len > 0:
       let receiver = ch.waitingReceivers.popFirst()
@@ -203,84 +188,46 @@ proc close*[T](ch: AsyncChannel[T]) =
 proc trySend*[T](ch: AsyncChannel[T], value: sink T): bool =
   ## Try to send a value without blocking. Returns true if the value
   ## was sent, false if the channel is full or closed.
-  if ch.mtEnabled:
-    acquire(ch.lock)
-    if ch.closed:
-      release(ch.lock)
-      return false
-    # Direct handoff to a waiting receiver
-    var receiver: WaitingReceiver[T]
-    if ch.popLiveReceiver(receiver):
-      release(ch.lock)
-      receiver.fut.complete(move(value))
-      return true
-    if ch.bounded:
-      if ch.count >= ch.cap:
-        release(ch.lock)
-        return false
-      ch.ringPush(move(value))
-    else:
-      ch.unboundedBuf.addLast(move(value))
-    release(ch.lock)
-    return true
-  else:
+  var receiver: WaitingReceiver[T]
+  withLock(ch.lock, ch.mtEnabled):
     if ch.closed:
       return false
-    var receiver: WaitingReceiver[T]
     if ch.popLiveReceiver(receiver):
-      receiver.fut.complete(move(value))
-      return true
-    if ch.bounded:
+      discard  # complete outside lock
+    elif ch.bounded:
       if ch.count >= ch.cap:
         return false
       ch.ringPush(move(value))
+      return true
     else:
       ch.unboundedBuf.addLast(move(value))
-    return true
+      return true
+  # Direct handoff outside lock
+  receiver.fut.complete(move(value))
+  true
 
 proc tryRecv*[T](ch: AsyncChannel[T]): Option[T] =
   ## Try to receive a value without blocking. Returns none if the
   ## channel is empty. After close, drains remaining buffered items.
-  if ch.mtEnabled:
-    acquire(ch.lock)
+  var val: T
+  var senderFut: CpsVoidFuture
+  withLock(ch.lock, ch.mtEnabled):
     if ch.bounded:
-      if ch.count > 0:
-        var val = ch.ringPop()
-        # If a sender is waiting (buffer was full), push their value
-        # into the now-open slot and complete their future.
-        var sender: WaitingSender[T]
-        if ch.popLiveSender(sender):
-          ch.ringPush(move(sender.value))
-          release(ch.lock)
-          sender.fut.complete()
-        else:
-          release(ch.lock)
-        return some(move(val))
-      else:
-        release(ch.lock)
+      if ch.count == 0:
         return none(T)
+      val = ch.ringPop()
+      var sender: WaitingSender[T]
+      if ch.popLiveSender(sender):
+        ch.ringPush(move(sender.value))
+        senderFut = sender.fut
     else:
-      if ch.unboundedBuf.len > 0:
-        var val = ch.unboundedBuf.popFirst()
-        release(ch.lock)
-        return some(move(val))
-      else:
-        release(ch.lock)
+      if ch.unboundedBuf.len == 0:
         return none(T)
-  else:
-    if ch.bounded:
-      if ch.count > 0:
-        var val = ch.ringPop()
-        var sender: WaitingSender[T]
-        if ch.popLiveSender(sender):
-          ch.ringPush(move(sender.value))
-          sender.fut.complete()
-        return some(move(val))
-      return none(T)
-    else:
-      if ch.unboundedBuf.len > 0:
-        return some(ch.unboundedBuf.popFirst())
-      return none(T)
+      val = ch.unboundedBuf.popFirst()
+  # Complete sender outside lock
+  if not senderFut.isNil:
+    senderFut.complete()
+  some(move(val))
 
 # ============================================================
 # Blocking (async) operations
@@ -291,125 +238,79 @@ proc send*[T](ch: AsyncChannel[T], value: sink T): CpsVoidFuture =
   ## the returned future suspends until space is available. If the
   ## channel is closed, the future fails with ChannelClosed.
   let fut = newCpsVoidFuture()
-  if ch.mtEnabled:
-    acquire(ch.lock)
+  var receiverFut: CpsFuture[T]
+  var doClosed, doHandoff, doComplete: bool
+  withLock(ch.lock, ch.mtEnabled):
     if ch.closed:
-      release(ch.lock)
-      fut.fail(newException(ChannelClosed, "Cannot send on closed channel"))
-      return fut
-    # Direct handoff to a waiting receiver
-    var receiver: WaitingReceiver[T]
-    if ch.popLiveReceiver(receiver):
-      release(ch.lock)
-      receiver.fut.complete(move(value))
-      fut.complete()
-      return fut
-    if ch.bounded:
-      if ch.count < ch.cap:
-        ch.ringPush(move(value))
-        release(ch.lock)
-        fut.complete()
-        return fut
-      else:
-        # Buffer full — park the sender with its value.
-        # When a receiver pops, it will push this value into
-        # the ring and complete the sender's future.
-        ch.waitingSenders.addLast(WaitingSender[T](fut: fut, value: move(value)))
-        release(ch.lock)
-        return fut
+      doClosed = true
     else:
-      # Unbounded — always has space
-      ch.unboundedBuf.addLast(move(value))
-      release(ch.lock)
-      fut.complete()
-      return fut
-  else:
-    if ch.closed:
-      fut.fail(newException(ChannelClosed, "Cannot send on closed channel"))
-      return fut
-    var receiver: WaitingReceiver[T]
-    if ch.popLiveReceiver(receiver):
-      receiver.fut.complete(move(value))
-      fut.complete()
-      return fut
-    if ch.bounded:
-      if ch.count < ch.cap:
-        ch.ringPush(move(value))
-        fut.complete()
-        return fut
+      var receiver: WaitingReceiver[T]
+      if ch.popLiveReceiver(receiver):
+        receiverFut = receiver.fut
+        doHandoff = true
+      elif ch.bounded:
+        if ch.count < ch.cap:
+          ch.ringPush(move(value))
+          doComplete = true
+        else:
+          # Buffer full — park the sender with its value.
+          # When a receiver pops, it will push this value into
+          # the ring and complete the sender's future.
+          ch.waitingSenders.addLast(WaitingSender[T](fut: fut, value: move(value)))
+          return fut
       else:
-        ch.waitingSenders.addLast(WaitingSender[T](fut: fut, value: move(value)))
-        return fut
-    else:
-      ch.unboundedBuf.addLast(move(value))
-      fut.complete()
-      return fut
+        ch.unboundedBuf.addLast(move(value))
+        doComplete = true
+  if doClosed:
+    fut.fail(newException(ChannelClosed, "Cannot send on closed channel"))
+  elif doHandoff:
+    receiverFut.complete(move(value))
+    fut.complete()
+  elif doComplete:
+    fut.complete()
+  # else: parked (bounded full) — completed later by a receiver
+  fut
 
 proc recv*[T](ch: AsyncChannel[T]): CpsFuture[T] =
   ## Receive a value from the channel. If the channel is empty,
   ## the returned future suspends until a value is available. If the
   ## channel is closed and empty, the future fails with ChannelClosed.
   let fut = newCpsFuture[T]()
-  if ch.mtEnabled:
-    acquire(ch.lock)
+  var val: T
+  var gotValue = false
+  var senderFut: CpsVoidFuture
+  var doClosed = false
+  withLock(ch.lock, ch.mtEnabled):
     if ch.bounded:
       if ch.count > 0:
-        var val = ch.ringPop()
-        # If a sender is waiting, push their value and wake them
+        val = ch.ringPop()
+        gotValue = true
         var sender: WaitingSender[T]
         if ch.popLiveSender(sender):
           ch.ringPush(move(sender.value))
-          release(ch.lock)
-          sender.fut.complete()
-          fut.complete(move(val))
-        else:
-          release(ch.lock)
-          fut.complete(move(val))
-        return fut
+          senderFut = sender.fut
       else:
-        # Buffer empty — check for direct handoff from waiting sender
+        # Empty buffer — direct handoff from waiting sender
         var sender: WaitingSender[T]
         if ch.popLiveSender(sender):
-          release(ch.lock)
-          sender.fut.complete()
-          fut.complete(move(sender.value))
-          return fut
+          val = move(sender.value)
+          senderFut = sender.fut
+          gotValue = true
     else:
       if ch.unboundedBuf.len > 0:
-        var val = ch.unboundedBuf.popFirst()
-        release(ch.lock)
-        fut.complete(move(val))
-        return fut
-    # Buffer empty and no waiting senders — suspend or fail
-    if ch.closed:
-      release(ch.lock)
-      fut.fail(newException(ChannelClosed, "Channel is closed and empty"))
-      return fut
-    ch.waitingReceivers.addLast(WaitingReceiver[T](fut: fut))
-    release(ch.lock)
-  else:
-    if ch.bounded:
-      if ch.count > 0:
-        var val = ch.ringPop()
-        var sender: WaitingSender[T]
-        if ch.popLiveSender(sender):
-          ch.ringPush(move(sender.value))
-          sender.fut.complete()
-        fut.complete(move(val))
-        return fut
+        val = ch.unboundedBuf.popFirst()
+        gotValue = true
+    if not gotValue:
+      if ch.closed:
+        doClosed = true
       else:
-        var sender: WaitingSender[T]
-        if ch.popLiveSender(sender):
-          sender.fut.complete()
-          fut.complete(move(sender.value))
-          return fut
-    else:
-      if ch.unboundedBuf.len > 0:
-        var val = ch.unboundedBuf.popFirst()
-        fut.complete(move(val))
-        return fut
-    if ch.closed:
-      fut.fail(newException(ChannelClosed, "Channel is closed and empty"))
-      return fut
-    ch.waitingReceivers.addLast(WaitingReceiver[T](fut: fut))
-  return fut
+        ch.waitingReceivers.addLast(WaitingReceiver[T](fut: fut))
+  # Complete futures outside lock
+  if doClosed:
+    fut.fail(newException(ChannelClosed, "Channel is closed and empty"))
+  elif gotValue:
+    if not senderFut.isNil:
+      senderFut.complete()
+    fut.complete(move(val))
+  # else: parked — completed later by a sender
+  fut

@@ -6,21 +6,18 @@
 when not defined(posix):
   {.error: "Unix domain sockets are only available on POSIX systems".}
 
-import std/[nativesockets, os, posix]
+import std/[nativesockets, os]
 import ../runtime
 import ../eventloop
+import ../private/platform
 import ./streams
-
-# ============================================================
-# POSIX types for Unix domain sockets
-# ============================================================
 
 const AF_UNIX_C = 1.cint  ## AF_UNIX / AF_LOCAL — same value on Linux and macOS
 
 type
   SockaddrUn {.importc: "struct sockaddr_un", header: "<sys/un.h>".} = object
     sun_family {.importc.}: uint16
-    sun_path {.importc.}: array[104, char]  # 104 on macOS, 108 on Linux — use 104 for portability
+    sun_path {.importc.}: array[104, char]  # 104 on macOS, 108 on Linux — importc uses real C size
 
 # ============================================================
 # UnixStream - connected Unix socket as AsyncStream
@@ -32,16 +29,31 @@ type
 
 proc unixStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
   let us = UnixStream(s)
+
+  # Fast path: try non-blocking recv immediately
+  var buf = newString(size)
+  let n = recv(us.fd, addr buf[0], size.cint, 0'i32)
+  if n > 0:
+    buf.setLen(n)
+    return completedFuture(buf)
+  elif n == 0:
+    return completedFuture("")  # EOF
+
+  let firstErr = osLastError()
+  if not firstErr.isWouldBlock():
+    return failedFuture[string](newException(streams.AsyncIoError,
+      "Read failed: " & osErrorMsg(firstErr)))
+
+  # Async path: register for readability, reuse buf across retries
   let fut = newCpsFuture[string]()
   fut.pinFutureRuntime()
   let loop = getEventLoop()
 
   proc tryRecv() =
-    var buf = newString(size)
     let n = recv(us.fd, addr buf[0], size.cint, 0'i32)
     if n < 0:
       let err = osLastError()
-      if err.int == EAGAIN or err.int == EWOULDBLOCK:
+      if err.isWouldBlock():
         loop.registerRead(us.fd, proc() =
           loop.unregister(us.fd)
           tryRecv()
@@ -57,16 +69,48 @@ proc unixStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
       buf.setLen(n)
       fut.complete(buf)
 
-  tryRecv()
+  loop.registerRead(us.fd, proc() =
+    loop.unregister(us.fd)
+    tryRecv()
+  )
   result = fut
+
+var gSyncWriteCompleted: CpsVoidFuture
+
+proc getSyncWriteCompleted(): CpsVoidFuture {.inline.} =
+  if gSyncWriteCompleted.isNil:
+    gSyncWriteCompleted = newCpsVoidFuture()
+    gSyncWriteCompleted.complete()
+  gSyncWriteCompleted
 
 proc unixStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
   let us = UnixStream(s)
+  let totalLen = data.len
+
+  # Fast path: try synchronous send first (common for local IPC)
+  var sent = 0
+  while sent < totalLen:
+    let n = send(us.fd, unsafeAddr data[sent], (totalLen - sent).cint, 0'i32)
+    if n < 0:
+      let err = osLastError()
+      if err.isWouldBlock():
+        break  # Need async path
+      else:
+        return failedVoidFuture(newException(streams.AsyncIoError,
+          "Write failed: " & osErrorMsg(err)))
+    elif n == 0:
+      return failedVoidFuture(newException(streams.ConnectionClosedError,
+        "Connection closed during write"))
+    else:
+      sent += n
+
+  if sent >= totalLen:
+    return getSyncWriteCompleted()
+
+  # Async path: need to wait for writability
   let fut = newCpsVoidFuture()
   fut.pinFutureRuntime()
   let loop = getEventLoop()
-  var sent = 0
-  let totalLen = data.len
 
   proc trySend() =
     while sent < totalLen:
@@ -74,7 +118,7 @@ proc unixStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
       let n = send(us.fd, unsafeAddr data[sent], remaining.cint, 0'i32)
       if n < 0:
         let err = osLastError()
-        if err.int == EAGAIN or err.int == EWOULDBLOCK:
+        if err.isWouldBlock():
           loop.registerWrite(us.fd, proc() =
             loop.unregister(us.fd)
             trySend()
@@ -91,6 +135,31 @@ proc unixStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
     fut.complete()
 
   trySend()
+  result = fut
+
+proc unixStreamReadInto(s: AsyncStream, buf: pointer, size: int): int =
+  ## Zero-copy read: recv directly into caller's buffer.
+  ## Returns >0 = bytes read, 0 = EOF, -1 = EAGAIN, < -1 = error.
+  let us = UnixStream(s)
+  let n = recv(us.fd, buf, size.cint, 0'i32)
+  if n > 0: return n
+  if n == 0: return 0
+  let err = osLastError()
+  if err.isWouldBlock(): return -1
+  return -2
+
+proc unixStreamWaitReadable(s: AsyncStream): CpsVoidFuture =
+  ## Wait until the socket is readable (data available or EOF).
+  let us = UnixStream(s)
+  let fut = newCpsVoidFuture()
+  fut.pinFutureRuntime()
+  let loop = getEventLoop()
+  try: loop.unregister(us.fd)
+  except Exception: discard
+  loop.registerRead(us.fd, proc() =
+    loop.unregister(us.fd)
+    fut.complete()
+  )
   result = fut
 
 proc unixStreamClose(s: AsyncStream) =
@@ -111,6 +180,8 @@ proc newUnixStream*(fd: SocketHandle): UnixStream =
   result.readProc = unixStreamRead
   result.writeProc = unixStreamWrite
   result.closeProc = unixStreamClose
+  result.readIntoProc = unixStreamReadInto
+  result.waitReadableProc = unixStreamWaitReadable
 
 # ============================================================
 # unixConnect - async Unix domain socket client connection
@@ -139,32 +210,67 @@ proc unixConnect*(path: string): CpsFuture[UnixStream] =
     return fut
 
   fd.setBlocking(false)
+  when defined(macosx) or defined(bsd):
+    var nosigpipe: cint = 1
+    const SO_NOSIGPIPE_C {.importc: "SO_NOSIGPIPE", header: "<sys/socket.h>".}: cint = 0
+    discard setsockopt(fd, SOL_SOCKET.cint, SO_NOSIGPIPE_C,
+                       addr nosigpipe, sizeof(nosigpipe).SockLen)
+
+  var writeRegistered = false
+  var fdClosed = false
+
+  proc closePendingFd() =
+    if fdClosed:
+      return
+    if writeRegistered:
+      try:
+        loop.unregister(fd)
+      except Exception:
+        discard
+      writeRegistered = false
+    fd.close()
+    fdClosed = true
 
   var addr_un = fillSockaddrUn(path)
 
   let res = connect(fd, cast[ptr SockAddr](addr addr_un), sizeof(addr_un).SockLen)
 
   if res == 0.cint:
+    fdClosed = true
     fut.complete(newUnixStream(fd))
     return fut
 
   let errCode = osLastError()
-  if errCode.int == EINPROGRESS or errCode.int == EWOULDBLOCK:
+  if errCode.isInProgress():
+    writeRegistered = true
     loop.registerWrite(fd, proc() =
-      loop.unregister(fd)
+      writeRegistered = false
+      try:
+        loop.unregister(fd)
+      except Exception:
+        discard
+      if fut.finished:
+        closePendingFd()
+        return
       var optVal: cint = 0
       var optLen: SockLen = sizeof(optVal).SockLen
       let r = getsockopt(fd, SOL_SOCKET.cint, SO_ERROR.cint,
                           cast[pointer](addr optVal), addr optLen)
       if r != 0 or optVal != 0:
-        fd.close()
+        closePendingFd()
         fut.fail(newException(streams.AsyncIoError, "Connection failed: " & $optVal))
       else:
+        fdClosed = true
         fut.complete(newUnixStream(fd))
     )
   else:
-    fd.close()
+    closePendingFd()
     fut.fail(newException(streams.AsyncIoError, "Connect failed: " & osErrorMsg(errCode)))
+
+  fut.addCallback(proc() =
+    if fut.isCancelled():
+      closePendingFd()
+  )
 
   result = fut
 
@@ -191,7 +297,7 @@ proc unixListen*(path: string, backlog: int = 128): UnixListener =
   fd.setBlocking(false)
 
   # Unlink existing socket file if present
-  discard posix.unlink(path.cstring)
+  discard unlink(path.cstring)
 
   var addr_un = fillSockaddrUn(path)
 
@@ -217,10 +323,10 @@ proc accept*(listener: UnixListener): CpsFuture[UnixStream] =
   proc tryAccept() =
     var clientAddr: SockaddrUn
     var addrLen: SockLen = sizeof(clientAddr).SockLen
-    let clientFd = posix.accept(listener.fd, cast[ptr SockAddr](addr clientAddr), addr addrLen)
+    let clientFd = accept(listener.fd, cast[ptr SockAddr](addr clientAddr), addr addrLen)
     if clientFd == osInvalidSocket:
       let err = osLastError()
-      if err.int == EAGAIN or err.int == EWOULDBLOCK:
+      if err.isWouldBlock():
         loop.registerRead(listener.fd, proc() =
           loop.unregister(listener.fd)
           tryAccept()
@@ -249,4 +355,4 @@ proc close*(listener: UnixListener) =
       discard
     listener.fd.close()
     # Remove the socket file
-    discard posix.unlink(listener.path.cstring)
+    discard unlink(listener.path.cstring)

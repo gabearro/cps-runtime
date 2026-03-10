@@ -8,7 +8,7 @@
 when not defined(gcAtomicArc) and not defined(useMalloc):
   {.error: "MT CPS runtime requires --mm:atomicArc (recommended) or -d:useMalloc for thread-safe ref counting. ORC's non-atomic refcounting causes double-free/SIGSEGV when continuations cross thread boundaries.".}
 
-import std/[locks, atomics, sysatomics, nativesockets]
+import std/[locks, atomics, sysatomics, nativesockets, os]
 import ../runtime
 import ../eventloop
 import ../private/mpsc_queue
@@ -29,8 +29,13 @@ proc ensureMtRuntimeLockReady() {.inline.} =
     initLock(mtRuntimeLock)
     mtRuntimeLockInit.store(2, moRelease)
   else:
+    var spins = 0
     while mtRuntimeLockInit.load(moAcquire) != 2:
-      cpuRelax()
+      inc spins
+      if spins < 64:
+        cpuRelax()
+      else:
+        sleep(0)  # yield CPU — init should complete quickly
 
 proc asScheduler(rt: CpsRuntime): Scheduler {.inline.} =
   if rt == nil or rt.schedulerPtr == nil:
@@ -41,6 +46,11 @@ proc asBlockingPool(rt: CpsRuntime): ThreadPool {.inline.} =
   if rt == nil or rt.blockingPoolPtr == nil:
     return nil
   cast[ThreadPool](cast[pointer](rt.blockingPoolPtr))
+
+proc asEventLoop(rt: CpsRuntime): EventLoop {.inline.} =
+  if rt == nil or rt.eventLoopPtr == nil:
+    return nil
+  cast[EventLoop](cast[pointer](rt.eventLoopPtr))
 
 proc runtimeFromHandle(handle: RuntimeHandle): CpsRuntime {.inline.} =
   if handle.runtime != nil:
@@ -53,7 +63,7 @@ proc runtimeFromHandle(handle: RuntimeHandle): CpsRuntime {.inline.} =
 proc makeWakeDispatcher(rt: CpsRuntime): proc() {.closure, gcsafe.} =
   result = proc() {.closure, gcsafe.} =
     {.cast(gcsafe).}:
-      let loop = cast[EventLoop](cast[pointer](rt.eventLoopPtr))
+      let loop = asEventLoop(rt)
       if loop != nil:
         loop.tryWakeSelector()
 
@@ -96,9 +106,9 @@ proc setupMtReactor(loop: EventLoop) =
       # A producer can publish tail before linking prev.next. If that happens
       # while we drain, re-signal so the reactor can't sleep through pending work.
       loop.tryWakeSelector()
-  loop.registerRead(loop.wakePipeRead, wakeCb)
-
   initMpscQueue(loop.crossThreadQueue)
+
+  loop.registerRead(loop.wakePipeRead, wakeCb)
 
 proc createMtRuntime(config: RuntimeConfig): CpsRuntime {.nimcall.} =
   ## Factory used by runtime.newMultiThreadRuntime().
@@ -134,11 +144,10 @@ proc createMtRuntime(config: RuntimeConfig): CpsRuntime {.nimcall.} =
   finally:
     release(mtRuntimeLock)
 
-type
-  WorkerError = object
-    ## Value type for transferring error info across threads.
-    msg: string
-    typeName: string
+proc captureWorkerError(e: ref CatchableError): ref CatchableError {.inline.} =
+  ## Reconstruct an exception as a value-safe copy for cross-thread transfer.
+  let msg = $e.name & ": " & e.msg
+  result = newException(CatchableError, msg)
 
 proc initMtRuntime*(numWorkers: int = 0,
                     numBlockingThreads: int = 0,
@@ -154,14 +163,14 @@ proc initMtRuntime*(numWorkers: int = 0,
   setMainRuntime(rt)
   setCurrentRuntime(rt)
   isReactorThread = true
-  result = cast[EventLoop](cast[pointer](rt.eventLoopPtr))
+  result = asEventLoop(rt)
 
 proc spawnBlockingOn*[T](handle: RuntimeHandle, body: proc(): T {.gcsafe.}): CpsFuture[T] =
   ## Offload blocking work to a runtime's blocking pool.
   let rt = runtimeFromHandle(handle)
   let pool = asBlockingPool(rt)
-  assert rt != nil and rt.flavor == rfMultiThread and pool != nil,
-    "MT runtime not initialized for this handle"
+  if rt == nil or rt.flavor != rfMultiThread or pool == nil:
+    raise newException(ValueError, "MT runtime not initialized for this handle")
 
   let fut = newCpsFuture[T]()
   fut.bindFutureRuntime(toHandle(rt))
@@ -173,13 +182,11 @@ proc spawnBlockingOn*[T](handle: RuntimeHandle, body: proc(): T {.gcsafe.}): Cps
       let val = body()
       {.cast(gcsafe).}:
         fut.complete(val)
-        GC_unref(fut)
     except CatchableError as e:
-      let errInfo = WorkerError(msg: e.msg, typeName: $e.name)
       {.cast(gcsafe).}:
-        let newErr = newException(CatchableError, errInfo.msg)
-        newErr.msg = errInfo.typeName & ": " & errInfo.msg
-        fut.fail(newErr)
+        fut.fail(captureWorkerError(e))
+    finally:
+      {.cast(gcsafe).}:
         GC_unref(fut)
   )
   result = fut
@@ -188,8 +195,8 @@ proc spawnBlockingOn*(handle: RuntimeHandle, body: proc() {.gcsafe.}): CpsVoidFu
   ## Offload blocking void work to a runtime's blocking pool.
   let rt = runtimeFromHandle(handle)
   let pool = asBlockingPool(rt)
-  assert rt != nil and rt.flavor == rfMultiThread and pool != nil,
-    "MT runtime not initialized for this handle"
+  if rt == nil or rt.flavor != rfMultiThread or pool == nil:
+    raise newException(ValueError, "MT runtime not initialized for this handle")
 
   let fut = newCpsVoidFuture()
   fut.bindFutureRuntime(toHandle(rt))
@@ -201,13 +208,11 @@ proc spawnBlockingOn*(handle: RuntimeHandle, body: proc() {.gcsafe.}): CpsVoidFu
       body()
       {.cast(gcsafe).}:
         fut.complete()
-        GC_unref(fut)
     except CatchableError as e:
-      let errInfo = WorkerError(msg: e.msg, typeName: $e.name)
       {.cast(gcsafe).}:
-        let newErr = newException(CatchableError, errInfo.msg)
-        newErr.msg = errInfo.typeName & ": " & errInfo.msg
-        fut.fail(newErr)
+        fut.fail(captureWorkerError(e))
+    finally:
+      {.cast(gcsafe).}:
         GC_unref(fut)
   )
   result = fut
@@ -236,7 +241,7 @@ proc shutdownMtRuntime*(rt: CpsRuntime) =
       pool.shutdown()
       rt.blockingPoolPtr = nil
 
-    let loop = cast[EventLoop](cast[pointer](rt.eventLoopPtr))
+    let loop = asEventLoop(rt)
     if loop != nil and loop.wakePipeRead != SocketHandle(-1):
       try:
         loop.unregister(loop.wakePipeRead)
@@ -247,11 +252,7 @@ proc shutdownMtRuntime*(rt: CpsRuntime) =
       loop.wakePipeRead = SocketHandle(-1)
       loop.wakePipeWrite = SocketHandle(-1)
 
-      while true:
-        let node = dequeue(loop.crossThreadQueue)
-        if node == nil:
-          break
-        freeNode(node)
+      discardAll(loop.crossThreadQueue)
       loop.mtActive = false
       loop.markWakeDrained()
 
@@ -270,12 +271,12 @@ proc shutdownMtRuntime*(rt: CpsRuntime) =
 proc shutdownMtRuntime*(loop: EventLoop) =
   ## Compatibility wrapper for existing call sites.
   let curRt = currentRuntime().runtime
-  if curRt != nil and cast[EventLoop](cast[pointer](curRt.eventLoopPtr)) == loop:
+  if curRt != nil and asEventLoop(curRt) == loop:
     shutdownMtRuntime(curRt)
     return
 
   let mainRt = mainRuntime().runtime
-  if mainRt != nil and cast[EventLoop](cast[pointer](mainRt.eventLoopPtr)) == loop:
+  if mainRt != nil and asEventLoop(mainRt) == loop:
     shutdownMtRuntime(mainRt)
 
 registerMtRuntimeFactory(createMtRuntime)

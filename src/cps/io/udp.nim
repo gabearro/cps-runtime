@@ -38,11 +38,15 @@ proc newUdpSocket*(domain: Domain = AF_INET): UdpSocket =
   if fd == osInvalidSocket:
     raise newException(streams.AsyncIoError, "Failed to create UDP socket")
   fd.setBlocking(false)
+  when defined(macosx) or defined(bsd):
+    var yes: cint = 1
+    const SO_NOSIGPIPE_C {.importc: "SO_NOSIGPIPE", header: "<sys/socket.h>".}: cint = 0
+    discard setsockopt(fd, SOL_SOCKET.cint, SO_NOSIGPIPE_C,
+                       addr yes, sizeof(yes).SockLen)
   result = UdpSocket(fd: fd, domain: domain, closed: false)
 
 proc bindAddr*(sock: UdpSocket, host: string, port: int) =
   ## Bind the UDP socket to a local address.
-  # Set SO_REUSEADDR to allow quick rebind after stop/restart
   var optval: cint = 1
   discard setsockopt(sock.fd, SOL_SOCKET.cint, SO_REUSEADDR.cint,
                      addr optval, sizeof(optval).SockLen)
@@ -61,6 +65,10 @@ proc bindAddr*(sock: UdpSocket, host: string, port: int) =
 # ============================================================
 # Address helpers
 # ============================================================
+
+proc detectDomain(ip: string, default: Domain): Domain {.inline.} =
+  ## Auto-detect IPv6 when `ip` contains a colon.
+  if ':' in ip: AF_INET6 else: default
 
 proc fillSockaddrIp*(ip: string, port: int, domain: Domain,
                      sa: var Sockaddr_storage): SockLen =
@@ -84,41 +92,68 @@ proc fillSockaddrIp*(ip: string, port: int, domain: Domain,
   else:
     raise newException(streams.AsyncIoError, "Unsupported domain: " & $domain)
 
-proc parseSenderAddress*(rd: RawDatagram): (string, int) =
-  ## Extract the sender IP and port from a RawDatagram.
-  var host = newString(256)
-  var portStr = newString(32)
-  let rc = getnameinfo(cast[ptr SockAddr](unsafeAddr rd.srcAddr), rd.addrLen,
-                       cstring(host), 256.SockLen,
-                       cstring(portStr), 32.SockLen,
+proc parseSockaddr(sa: ptr SockAddr, saLen: SockLen): (string, int) =
+  ## Parse IP address and port from a sockaddr via getnameinfo.
+  var host = newString(46)   # IPv6 max text: 45 chars
+  var portStr = newString(6) # Port max: 5 digits
+  let rc = getnameinfo(sa, saLen,
+                       cstring(host), host.len.SockLen,
+                       cstring(portStr), portStr.len.SockLen,
                        (NI_NUMERICHOST or NI_NUMERICSERV).cint)
   if rc != 0:
-    raise newException(streams.AsyncIoError, "Failed to parse sender address")
+    raise newException(streams.AsyncIoError, "Failed to parse socket address")
   host.setLen(host.cstring.len)
   portStr.setLen(portStr.cstring.len)
   result = (host, parseInt(portStr))
 
+proc extractPort*(sa: ptr SockAddr, saLen: SockLen): int =
+  ## Extract just the port from a sockaddr. Returns 0 on failure.
+  var portStr = newString(6)
+  let rc = getnameinfo(sa, saLen,
+                       nil, 0.SockLen,
+                       cstring(portStr), portStr.len.SockLen,
+                       NI_NUMERICSERV.cint)
+  if rc != 0:
+    return 0
+  portStr.setLen(portStr.cstring.len)
+  try: parseInt(portStr)
+  except ValueError: 0
+
+proc extractEndpoint*(sa: ptr SockAddr, saLen: SockLen): (string, int) =
+  ## Extract IP and port from a sockaddr. Returns ("", 0) on failure.
+  var host = newString(46)
+  var portStr = newString(6)
+  let rc = getnameinfo(sa, saLen,
+                       cstring(host), host.len.SockLen,
+                       cstring(portStr), portStr.len.SockLen,
+                       (NI_NUMERICHOST or NI_NUMERICSERV).cint)
+  if rc != 0:
+    return ("", 0)
+  host.setLen(host.cstring.len)
+  portStr.setLen(portStr.cstring.len)
+  try: (host, parseInt(portStr))
+  except ValueError: (host, 0)
+
+proc parseSenderAddress*(rd: RawDatagram): (string, int) =
+  ## Extract the sender IP and port from a RawDatagram.
+  parseSockaddr(cast[ptr SockAddr](unsafeAddr rd.srcAddr), rd.addrLen)
+
 # ============================================================
-# Existing high-level API
+# Send helpers
 # ============================================================
 
-proc sendTo*(sock: UdpSocket, data: string, host: string, port: int): CpsVoidFuture =
-  ## Send a datagram to the specified host:port (uses getAddrInfo).
+proc sendWithRetry(sock: UdpSocket, data: string,
+                   destAddr: Sockaddr_storage, destLen: SockLen,
+                   errorContext: string): CpsVoidFuture =
+  ## Shared non-blocking sendto with EAGAIN retry via event loop.
   let fut = newCpsVoidFuture()
   fut.pinFutureRuntime()
   let loop = getEventLoop()
-
-  let aiList = getAddrInfo(host, Port(port), sock.domain, SOCK_DGRAM, IPPROTO_UDP)
-  if aiList == nil:
-    fut.fail(newException(streams.AsyncIoError, "Could not resolve address: " & host))
-    return fut
-
-  let ai_addr = aiList.ai_addr
-  let ai_addrlen = aiList.ai_addrlen
+  var sa = destAddr
 
   proc trySend() =
     let n = sendto(sock.fd, unsafeAddr data[0], data.len.cint, 0'i32,
-                   ai_addr, ai_addrlen.SockLen)
+                   cast[ptr SockAddr](addr sa), destLen)
     if n < 0:
       let err = osLastError()
       if err.isWouldBlock():
@@ -126,20 +161,36 @@ proc sendTo*(sock: UdpSocket, data: string, host: string, port: int): CpsVoidFut
           loop.unregister(sock.fd)
           trySend()
         )
-        return
       else:
-        freeAddrInfo(aiList)
-        fut.fail(newException(
-          streams.AsyncIoError,
-          "sendTo failed host=" & host & " port=" & $port &
-            " bytes=" & $data.len & ": " & osErrorMsg(err)
-        ))
-        return
-    freeAddrInfo(aiList)
-    fut.complete()
+        fut.fail(newException(streams.AsyncIoError,
+          errorContext & ": " & osErrorMsg(err)))
+    else:
+      fut.complete()
 
   trySend()
   result = fut
+
+# ============================================================
+# High-level API
+# ============================================================
+
+proc sendTo*(sock: UdpSocket, data: string, host: string, port: int): CpsVoidFuture =
+  ## Send a datagram to the specified host:port (uses getAddrInfo).
+  let aiList = getAddrInfo(host, Port(port), sock.domain, SOCK_DGRAM, IPPROTO_UDP)
+  if aiList == nil:
+    let fut = newCpsVoidFuture()
+    fut.pinFutureRuntime()
+    fut.fail(newException(streams.AsyncIoError, "Could not resolve address: " & host))
+    return fut
+
+  # Copy address data and free immediately — avoids holding aiList across retries
+  var sa: Sockaddr_storage
+  copyMem(addr sa, aiList.ai_addr, aiList.ai_addrlen)
+  let saLen = aiList.ai_addrlen.SockLen
+  freeAddrInfo(aiList)
+
+  result = sendWithRetry(sock, data, sa, saLen,
+    "sendTo host=" & host & " port=" & $port & " bytes=" & $data.len)
 
 proc recvFrom*(sock: UdpSocket, maxSize: int = 65535): CpsFuture[Datagram] =
   ## Receive a datagram. Returns the data and sender address.
@@ -147,7 +198,7 @@ proc recvFrom*(sock: UdpSocket, maxSize: int = 65535): CpsFuture[Datagram] =
   fut.pinFutureRuntime()
   let loop = getEventLoop()
   var buf = newString(maxSize)
-  var registered = false  ## Track whether we have a pending selector registration
+  var registered = false
 
   proc tryRecv() =
     var srcAddr: Sockaddr_storage
@@ -170,29 +221,12 @@ proc recvFrom*(sock: UdpSocket, maxSize: int = 65535): CpsFuture[Datagram] =
         return
     buf.setLen(n)
 
-    # Parse sender address
-    var senderHost = newString(256)
-    var senderPort = newString(32)
-    let rc = getnameinfo(cast[ptr SockAddr](addr srcAddr), addrLen,
-                         cstring(senderHost), 256.SockLen,
-                         cstring(senderPort), 32.SockLen,
-                         (NI_NUMERICHOST or NI_NUMERICSERV).cint)
-    if rc != 0:
-      fut.fail(newException(streams.AsyncIoError, "Failed to parse sender address"))
-      return
-
-    senderHost.setLen(senderHost.cstring.len)
-    senderPort.setLen(senderPort.cstring.len)
-
-    fut.complete(Datagram(
-      data: buf,
-      address: senderHost,
-      port: parseInt(senderPort)
-    ))
+    let (senderHost, senderPort) = parseSockaddr(
+      cast[ptr SockAddr](addr srcAddr), addrLen)
+    fut.complete(Datagram(data: buf, address: senderHost, port: senderPort))
 
   # When the future is cancelled (e.g. by withTimeout), clean up the
-  # selector registration to prevent orphaned read callbacks that hold
-  # references to the socket.
+  # selector registration to prevent orphaned read callbacks.
   fut.addCallback(proc() =
     if fut.isCancelled() and registered:
       try:
@@ -209,15 +243,41 @@ proc recvFrom*(sock: UdpSocket, maxSize: int = 65535): CpsFuture[Datagram] =
 # Low-level send (pre-resolved IP, no getAddrInfo)
 # ============================================================
 
+proc fillSockaddrForSocket*(sock: UdpSocket, ip: string, port: int,
+                            sa: var Sockaddr_storage): SockLen =
+  ## Build a sockaddr for sending on this socket.
+  ## Handles dual-stack: IPv4 addresses on IPv6 sockets use IPv4-mapped IPv6.
+  let ipDomain = detectDomain(ip, AF_INET)
+  if sock.domain == AF_INET6 and ipDomain == AF_INET:
+    # Build ::ffff:x.x.x.x mapped address
+    zeroMem(addr sa, sizeof(sa))
+    var sa6 = cast[ptr Sockaddr_in6](addr sa)
+    sa6.sin6_family = AF_INET6.TSa_Family
+    sa6.sin6_port = nativesockets.htons(port.uint16)
+    let addrBytes = cast[ptr array[16, byte]](unsafeAddr sa6.sin6_addr)
+    addrBytes[10] = 0xFF
+    addrBytes[11] = 0xFF
+    var tmpSa4: Sockaddr_in
+    if inet_pton(AF_INET.cint, ip.cstring, addr tmpSa4.sin_addr) != 1:
+      raise newException(streams.AsyncIoError, "Invalid IPv4 address: " & ip)
+    let v4Bytes = cast[ptr array[4, byte]](addr tmpSa4.sin_addr)
+    addrBytes[12] = v4Bytes[0]
+    addrBytes[13] = v4Bytes[1]
+    addrBytes[14] = v4Bytes[2]
+    addrBytes[15] = v4Bytes[3]
+    result = sizeof(Sockaddr_in6).SockLen
+  else:
+    result = fillSockaddrIp(ip, port, detectDomain(ip, sock.domain), sa)
+
 proc trySendToAddr*(sock: UdpSocket, data: string, ip: string, port: int,
                     domain: Domain = AF_INET): bool =
   ## Fire-and-forget send to a pre-resolved IP address.
   ## Returns true on success, false on EAGAIN/EWOULDBLOCK.
   ## Raises AsyncIoError on hard errors.
   ## Auto-detects IPv6 when `ip` contains a colon.
-  let actualDomain = if ':' in ip: AF_INET6 else: domain
+  ## On dual-stack IPv6 sockets, IPv4 addresses are sent as IPv4-mapped IPv6.
   var sa: Sockaddr_storage
-  let saLen = fillSockaddrIp(ip, port, actualDomain, sa)
+  let saLen = fillSockaddrForSocket(sock, ip, port, sa)
   let n = sendto(sock.fd, unsafeAddr data[0], data.len.cint, 0'i32,
                  cast[ptr SockAddr](addr sa), saLen)
   if n < 0:
@@ -232,36 +292,11 @@ proc sendToAddr*(sock: UdpSocket, data: string, ip: string, port: int,
                  domain: Domain = AF_INET): CpsVoidFuture =
   ## Async send to a pre-resolved IP address with write-readiness waiting.
   ## Auto-detects IPv6 when `ip` contains a colon.
-  let actualDomain = if ':' in ip: AF_INET6 else: domain
-  let fut = newCpsVoidFuture()
-  fut.pinFutureRuntime()
-  let loop = getEventLoop()
-
+  ## On dual-stack IPv6 sockets, IPv4 addresses are sent as IPv4-mapped IPv6.
   var sa: Sockaddr_storage
-  let saLen = fillSockaddrIp(ip, port, actualDomain, sa)
-
-  proc trySend() =
-    let n = sendto(sock.fd, unsafeAddr data[0], data.len.cint, 0'i32,
-                   cast[ptr SockAddr](addr sa), saLen)
-    if n < 0:
-      let err = osLastError()
-      if err.isWouldBlock():
-        loop.registerWrite(sock.fd, proc() =
-          loop.unregister(sock.fd)
-          trySend()
-        )
-        return
-      else:
-        fut.fail(newException(
-          streams.AsyncIoError,
-          "sendToAddr failed ip=" & ip & " port=" & $port &
-            " bytes=" & $data.len & ": " & osErrorMsg(err)
-        ))
-        return
-    fut.complete()
-
-  trySend()
-  result = fut
+  let saLen = fillSockaddrForSocket(sock, ip, port, sa)
+  result = sendWithRetry(sock, data, sa, saLen,
+    "sendToAddr ip=" & ip & " port=" & $port & " bytes=" & $data.len)
 
 # ============================================================
 # Persistent read callback (for multiplexed protocols like DNS)
@@ -283,7 +318,6 @@ proc onRecv*(sock: UdpSocket, maxSize: int, callback: UdpRecvCallback) =
       discard
 
     # Drain all available datagrams
-    var drainCount = 0
     while not sock.closed:
       var srcAddr: Sockaddr_storage
       var addrLen: SockLen = sizeof(srcAddr).SockLen
@@ -292,11 +326,8 @@ proc onRecv*(sock: UdpSocket, maxSize: int, callback: UdpRecvCallback) =
                        cast[ptr SockAddr](addr srcAddr), addr addrLen)
       if n <= 0:
         break
-      inc drainCount
       # Copy data out so the shared buffer can be reused
       let data = buf[0 ..< n]
-      # Catch all exceptions from callback to prevent readHandler from being
-      # permanently de-registered by processIo's exception handler.
       try:
         callback(data, srcAddr, addrLen)
       except Exception:
@@ -317,7 +348,7 @@ proc cancelOnRecv*(sock: UdpSocket) =
     discard
 
 # ============================================================
-# Close
+# Utilities and close
 # ============================================================
 
 proc localPort*(sock: UdpSocket): int =
@@ -326,16 +357,10 @@ proc localPort*(sock: UdpSocket): int =
   var saLen: SockLen = sizeof(sa).SockLen
   if getsockname(sock.fd, cast[ptr SockAddr](addr sa), addr saLen) != 0:
     raise newException(streams.AsyncIoError, "getsockname failed")
-  var host = newString(256)
-  var portStr = newString(32)
-  let rc = getnameinfo(cast[ptr SockAddr](addr sa), saLen,
-                       cstring(host), 256.SockLen,
-                       cstring(portStr), 32.SockLen,
-                       (NI_NUMERICHOST or NI_NUMERICSERV).cint)
-  if rc != 0:
-    raise newException(streams.AsyncIoError, "getnameinfo failed in localPort")
-  portStr.setLen(portStr.cstring.len)
-  return parseInt(portStr)
+  if sock.domain == AF_INET:
+    result = int(nativesockets.ntohs(cast[ptr Sockaddr_in](addr sa).sin_port))
+  else:
+    result = int(nativesockets.ntohs(cast[ptr Sockaddr_in6](addr sa).sin6_port))
 
 proc close*(sock: UdpSocket) =
   ## Close the UDP socket.

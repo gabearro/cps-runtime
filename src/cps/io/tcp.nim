@@ -3,7 +3,7 @@
 ## Provides TCP client (TcpStream) and server (TcpListener) sockets
 ## integrated with the CPS event loop.
 
-import std/[nativesockets, net, os, strutils]
+import std/[nativesockets, net, os]
 from std/posix import shutdown, SHUT_WR
 import ../runtime
 import ../eventloop
@@ -11,6 +11,7 @@ import ../private/platform
 import ./streams
 import ./dns
 import ./timeouts
+import ./udp
 
 const
   TCP_NODELAY_OPT {.importc: "TCP_NODELAY", header: "<netinet/tcp.h>".}: cint = 0
@@ -18,6 +19,25 @@ const
   IPPROTO_IPV6_C {.importc: "IPPROTO_IPV6", header: "<netinet/in.h>".}: cint = 0
   IPV6_V6ONLY_C {.importc: "IPV6_V6ONLY", header: "<netinet/in.h>".}: cint = 0
   TcpConnectPerAddressTimeoutMs = 5000
+
+when defined(macosx) or defined(bsd):
+  const SO_NOSIGPIPE_C {.importc: "SO_NOSIGPIPE", header: "<sys/socket.h>".}: cint = 0
+
+proc setSoNosigpipe(fd: SocketHandle) {.inline.} =
+  ## On macOS/BSD, set SO_NOSIGPIPE to prevent SIGPIPE on broken-pipe writes.
+  ## Combined with the global SIGPIPE ignore, this provides defense in depth.
+  when defined(macosx) or defined(bsd):
+    var yes: cint = 1
+    discard setsockopt(fd, SOL_SOCKET.cint, SO_NOSIGPIPE_C,
+                       addr yes, sizeof(yes).SockLen)
+
+# Ensure SIGPIPE is ignored at module init — before any socket I/O.
+when defined(posix):
+  proc c_signal(sig: cint, handler: pointer): pointer
+    {.importc: "signal", header: "<signal.h>".}
+  const SIG_IGN_PTR = cast[pointer](1)
+  const SIGPIPE_C = 13.cint
+  discard c_signal(SIGPIPE_C, SIG_IGN_PTR)
 
 # ============================================================
 # TcpStream - connected TCP socket as AsyncStream
@@ -75,6 +95,12 @@ proc tcpStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
   loop.registerRead(ts.fd, proc() =
     loop.unregister(ts.fd)
     tryRecv()
+  )
+
+  fut.addCallback(proc() =
+    if fut.isCancelled():
+      try: loop.unregister(ts.fd)
+      except Exception: discard
   )
   result = fut
 
@@ -143,6 +169,12 @@ proc tcpStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
     fut.complete()
 
   trySend()
+
+  fut.addCallback(proc() =
+    if fut.isCancelled():
+      try: loop.unregister(ts.fd)
+      except Exception: discard
+  )
   result = fut
 
 proc tcpStreamReadInto(s: AsyncStream, buf: pointer, size: int): int =
@@ -223,6 +255,7 @@ proc tcpConnectIp*(ip: string, port: int, domain: Domain = AF_INET): CpsFuture[T
     return fut
 
   fd.setBlocking(false)
+  fd.setSoNosigpipe()
 
   var writeRegistered = false
   var fdClosed = false
@@ -247,28 +280,11 @@ proc tcpConnectIp*(ip: string, port: int, domain: Domain = AF_INET): CpsFuture[T
   # Build sockaddr directly from IP via inet_pton (no getAddrInfo)
   var sa: Sockaddr_storage
   var saLen: SockLen
-  zeroMem(addr sa, sizeof(sa))
-  if domain == AF_INET:
-    var sa4 = cast[ptr Sockaddr_in](addr sa)
-    sa4.sin_family = AF_INET.TSa_Family
-    sa4.sin_port = nativesockets.htons(port.uint16)
-    if inet_pton(AF_INET.cint, ip.cstring, addr sa4.sin_addr) != 1:
-      closePendingFd()
-      fut.fail(newException(streams.AsyncIoError, "Invalid IPv4 address: " & ip))
-      return fut
-    saLen = sizeof(Sockaddr_in).SockLen
-  elif domain == AF_INET6:
-    var sa6 = cast[ptr Sockaddr_in6](addr sa)
-    sa6.sin6_family = AF_INET6.TSa_Family
-    sa6.sin6_port = nativesockets.htons(port.uint16)
-    if inet_pton(AF_INET6.cint, ip.cstring, addr sa6.sin6_addr) != 1:
-      closePendingFd()
-      fut.fail(newException(streams.AsyncIoError, "Invalid IPv6 address: " & ip))
-      return fut
-    saLen = sizeof(Sockaddr_in6).SockLen
-  else:
+  try:
+    saLen = fillSockaddrIp(ip, port, domain, sa)
+  except OSError as e:
     closePendingFd()
-    fut.fail(newException(streams.AsyncIoError, "Unsupported domain: " & $domain))
+    fut.fail(newException(streams.AsyncIoError, e.msg))
     return fut
 
   let res = connect(fd, cast[ptr SockAddr](addr sa), saLen)
@@ -296,7 +312,8 @@ proc tcpConnectIp*(ip: string, port: int, domain: Domain = AF_INET): CpsFuture[T
                           cast[pointer](addr optVal), addr optLen)
       if r != 0 or optVal != 0:
         closePendingFd()
-        fut.fail(newException(streams.AsyncIoError, "Connection failed: " & $optVal))
+        fut.fail(newException(streams.AsyncIoError,
+          "Connection failed: " & osErrorMsg(OSErrorCode(optVal))))
       else:
         fdClosed = true
         fut.complete(newTcpStream(fd, domain))
@@ -391,6 +408,8 @@ proc tcpListen*(host: string, port: int, backlog: int = 128,
   if fd == osInvalidSocket:
     raise newException(streams.AsyncIoError, "Failed to create socket")
 
+  fd.setSoNosigpipe()
+
   # SO_REUSEADDR
   var yes: cint = 1
   if setsockopt(fd, SOL_SOCKET.cint, SO_REUSEADDR.cint,
@@ -434,16 +453,7 @@ proc localPort*(listener: TcpListener): int =
   var saLen: SockLen = sizeof(sa).SockLen
   if getsockname(listener.fd, cast[ptr SockAddr](addr sa), addr saLen) != 0:
     return 0
-  var portStr = newString(32)
-  let rc = getnameinfo(cast[ptr SockAddr](addr sa), saLen,
-                       nil, 0.SockLen,
-                       cstring(portStr), 32.SockLen,
-                       NI_NUMERICSERV.cint)
-  if rc != 0:
-    return 0
-  portStr.setLen(portStr.cstring.len)
-  try: parseInt(portStr)
-  except ValueError: 0
+  extractPort(cast[ptr SockAddr](addr sa), saLen)
 
 proc peerEndpoint*(stream: TcpStream): tuple[ip: string, port: uint16] =
   ## Return the connected peer endpoint for this stream.
@@ -452,22 +462,10 @@ proc peerEndpoint*(stream: TcpStream): tuple[ip: string, port: uint16] =
   var saLen: SockLen = sizeof(sa).SockLen
   if getpeername(stream.fd, cast[ptr SockAddr](addr sa), addr saLen) != 0:
     return ("", 0'u16)
-
-  var host = newString(256)
-  var portStr = newString(32)
-  let rc = getnameinfo(cast[ptr SockAddr](addr sa), saLen,
-                       cstring(host), 256.SockLen,
-                       cstring(portStr), 32.SockLen,
-                       (NI_NUMERICHOST or NI_NUMERICSERV).cint)
-  if rc != 0:
-    return ("", 0'u16)
-
-  host.setLen(host.cstring.len)
-  portStr.setLen(portStr.cstring.len)
-  let portNum = parseInt(portStr)
-  if portNum <= 0 or portNum > 65535:
-    return (host, 0'u16)
-  (host, uint16(portNum))
+  let (ip, port) = extractEndpoint(cast[ptr SockAddr](addr sa), saLen)
+  if port <= 0 or port > 65535:
+    return (ip, 0'u16)
+  (ip, uint16(port))
 
 proc accept*(listener: TcpListener): CpsFuture[TcpStream] =
   ## Accept a new connection asynchronously. Returns a TcpStream.
@@ -491,6 +489,7 @@ proc accept*(listener: TcpListener): CpsFuture[TcpStream] =
         fut.fail(newException(streams.AsyncIoError, "Accept failed: " & osErrorMsg(err)))
         return
     clientFd.setBlocking(false)
+    clientFd.setSoNosigpipe()
     fut.complete(newTcpStream(clientFd, listener.domain))
 
   tryAccept()
