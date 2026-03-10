@@ -56,6 +56,7 @@ type
     event*: TrackerEvent
     compact*: bool
     numWant*: int
+    ipv6*: string              ## BEP 7: client's IPv6 address (triggers peers6 response)
 
   ScrapeInfo* = object
     complete*: int       ## Number of seeders
@@ -140,6 +141,9 @@ proc buildAnnounceUrl*(baseUrl: string, params: AnnounceParams): string =
   if params.event != teNone:
     url.add("&event=")
     url.add($params.event)
+  if params.ipv6.len > 0:
+    url.add("&ipv6=")
+    url.add(encodeUrl(params.ipv6))
   url
 
 proc announceToScrapeUrl*(announceUrl: string): string =
@@ -366,20 +370,35 @@ proc resolveAndBindUdp(host: string): CpsFuture[tuple[sock: UdpSocket, ip: strin
 
 proc udpTrackerConnect(sock: UdpSocket, ip: string, port: int,
                        transId: uint32): CpsFuture[uint64] {.cps, nosinks.} =
-  ## BEP 15 UDP tracker connect handshake. Returns the connection ID.
+  ## BEP 15 UDP tracker connect handshake with retransmission. Returns the connection ID.
   var connectReq: string = newStringOfCap(16)
   connectReq.writeUint64BE(UdpProtocolId)
   connectReq.writeUint32BE(UdpConnectAction)
   connectReq.writeUint32BE(transId)
-  await sock.sendToAddr(connectReq, ip, port)
-  let connResp = await withTimeout(sock.recvFrom(65535), 15000)
-  if connResp.data.len < 16:
-    raise newException(TrackerError, "UDP connect response too short")
-  let respAction: uint32 = readUint32BE(connResp.data, 0)
-  let respTransId: uint32 = readUint32BE(connResp.data, 4)
-  if respAction != UdpConnectAction or respTransId != transId:
-    raise newException(TrackerError, "UDP connect response mismatch")
-  return readUint64BE(connResp.data, 8)
+  # BEP 15: retransmit with exponential backoff (5s, 10s, 20s)
+  var attempt: int = 0
+  while attempt < 3:
+    await sock.sendToAddr(connectReq, ip, port)
+    let timeoutMs: int = 5000 * (1 shl attempt)
+    var recvError: string = ""
+    var connResp: Datagram
+    try:
+      connResp = await withTimeout(sock.recvFrom(65535), timeoutMs)
+    except CatchableError as e:
+      recvError = e.msg
+    if recvError.len > 0:
+      attempt += 1
+      continue
+    if connResp.data.len < 16:
+      attempt += 1
+      continue
+    let respAction: uint32 = readUint32BE(connResp.data, 0)
+    let respTransId: uint32 = readUint32BE(connResp.data, 4)
+    if respAction != UdpConnectAction or respTransId != transId:
+      attempt += 1
+      continue
+    return readUint64BE(connResp.data, 8)
+  raise newException(TrackerError, "UDP tracker connect timed out after " & $attempt & " attempts")
 
 # ============================================================
 # HTTP/HTTPS announce
@@ -516,9 +535,23 @@ proc udpAnnounce*(announceUrl: string, params: AnnounceParams): CpsFuture[Tracke
     announceReq.add(char((params.port shr 8).byte))
     announceReq.add(char((params.port and 0xFF).byte))
 
-    await sock.sendToAddr(announceReq, ip, port.int)
-    let annResp = await withTimeout(sock.recvFrom(65535), 10000)
-    annRespData = annResp.data
+    # BEP 15: retransmit announce with exponential backoff (5s, 10s, 20s)
+    var annAttempt: int = 0
+    while annAttempt < 3:
+      await sock.sendToAddr(announceReq, ip, port.int)
+      let annTimeoutMs: int = 5000 * (1 shl annAttempt)
+      var annRecvError: string = ""
+      try:
+        let annResp: Datagram = await withTimeout(sock.recvFrom(65535), annTimeoutMs)
+        annRespData = annResp.data
+      except CatchableError as e:
+        annRecvError = e.msg
+      if annRecvError.len > 0:
+        annAttempt += 1
+        continue
+      break
+    if annRespData.len == 0:
+      raise newException(TrackerError, "UDP announce timed out after retries")
   except CatchableError as e:
     udpError = e.msg
   sock.close()
@@ -643,9 +676,23 @@ proc udpScrape*(announceUrl: string, infoHash: array[20, byte]): CpsFuture[Scrap
     var ihStr = newString(20)
     copyMem(addr ihStr[0], unsafeAddr infoHash[0], 20)
     scrapeReq.add(ihStr)
-    await sock.sendToAddr(scrapeReq, ip, port.int)
-    let scrapeResp = await withTimeout(sock.recvFrom(65535), 15000)
-    scrapeRespData = scrapeResp.data
+    # BEP 15: retransmit scrape with exponential backoff (5s, 10s, 20s)
+    var scrapeAttempt: int = 0
+    while scrapeAttempt < 3:
+      await sock.sendToAddr(scrapeReq, ip, port.int)
+      let scrapeTimeoutMs: int = 5000 * (1 shl scrapeAttempt)
+      var scrapeRecvError: string = ""
+      try:
+        let scrapeResp: Datagram = await withTimeout(sock.recvFrom(65535), scrapeTimeoutMs)
+        scrapeRespData = scrapeResp.data
+      except CatchableError as e:
+        scrapeRecvError = e.msg
+      if scrapeRecvError.len > 0:
+        scrapeAttempt += 1
+        continue
+      break
+    if scrapeRespData.len == 0:
+      raise newException(TrackerError, "UDP scrape timed out after retries")
   except CatchableError as e:
     udpError = e.msg
   sock.close()

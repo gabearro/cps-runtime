@@ -191,6 +191,36 @@ proc getLocalIp*(): string =
     return ""
   result = $cast[cstring](addr buf[0])
 
+proc getLocalIpv6*(): string =
+  ## Get the local IPv6 address by connecting a UDP socket to [2001:4860:4860::8888]:53.
+  ## This doesn't send any data — it just lets the OS pick the route.
+  ## Returns "" if no IPv6 connectivity is available.
+  let fd = createNativeSocket(Domain.AF_INET6, SockType.SOCK_DGRAM, Protocol.IPPROTO_UDP)
+  if fd == osInvalidSocket:
+    return ""
+  defer: fd.close()
+
+  var sa6: Sockaddr_in6
+  zeroMem(addr sa6, sizeof(sa6))
+  sa6.sin6_family = AF_INET6.TSa_Family
+  sa6.sin6_port = nativesockets.htons(53)
+  if inet_pton(AF_INET6.cint, "2001:4860:4860::8888".cstring, addr sa6.sin6_addr) != 1:
+    return ""
+
+  if connect(fd, cast[ptr SockAddr](addr sa6), sizeof(sa6).SockLen) != 0:
+    return ""
+
+  var localAddr: Sockaddr_in6
+  var addrLen: SockLen = sizeof(localAddr).SockLen
+  if getsockname(fd, cast[ptr SockAddr](addr localAddr), addr addrLen) != 0:
+    return ""
+
+  var buf: array[46, char]
+  let p = inet_ntop(AF_INET6.cint, addr localAddr.sin6_addr, cast[cstring](addr buf[0]), 46.int32)
+  if p == nil:
+    return ""
+  result = $cast[cstring](addr buf[0])
+
 proc getDefaultGateway*(): string =
   ## Get the default gateway IP.
   ## Linux: parses /proc/net/route. macOS: uses .1 heuristic on local IP.

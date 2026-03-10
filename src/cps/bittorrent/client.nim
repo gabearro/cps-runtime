@@ -2348,6 +2348,11 @@ proc trackerLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
   var announceParams = defaultAnnounceParams(
     client.metainfo.info, client.peerId, client.config.listenPort)
 
+  # BEP 7: include our IPv6 address so trackers return peers6
+  let localIpv6: string = getLocalIpv6()
+  if localIpv6.len > 0:
+    announceParams.ipv6 = localIpv6
+
   let trackerUrls = collectTrackerUrls(client.metainfo)
 
   if trackerUrls.len == 0:
