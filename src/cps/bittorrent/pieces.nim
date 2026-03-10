@@ -2,7 +2,7 @@
 ##
 ## Manages piece state, block requests, verification, and rarest-first selection.
 
-import std/[algorithm, tables, times]
+import std/[algorithm, sets, tables, times]
 import metainfo
 import peer_protocol
 import sha1
@@ -253,6 +253,26 @@ proc resetPiece*(pm: PieceManager, pieceIdx: int) =
   for blk in piece.blocks.mitems:
     blk.state = bsEmpty
 
+proc failAndResetPiece*(pm: PieceManager, pieceIdx: int) =
+  ## Fail a piece and immediately transition to psEmpty for re-download.
+  ## Single-pass accounting — avoids fragile failPiece + resetPiece chains.
+  if not pm.validPieceIdx(pieceIdx): return
+  var piece = addr pm.pieces[pieceIdx]
+  let oldState = piece.state
+  pm.downloaded -= int64(piece.receivedBytes)
+  if oldState == psVerified:
+    pm.verifiedCount -= 1
+  elif oldState == psOptimistic:
+    pm.optimisticCount -= 1
+  if oldState in CompletedStates:
+    pm.completedCount -= 1
+  piece.state = psEmpty
+  piece.receivedBytes = 0
+  piece.data = ""
+  piece.consensus = PieceConsensus()
+  for blk in piece.blocks.mitems:
+    blk.state = bsEmpty
+
 proc getNeededBlocks*(pm: PieceManager, pieceIdx: int, maxBlocks: int = 5): seq[tuple[offset: int, length: int]] =
   ## Get unrequested blocks for a piece.
   if not pm.validPieceIdx(pieceIdx):
@@ -302,7 +322,7 @@ proc hasEmptyBlocks(piece: PieceData): bool =
 
 proc selectPiece*(pm: PieceManager, peerBitfield: seq[byte],
                   availability: seq[int],
-                  exclude: seq[int] = @[]): int =
+                  exclude: HashSet[int] = initHashSet[int]()): int =
   ## Select the rarest piece that the peer has and we need.
   ## Among equally-rare pieces, pick randomly to avoid sequential behavior.
   ## Always prefers partially downloaded pieces first.

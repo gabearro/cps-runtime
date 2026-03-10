@@ -3036,6 +3036,18 @@ proc buildPatchBinary(includeEditableFields: bool, dirtyMask: uint32): seq[byte]
       w.key("protocolHolepunchAttempts"); w.writeInt(ts.protocol.holepunchAttempts)
       w.key("protocolHolepunchSuccesses"); w.writeInt(ts.protocol.holepunchSuccesses)
       w.key("protocolHolepunchLastError"); w.writeString(ts.protocol.holepunchLastError)
+      # Per-torrent piece breakdown percentages (computed from pieceMapData)
+      var countV, countO, countP: int
+      for c in ts.pieceMapData:
+        case c
+        of '3': inc countV
+        of '5': inc countO
+        of '1', '2': inc countP
+        else: discard
+      let pcDivisor = max(ts.pieceCount, 1).float
+      w.key("pctVerified"); w.writeFloat(countV.float / pcDivisor)
+      w.key("pctOptimistic"); w.writeFloat(countO.float / pcDivisor)
+      w.key("pctPartial"); w.writeFloat(countP.float / pcDivisor)
       w.endObject()
     w.endArray()
     addPatchJsonStringField(fields, fldTorrents, w.finish())

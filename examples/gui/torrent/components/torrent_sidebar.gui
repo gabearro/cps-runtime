@@ -34,10 +34,8 @@ component TorrentRow(torrent: Torrent, isSelected: Bool, isDark: Bool) {
       Spacer()
     }
 
-    // Progress bar
-    ProgressView(value: torrent.progress, total: 1.0)
-      .tint(stateColor)
-      .scaleEffect(x: 1.0, y: 0.5, anchor: UnitPoint.center)
+    // Progress bar (segmented by piece state)
+    TorrentProgressBar(pctVerified: torrent.pctVerified, pctOptimistic: torrent.pctOptimistic, pctPartial: torrent.pctPartial, isDark: isDark)
 
     // Stats row
     HStack(spacing: 0) {

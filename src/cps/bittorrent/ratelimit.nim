@@ -20,15 +20,16 @@
 ##   # In peer read loop:
 ##   await limiter.consume(bytesRead, Download)
 
-import std/[monotimes, times]
+import std/[monotimes, times, math]
 import ../runtime
 import ../transform
 import ../eventloop
 
 const
   MinBurstBytes* = 16384    ## Minimum burst size (16 KiB) — prevents micro-sleeps
-  MaxBurstBytes* = 65536    ## Maximum burst size (64 KiB) — caps burst regardless of rate
+  MaxBurstBytes* = 4 * 1024 * 1024  ## Maximum burst size (4 MiB) — large enough for high-rate links
   MaxSleepMs* = 1000        ## Cap sleep to 1s to stay responsive
+  BurstWindowSec = 0.25     ## Burst capacity as fraction of per-second rate
 
 type
   Direction* = enum
@@ -38,7 +39,7 @@ type
     tokens*: float           ## Current available tokens (bytes); may be negative (debt)
     capacity*: float         ## Max tokens (burst ceiling)
     rate*: float             ## Refill rate (bytes/sec), 0 = unlimited
-    baseBps*: int            ## Original user-provided bytes/sec (before percent)
+    baseBps*: int            ## Original user-provided bytes/sec (before percent scaling)
     lastRefill*: MonoTime    ## Monotonic time of last refill
 
   BandwidthLimiter* = ref object
@@ -50,8 +51,7 @@ proc initTokenBucket*(bps: int, percent: int): TokenBucket =
   if bps <= 0 or percent <= 0:
     return TokenBucket(tokens: 0, capacity: 0, rate: 0, baseBps: 0)
   let effectiveRate = float(bps) * float(percent) / 100.0
-  # Burst capacity: clamped between MinBurstBytes and MaxBurstBytes.
-  let cap = max(min(effectiveRate * 0.25, MaxBurstBytes.float), MinBurstBytes.float)
+  let cap = clamp(effectiveRate * BurstWindowSec, MinBurstBytes.float, MaxBurstBytes.float)
   TokenBucket(
     tokens: cap,
     capacity: cap,
@@ -72,6 +72,16 @@ proc refill*(bucket: var TokenBucket) {.inline.} =
     bucket.tokens = min(bucket.capacity, bucket.tokens + elapsedSec * bucket.rate)
     bucket.lastRefill = now
 
+proc debtSleepMs*(bucket: TokenBucket): int {.inline.} =
+  ## Compute milliseconds to sleep for current debt. Returns 0 if no sleep needed
+  ## (tokens non-negative or debt is sub-millisecond — absorbed by next refill).
+  if bucket.tokens >= 0:
+    return 0
+  let ms = (-bucket.tokens) * 1000.0 / bucket.rate
+  if ms < 1.0:
+    return 0
+  min(MaxSleepMs, int(ceil(ms)))
+
 proc consumeWithDebt*(bucket: var TokenBucket, bytes: int): int =
   ## Consume tokens unconditionally — tokens may go negative (debt).
   ## Returns the number of milliseconds to sleep before the debt is repaid.
@@ -84,10 +94,7 @@ proc consumeWithDebt*(bucket: var TokenBucket, bytes: int): int =
     return 0  # Unlimited
   bucket.refill()
   bucket.tokens -= bytes.float
-  if bucket.tokens >= 0:
-    return 0
-  let waitSec = (-bucket.tokens) / bucket.rate
-  return min(MaxSleepMs, int(waitSec * 1000) + 1)
+  bucket.debtSleepMs()
 
 # ============================================================
 # BandwidthLimiter
@@ -115,18 +122,13 @@ proc effectiveRate*(limiter: BandwidthLimiter, dir: Direction): float {.inline.}
 proc waitForBudget*(limiter: BandwidthLimiter, dir: Direction): CpsVoidFuture {.cps.} =
   ## Wait until the bucket has non-negative tokens (debt is repaid).
   ## Call this BEFORE reading from the network to prevent reading at wire speed
-  ## while over budget.
-  if limiter == nil:
+  ## while over budget. Does not consume tokens — only waits for debt recovery.
+  if limiter == nil or limiter.buckets[dir].rate <= 0:
     return
-  var bucket = addr limiter.buckets[dir]
-  if bucket.rate <= 0:
-    return
-  bucket[].refill()
-  if bucket.tokens >= 0:
-    return
-  let waitSec = (-bucket.tokens) / bucket.rate
-  let waitMs = min(MaxSleepMs, int(waitSec * 1000) + 1)
-  await cpsSleep(waitMs)
+  # Zero-byte consume: refills and computes sleep from existing debt without deducting.
+  let waitMs = limiter.buckets[dir].consumeWithDebt(0)
+  if waitMs > 0:
+    await cpsSleep(waitMs)
 
 proc consume*(limiter: BandwidthLimiter, bytes: int, dir: Direction): CpsVoidFuture {.cps.} =
   ## Throttle traffic: consume tokens and wait if in debt.

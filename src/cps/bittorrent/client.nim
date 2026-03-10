@@ -174,8 +174,8 @@ type
     metadataExchange*: MetadataExchange  ## For magnet link downloads
     isPrivate*: bool           ## BEP 27: private torrent flag
     # BEP 11: PEX
-    lastPexPeers: seq[tuple[ip: string, port: uint16]]  ## For computing deltas (IPv4)
-    lastPexPeers6: seq[tuple[ip: string, port: uint16]]  ## For computing deltas (IPv6)
+    lastPexPeers: seq[CompactPeer]  ## For computing deltas (IPv4)
+    lastPexPeers6: seq[CompactPeer]  ## For computing deltas (IPv6)
     # BEP 55: cached peer hints from inbound PEX
     pexPeerFlags: Table[string, uint8]  ## canonical peer key -> added.f flags
     hp*: HolepunchState              ## BEP 55: consolidated holepunch bookkeeping
@@ -769,7 +769,7 @@ proc queuePeerIfNeeded(client: TorrentClient, ip: string, port: uint16,
   client.pendingPeers.add((ip: ip, port: port, source: source, pexFlags: pexFlags))
   true
 
-proc processPexPeers(client: TorrentClient, peers: seq[tuple[ip: string, port: uint16]],
+proc processPexPeers(client: TorrentClient, peers: seq[CompactPeer],
                      flags: seq[uint8], relayKey: string) =
   ## Process PEX added peers — shared logic for IPv4 and IPv6 (BEP 11).
   var pidx = 0
@@ -1053,7 +1053,7 @@ proc unchokedPeerCount(client: TorrentClient): int =
         inc result
 
 proc selectHighPriorityPiece(client: TorrentClient, peerBitfield: seq[byte],
-                             exclude: seq[int] = @[]): int =
+                             exclude: HashSet[int] = initHashSet[int]()): int =
   ## Pick a high-priority selected piece the peer has, preferring rarer pieces.
   if client.pieceMgr == nil:
     return -1
@@ -1095,7 +1095,6 @@ proc requestBlocks(client: TorrentClient, peer: PeerConn): CpsVoidFuture {.cps.}
   # Build a filtered bitfield view when BEP 53 file selection is active.
   var filteredBf: seq[byte] = peer.peerBitfield
   if client.selectedPiecesMask.len > 0 and peer.peerBitfield.len > 0:
-    filteredBf = peer.peerBitfield
     for pi in 0 ..< min(client.selectedPiecesMask.len, client.pieceMgr.totalPieces):
       if not client.selectedPiecesMask[pi] and hasPiece(filteredBf, pi):
         let byteIdx = pi div 8
@@ -1131,7 +1130,7 @@ proc requestBlocks(client: TorrentClient, peer: PeerConn): CpsVoidFuture {.cps.}
   # Normal mode: rarest-first piece selection.
   # Track pieces whose blocks are all already bsRequested so selectPiece
   # skips them and picks a different piece on the next iteration.
-  var skippedPieces: seq[int]
+  var skippedPieces: HashSet[int]
 
   # Reserve 25% of pipeline slots for cross-piece racing when optimistic
   # verification is enabled. Without this, normal blocks fill the entire
@@ -1205,9 +1204,9 @@ proc requestBlocks(client: TorrentClient, peer: PeerConn): CpsVoidFuture {.cps.}
         if raceBlocks.len > 0:
           await client.sendRacingRequests(peer, pKey, raceBlocks)
         else:
-          skippedPieces.add(pieceIdx)
+          skippedPieces.incl(pieceIdx)
       else:
-        skippedPieces.add(pieceIdx)
+        skippedPieces.incl(pieceIdx)
       continue
 
     for blk in blocks:
@@ -1331,15 +1330,9 @@ proc setFilePriority*(client: TorrentClient, fileIndex: int,
     while ri < p.activeRequests.len:
       let req = p.activeRequests[ri]
       if not client.isSelectedPiece(req.pieceIdx):
-        # Look up block length for cancel message
-        var blkLen = BlockSize
-        if req.pieceIdx < client.pieceMgr.totalPieces:
-          var bi = 0
-          while bi < client.pieceMgr.pieces[req.pieceIdx].blocks.len:
-            if client.pieceMgr.pieces[req.pieceIdx].blocks[bi].offset == req.offset:
-              blkLen = client.pieceMgr.pieces[req.pieceIdx].blocks[bi].length
-              break
-            bi += 1
+        # Look up block length for cancel message (default to BlockSize if unknown)
+        var blkLen = client.pieceMgr.blockLength(req.pieceIdx, req.offset)
+        if blkLen <= 0: blkLen = BlockSize
         # Send cancel to peer so it stops sending unwanted data
         discard p.commands.trySend(cancelMsg(uint32(req.pieceIdx), uint32(req.offset), uint32(blkLen)))
         client.pieceMgr.cancelBlockRequest(req.pieceIdx, req.offset)
@@ -1952,7 +1945,10 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
           await lock(client.mtx)
           # Guard against concurrent state change (e.g. racing marked optimistic)
           if client.pieceMgr.pieces[pieceIdx].state == psComplete:
-            client.pieceMgr.applyVerification(pieceIdx, valid)
+            if valid:
+              client.pieceMgr.applyVerification(pieceIdx, true)
+            else:
+              client.pieceMgr.failAndResetPiece(pieceIdx)
           if valid and client.pieceMgr.pieces[pieceIdx].state == psVerified:
             let pieceData = client.pieceMgr.getPieceData(pieceIdx)
             unlock(client.mtx)
@@ -1967,8 +1963,8 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
               client.pieceMgr.resetPiece(pieceIdx)
             else:
               await client.onPieceVerified(pieceIdx, key)
-          elif client.pieceMgr.pieces[pieceIdx].state == psFailed:
-            client.pieceMgr.resetPiece(pieceIdx)
+          elif client.pieceMgr.pieces[pieceIdx].state == psEmpty:
+            # Piece was reset by failAndResetPiece above — notify peers
             await client.sendLtDonthaveToPeers(pieceIdx)
       else:
         # Block accepted but piece not yet complete — remove from activeRequests now
@@ -2584,10 +2580,10 @@ proc optimisticVerifyLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
               changedPieceIndex: pieceIdx,
               changedPieceState: client.pieceMgr.pieces[pieceIdx].state))
           else:
-            # SHA1 mismatch on optimistic piece — rollback
+            # SHA1 mismatch on optimistic piece — rollback and reschedule
             btDebug "WARN: optimistic piece ", pieceIdx, " failed background SHA1"
-            client.pieceMgr.applyOptimisticVerification(pieceIdx, false)
-            # Notify GUI: optimistic → failed/reset
+            client.pieceMgr.failAndResetPiece(pieceIdx)
+            # Notify GUI: piece rescheduled for download
             await client.events.send(ClientEvent(kind: cekPieceStateChanged,
               changedPieceIndex: pieceIdx,
               changedPieceState: client.pieceMgr.pieces[pieceIdx].state))
@@ -2606,15 +2602,54 @@ proc optimisticVerifyLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
                   await client.requestBlocks(peer)
     unlock(client.mtx)
 
+const
+  StaleTableCleanupSec = 300.0  ## Sweep stale table entries every 5 min
+  FailedPeerTtlSec = 1800.0    ## Expire failedPeers entries after 30 min
+  FailedIpTtlSec = 1800.0      ## Expire failedIps entries after 30 min
+  KnownSeederTtlSec = 3600.0   ## Expire knownSeeders entries after 1 hour
+
+proc cleanupStaleTables(client: TorrentClient) =
+  ## Remove expired entries from failedPeers, failedIps, and knownSeeders.
+  ## Called periodically under the mutex to bound memory growth.
+  let now = epochTime()
+
+  # Sweep failedPeers: delete entries older than FailedPeerTtlSec
+  var expiredPeers: seq[string]
+  for k, t in client.failedPeers:
+    if now - t > FailedPeerTtlSec:
+      expiredPeers.add(k)
+  for k in expiredPeers:
+    client.failedPeers.del(k)
+
+  # Sweep failedIps: delete entries older than FailedIpTtlSec
+  var expiredIps: seq[string]
+  for k, v in client.failedIps:
+    if now - v.lastFail > FailedIpTtlSec:
+      expiredIps.add(k)
+  for k in expiredIps:
+    client.failedIps.del(k)
+
+  # Sweep knownSeeders: only clean when seeding with a healthy peer count.
+  # While downloading, knownSeeders is small (only leechers are connected).
+  # While seeding, it prevents reconnecting to seeders we already know about.
+  if client.state == csSeeding and client.knownSeeders.len > 500:
+    client.knownSeeders.clear()
+
 proc requestRefreshLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
   ## Periodically recover from stale block requests.
   ## Only resets blocks that belong to peers no longer connected or that have
   ## been in-flight too long. Reconciles pendingRequests with activeRequests
   ## to prevent counter drift and request explosion.
+  var lastCleanupTime: float = epochTime()
   while client.state == csDownloading:
     await cpsSleep(5000)  # Every 5 seconds
     await lock(client.mtx)
     try:
+      # Periodic cleanup of unbounded tables (every StaleTableCleanupSec)
+      let now = epochTime()
+      if now - lastCleanupTime > StaleTableCleanupSec:
+        lastCleanupTime = now
+        client.cleanupStaleTables()
       if client.pieceMgr != nil and not client.pieceMgr.isComplete:
 
         # Collect the set of blocks that are actively tracked by connected peers
@@ -2957,8 +2992,37 @@ proc generateDhtSecret(client: TorrentClient)  # forward decl for dhtRotateSecre
 # acquiring a lock, so dhtSpinLock only serializes CPS-to-CPS access.
 # ---------------------------------------------------------------------------
 
-proc dhtIsIpv6Node(ip: string): bool {.inline.} =
-  ':' in ip
+proc sortByXorDistance(nodes: var seq[DhtNode], target: NodeId, limit: int = 0) =
+  ## Selection sort nodes by XOR distance to target (closest first).
+  ## If limit > 0, partial sort and truncate to that many entries.
+  # Pre-compute distances to avoid redundant xorDistance calls in inner loop.
+  var dists = newSeq[NodeId](nodes.len)
+  var di = 0
+  while di < nodes.len:
+    dists[di] = xorDistance(nodes[di].id, target)
+    di += 1
+  let sortLen = if limit > 0: min(limit, nodes.len) else: nodes.len
+  var si = 0
+  while si < sortLen and si < nodes.len - 1:
+    var minIdx = si
+    var mi = si + 1
+    while mi < nodes.len:
+      if dists[mi] < dists[minIdx]:
+        minIdx = mi
+      mi += 1
+    if minIdx != si:
+      swap(nodes[si], nodes[minIdx])
+      swap(dists[si], dists[minIdx])
+    si += 1
+  if limit > 0 and nodes.len > limit:
+    nodes.setLen(limit)
+
+proc addNodeIfEndpointNew(nodes: var seq[DhtNode], node: DhtNode) =
+  ## Append node if no existing entry shares the same endpoint (ip, port).
+  for n in nodes:
+    if n.ip == node.ip and n.port == node.port:
+      return
+  nodes.add(node)
 
 proc dhtFindClosest(client: TorrentClient, target: NodeId, count: int): seq[DhtNode] =
   ## Find closest nodes from BOTH routing tables, merged by XOR distance.
@@ -2967,30 +3031,14 @@ proc dhtFindClosest(client: TorrentClient, target: NodeId, count: int): seq[DhtN
   withSpinLock(client.dhtSpinLock):
     v4 = client.dhtRoutingTable.findClosest(target, count)
     v6 = client.dhtRoutingTable6.findClosest(target, count)
-  # Merge: take up to `count` total, sorted by distance
   var merged = v4
   merged.add(v6)
-  if merged.len <= count:
-    result = merged
-  else:
-    # Partial selection sort — keep `count` closest
-    var si = 0
-    while si < count and si < merged.len - 1:
-      var minIdx = si
-      var mi = si + 1
-      while mi < merged.len:
-        if xorDistance(merged[mi].id, target) < xorDistance(merged[minIdx].id, target):
-          minIdx = mi
-        mi += 1
-      if minIdx != si:
-        swap(merged[si], merged[minIdx])
-      si += 1
-    merged.setLen(count)
-    result = merged
+  sortByXorDistance(merged, target, count)
+  result = merged
 
 proc dhtAddNode(client: TorrentClient, node: DhtNode): bool =
   withSpinLock(client.dhtSpinLock):
-    if dhtIsIpv6Node(node.ip):
+    if isIpv6(node.ip):
       result = client.dhtRoutingTable6.addNode(node)
     else:
       result = client.dhtRoutingTable.addNode(node)
@@ -3184,30 +3232,9 @@ proc dhtIterativeFindNode(client: TorrentClient, target: NodeId): CpsVoidFuture 
     var candidates: seq[DhtNode] = client.dhtFindClosest(target, DhtIterativeWidth)
     var di: int = 0
     while di < discoveredNodes.len:
-      let dn: DhtNode = discoveredNodes[di]
+      candidates.addNodeIfEndpointNew(discoveredNodes[di])
       di += 1
-      var found: bool = false
-      var ci2: int = 0
-      while ci2 < candidates.len:
-        if candidates[ci2].ip == dn.ip and candidates[ci2].port == dn.port:
-          found = true
-          ci2 = candidates.len
-        ci2 += 1
-      if not found:
-        candidates.add(dn)
-    # Sort candidates by XOR distance to target (closest first) for proper
-    # Kademlia walk — ensures each round queries progressively closer nodes.
-    var si: int = 0
-    while si < candidates.len - 1:
-      var minIdx: int = si
-      var mi: int = si + 1
-      while mi < candidates.len:
-        if xorDistance(candidates[mi].id, target) < xorDistance(candidates[minIdx].id, target):
-          minIdx = mi
-        mi += 1
-      if minIdx != si:
-        swap(candidates[si], candidates[minIdx])
-      si += 1
+    sortByXorDistance(candidates, target)
     var newNodesFound: int = 0
     let prevDiscoveredCount: int = discoveredNodes.len
 
@@ -3290,6 +3317,11 @@ proc dhtIterativeFindNode(client: TorrentClient, target: NodeId): CpsVoidFuture 
       client.dhtRemovePending(fnPendingKeys[cfi])
       cfi += 1
 
+    # Prune discoveredNodes to bound O(n²) merge/sort cost in future rounds.
+    let maxDiscovered = DhtIterativeWidth * 2
+    if discoveredNodes.len > maxDiscovered:
+      sortByXorDistance(discoveredNodes, target, maxDiscovered)
+
     # Converged — no new nodes found this round (neither table insertions nor new discoveries)
     let newDiscovered: int = discoveredNodes.len - prevDiscoveredCount
     if newNodesFound == 0 and newDiscovered == 0:
@@ -3312,38 +3344,16 @@ proc dhtIterativeGetPeers(client: TorrentClient, infoHash: NodeId): CpsFuture[in
     round += 1
     # Merge routing table nodes with discovered nodes for candidates
     var candidates: seq[DhtNode] = client.dhtFindClosest(infoHash, DhtIterativeWidth)
-    # Add discovered nodes that aren't in the candidates yet
     var di: int = 0
     while di < discoveredNodes.len:
-      let dn: DhtNode = discoveredNodes[di]
+      candidates.addNodeIfEndpointNew(discoveredNodes[di])
       di += 1
-      var found: bool = false
-      var ci2: int = 0
-      while ci2 < candidates.len:
-        if candidates[ci2].ip == dn.ip and candidates[ci2].port == dn.port:
-          found = true
-          ci2 = candidates.len
-        ci2 += 1
-      if not found:
-        candidates.add(dn)
-    # Sort candidates by XOR distance to info hash (closest first) for proper
-    # Kademlia walk — ensures each round queries progressively closer nodes.
-    var si: int = 0
-    while si < candidates.len - 1:
-      var minIdx: int = si
-      var mi: int = si + 1
-      while mi < candidates.len:
-        if xorDistance(candidates[mi].id, infoHash) < xorDistance(candidates[minIdx].id, infoHash):
-          minIdx = mi
-        mi += 1
-      if minIdx != si:
-        swap(candidates[si], candidates[minIdx])
-      si += 1
+    sortByXorDistance(candidates, infoHash)
     var newNodesFound: int = 0
 
     # Fire all queries in this round concurrently, track which node each future maps to
     var gpFutures: seq[CpsFuture[DhtMessage]]
-    var gpNodeAddrs: seq[tuple[ip: string, port: uint16]]  # Parallel array with gpFutures
+    var gpNodeAddrs: seq[CompactPeer]  # Parallel array with gpFutures
     var gpPendingKeys: seq[string]  # Parallel array: composite pending key for each future
     var gpNodeIds: seq[NodeId]  # Parallel array: node ID for markFailed on timeout/error
     var ci: int = 0
@@ -3389,7 +3399,7 @@ proc dhtIterativeGetPeers(client: TorrentClient, infoHash: NodeId): CpsFuture[in
 
     # Process all responses that finished within this round window.
     # Collect peers to queue — batched under mtx after processing.
-    var peersToQueue: seq[tuple[ip: string, port: uint16]]
+    var peersToQueue: seq[CompactPeer]
     var pendingCount: int = 0
     var roundResponses: int = 0
     var roundErrors: int = 0
@@ -3478,6 +3488,11 @@ proc dhtIterativeGetPeers(client: TorrentClient, infoHash: NodeId): CpsFuture[in
               " timeout=" & $timedOut & " peers=" & $roundPeers &
               " nodes=" & $roundNodes & " tokens=" & $roundTokens &
               " pending=" & $pendingCount & " waited=" & $waitedMs & "ms"))
+
+    # Prune discoveredNodes to bound O(n²) merge/sort cost in future rounds.
+    let maxDiscovered = DhtIterativeWidth * 2
+    if discoveredNodes.len > maxDiscovered:
+      sortByXorDistance(discoveredNodes, infoHash, maxDiscovered)
 
     # Stop if converged: no new closer nodes discovered AND no peers found.
     # Don't stop merely because roundResponses == 0 (a slow round with all
@@ -3594,6 +3609,30 @@ const
   DhtPeerStoreTtlSec = 1800.0   ## Expire stored peers after 30 min
   DhtBucketRefreshSec = 900.0   ## Refresh stale buckets after 15 min
 
+proc dhtRefreshStaleBuckets(client: TorrentClient, isIpv6: bool) =
+  ## Ping least-recently-seen node in up to 3 stale buckets (IPv4 or IPv6).
+  ## Registers pending queries so responses update the routing table lastSeen.
+  let staleIdxs = if isIpv6: client.dhtStaleBuckets6(DhtBucketRefreshSec)
+                  else: client.dhtStaleBuckets(DhtBucketRefreshSec)
+  var i = 0
+  while i < staleIdxs.len and i < 3:
+    let node = if isIpv6: client.dhtLeastRecentlySeenNode6(staleIdxs[i])
+               else: client.dhtLeastRecentlySeenNode(staleIdxs[i])
+    i += 1
+    let transId = client.nextDhtTransId()
+    let pingData = encodePingQuery(transId, client.dhtNodeId)
+    let pendingKey = dhtPendingKey(transId, node.ip, node.port.int)
+    let fut = newCpsFuture[DhtMessage]()
+    client.dhtRegisterPending(pendingKey, fut)
+    var sendOk = false
+    try:
+      sendOk = client.dhtSock.trySendToAddr(pingData, node.ip, node.port.int)
+    except CatchableError:
+      sendOk = false
+    if not sendOk:
+      client.dhtRemovePending(pendingKey)
+      client.dhtMarkFailed(node.id)
+
 proc dhtCleanup(client: TorrentClient) =
   ## Cancel pending DHT queries and close socket. Called from finally block.
   withSpinLock(client.dhtSpinLock):
@@ -3608,6 +3647,14 @@ proc dhtCleanup(client: TorrentClient) =
     client.dhtPendingQueries.clear()
   if client.dhtSock != nil:
     client.dhtSock.close()
+
+proc dhtFindClosestCompact(client: TorrentClient, target: NodeId, count: int): seq[CompactNodeInfo] =
+  ## Find closest nodes from both routing tables and return as CompactNodeInfo.
+  let nodes = client.dhtFindClosest(target, count)
+  var ni = 0
+  while ni < nodes.len:
+    result.add(CompactNodeInfo(id: nodes[ni].id, ip: nodes[ni].ip, port: nodes[ni].port))
+    ni += 1
 
 proc dhtProcessRecvBatch(client: TorrentClient) =
   ## Process all buffered DHT messages from the lock-free receive queue.
@@ -3625,7 +3672,7 @@ proc dhtProcessRecvBatch(client: TorrentClient) =
         if accepted:
           let senderNode = DhtNode(
             id: msg.queryerId, ip: senderIp, port: senderPort, lastSeen: epochTime())
-          if dhtIsIpv6Node(senderIp):
+          if isIpv6(senderIp):
             discard client.dhtRoutingTable6.addNode(senderNode)
           else:
             discard client.dhtRoutingTable.addNode(senderNode)
@@ -3635,21 +3682,12 @@ proc dhtProcessRecvBatch(client: TorrentClient) =
         let resp = encodePingResponse(msg.transactionId, client.dhtNodeId)
         discard client.dhtSock.trySendToAddr(resp, senderIp, senderPort.int)
       of "find_node":
-        var closest: seq[DhtNode]
-        var closest6: seq[DhtNode]
-        withSpinLock(client.dhtSpinLock):
-          closest = client.dhtRoutingTable.findClosest(msg.targetId, K)
-          closest6 = client.dhtRoutingTable6.findClosest(msg.targetId, K)
-        var compactNodes: seq[CompactNodeInfo]
-        for n in closest:
-          compactNodes.add(CompactNodeInfo(id: n.id, ip: n.ip, port: n.port))
-        for n in closest6:
-          compactNodes.add(CompactNodeInfo(id: n.id, ip: n.ip, port: n.port))
+        let compactNodes = client.dhtFindClosestCompact(msg.targetId, K)
         let resp = encodeFindNodeResponse(msg.transactionId, client.dhtNodeId, compactNodes)
         discard client.dhtSock.trySendToAddr(resp, senderIp, senderPort.int)
       of "get_peers":
         var token: string
-        var storedPeers: seq[tuple[ip: string, port: uint16]]
+        var storedPeers: seq[CompactPeer]
         withSpinLock(client.dhtSpinLock):
           token = generateToken(senderIp, client.dhtSecret)
           storedPeers = client.dhtPeerStore.getPeers(msg.infoHash)
@@ -3658,16 +3696,7 @@ proc dhtProcessRecvBatch(client: TorrentClient) =
                                              token, peers = storedPeers)
           discard client.dhtSock.trySendToAddr(resp, senderIp, senderPort.int)
         else:
-          var closest: seq[DhtNode]
-          var closest6: seq[DhtNode]
-          withSpinLock(client.dhtSpinLock):
-            closest = client.dhtRoutingTable.findClosest(msg.infoHash, K)
-            closest6 = client.dhtRoutingTable6.findClosest(msg.infoHash, K)
-          var compactNodes: seq[CompactNodeInfo]
-          for n in closest:
-            compactNodes.add(CompactNodeInfo(id: n.id, ip: n.ip, port: n.port))
-          for n in closest6:
-            compactNodes.add(CompactNodeInfo(id: n.id, ip: n.ip, port: n.port))
+          let compactNodes = client.dhtFindClosestCompact(msg.infoHash, K)
           let resp = encodeGetPeersResponse(msg.transactionId, client.dhtNodeId,
                                              token, nodes = compactNodes)
           discard client.dhtSock.trySendToAddr(resp, senderIp, senderPort.int)
@@ -3700,6 +3729,16 @@ proc dhtProcessRecvBatch(client: TorrentClient) =
           fut = client.dhtPendingQueries[pendingKey]
           client.dhtPendingQueries.del(pendingKey)
       if fut != nil and not fut.finished:
+        # Any valid response proves the node is alive — update lastSeen.
+        let accepted = client.shouldAcceptDhtNode(msg.responderId, respIp)
+        if accepted:
+          let respNode = DhtNode(
+            id: msg.responderId, ip: respIp, port: respPort, lastSeen: epochTime())
+          withSpinLock(client.dhtSpinLock):
+            if isIpv6(respIp):
+              discard client.dhtRoutingTable6.addNode(respNode)
+            else:
+              discard client.dhtRoutingTable.addNode(respNode)
         fut.complete(msg)
 
 proc dhtRecvDrainLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
@@ -3789,38 +3828,9 @@ proc dhtLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
         lastPeerExpiry = now
 
       # Routing table maintenance (#83): ping least-recently-seen node in stale buckets
-      let staleBucketIdxs: seq[int] = client.dhtStaleBuckets(DhtBucketRefreshSec)
-      var sbi: int = 0
-      while sbi < staleBucketIdxs.len and sbi < 3:
-        let bucketIdx: int = staleBucketIdxs[sbi]
-        sbi += 1
-        let staleNode: DhtNode = client.dhtLeastRecentlySeenNode(bucketIdx)
-        let transId: string = client.nextDhtTransId()
-        let pingData: string = encodePingQuery(transId, client.dhtNodeId)
-        var sendOk: bool = false
-        try:
-          sendOk = client.dhtSock.trySendToAddr(pingData, staleNode.ip, staleNode.port.int)
-        except Exception:
-          sendOk = false
-        if not sendOk:
-          client.dhtMarkFailed(staleNode.id)
-
+      client.dhtRefreshStaleBuckets(isIpv6 = false)
       # IPv6 routing table maintenance (BEP 32)
-      let staleBucketIdxs6: seq[int] = client.dhtStaleBuckets6(DhtBucketRefreshSec)
-      var sbi6: int = 0
-      while sbi6 < staleBucketIdxs6.len and sbi6 < 3:
-        let bucketIdx6: int = staleBucketIdxs6[sbi6]
-        sbi6 += 1
-        let staleNode6: DhtNode = client.dhtLeastRecentlySeenNode6(bucketIdx6)
-        let transId6: string = client.nextDhtTransId()
-        let pingData6: string = encodePingQuery(transId6, client.dhtNodeId)
-        var sendOk6: bool = false
-        try:
-          sendOk6 = client.dhtSock.trySendToAddr(pingData6, staleNode6.ip, staleNode6.port.int)
-        except Exception:
-          sendOk6 = false
-        if not sendOk6:
-          client.dhtMarkFailed(staleNode6.id)
+      client.dhtRefreshStaleBuckets(isIpv6 = true)
 
       # First 5 lookups at shorter intervals for fast initial discovery.
       # When seeding with healthy peer count, slow down to avoid discovering
@@ -3845,6 +3855,7 @@ proc unchokeLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
   ## - While seeding: unchoke top N peers by upload rate (fastest uploaders to them)
   ## - Always keep one optimistic unchoke slot (rotated every 30s)
   var optimisticRotateTime: float = 0.0
+  var lastCleanup: float = epochTime()
 
   while client.state in {csDownloading, csSeeding}:
     await cpsSleep(UnchokeIntervalMs)
@@ -3857,6 +3868,10 @@ proc unchokeLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
     try:
       if client.state in {csDownloading, csSeeding}:
         let now: float = epochTime()
+        # Periodic cleanup of unbounded tables (covers seeding mode)
+        if now - lastCleanup > StaleTableCleanupSec:
+          lastCleanup = now
+          client.cleanupStaleTables()
 
         # Collect interested peers and their transfer rates
         var interestedPeers: seq[PeerRate]
@@ -4178,7 +4193,11 @@ proc webSeedLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
               await lock(client.mtx)
               # Apply state under mutex — guard against concurrent optimistic transition
               if client.pieceMgr.pieces[pieceIdx].state == psComplete:
-                client.pieceMgr.applyVerification(pieceIdx, valid)
+                if valid:
+                  client.pieceMgr.applyVerification(pieceIdx, true)
+                else:
+                  btDebug "WARN: web seed piece ", pieceIdx, " failed SHA1, rescheduling"
+                  client.pieceMgr.failAndResetPiece(pieceIdx)
               if valid and client.pieceMgr.pieces[pieceIdx].state == psVerified:
                 if wsWriteError.len > 0:
                   client.pieceMgr.resetPiece(pieceIdx)
@@ -4199,6 +4218,9 @@ proc webSeedLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
                   if client.pieceMgr.isComplete:
                     client.state = csSeeding
                     await client.events.send(ClientEvent(kind: cekCompleted))
+              elif client.pieceMgr.pieces[pieceIdx].state == psEmpty:
+                # Piece was reset by failAndResetPiece above — notify peers
+                await client.sendLtDonthaveToPeers(pieceIdx)
         finally:
           unlock(client.mtx)
         ws.state = wssIdle
@@ -4304,7 +4326,7 @@ proc lsdLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
   if client.lsdSock != nil and client.config.sharedLsdSock == nil:
     client.lsdSock.close()
 
-proc pexBuildFlags(client: TorrentClient, peers: seq[tuple[ip: string, port: uint16]]): seq[uint8] =
+proc pexBuildFlags(client: TorrentClient, peers: seq[CompactPeer]): seq[uint8] =
   ## Build BEP 11 added.f flags from real peer capabilities.
   var fi: int = 0
   while fi < peers.len:
@@ -4326,12 +4348,22 @@ proc pexBuildFlags(client: TorrentClient, peers: seq[tuple[ip: string, port: uin
     result.add(f)
     fi += 1
 
+proc peerDelta(current, previous: seq[CompactPeer]): seq[CompactPeer] =
+  ## Return entries in `current` but not in `previous` (set difference by ip+port).
+  ## Uses HashSet for O(n+m) instead of O(n*m) nested scan.
+  var prevSet = initHashSet[CompactPeer](previous.len)
+  for p in previous:
+    prevSet.incl(p)
+  for c in current:
+    if c notin prevSet:
+      result.add(c)
+
 proc runPexUpdate(client: TorrentClient) =
   ## Runs one PEX delta computation + broadcast pass.
   ## Kept outside CPS to avoid continuation-owned ARC state for payload strings.
   # Build current peer lists, separated by address family (BEP 11).
-  var currentPeers: seq[tuple[ip: string, port: uint16]]
-  var currentPeers6: seq[tuple[ip: string, port: uint16]]
+  var currentPeers: seq[CompactPeer]
+  var currentPeers6: seq[CompactPeer]
   let pexBuildKeys = client.snapshotPeerKeys()
   var pbi: int = 0
   while pbi < pexBuildKeys.len:
@@ -4347,67 +4379,13 @@ proc runPexUpdate(client: TorrentClient) =
           currentPeers.add((pxPeer.ip, advertisePort))
 
   # Compute IPv4 delta from last PEX.
-  var added: seq[tuple[ip: string, port: uint16]]
-  var dropped: seq[tuple[ip: string, port: uint16]]
-
-  var ai: int = 0
-  while ai < currentPeers.len:
-    let cp = currentPeers[ai]
-    ai += 1
-    var found: bool = false
-    var li: int = 0
-    while li < client.lastPexPeers.len:
-      if client.lastPexPeers[li].ip == cp.ip and client.lastPexPeers[li].port == cp.port:
-        found = true
-      li += 1
-    if not found:
-      added.add(cp)
-
-  var di: int = 0
-  while di < client.lastPexPeers.len:
-    let lp = client.lastPexPeers[di]
-    di += 1
-    var found: bool = false
-    var ci2: int = 0
-    while ci2 < currentPeers.len:
-      if currentPeers[ci2].ip == lp.ip and currentPeers[ci2].port == lp.port:
-        found = true
-      ci2 += 1
-    if not found:
-      dropped.add(lp)
-
+  let added = peerDelta(currentPeers, client.lastPexPeers)
+  let dropped = peerDelta(client.lastPexPeers, currentPeers)
   client.lastPexPeers = currentPeers
 
   # Compute IPv6 delta from last PEX (BEP 11 added6/dropped6).
-  var added6: seq[tuple[ip: string, port: uint16]]
-  var dropped6: seq[tuple[ip: string, port: uint16]]
-
-  var ai6: int = 0
-  while ai6 < currentPeers6.len:
-    let cp6 = currentPeers6[ai6]
-    ai6 += 1
-    var found6: bool = false
-    var li6: int = 0
-    while li6 < client.lastPexPeers6.len:
-      if client.lastPexPeers6[li6].ip == cp6.ip and client.lastPexPeers6[li6].port == cp6.port:
-        found6 = true
-      li6 += 1
-    if not found6:
-      added6.add(cp6)
-
-  var di6: int = 0
-  while di6 < client.lastPexPeers6.len:
-    let lp6 = client.lastPexPeers6[di6]
-    di6 += 1
-    var found6: bool = false
-    var ci6: int = 0
-    while ci6 < currentPeers6.len:
-      if currentPeers6[ci6].ip == lp6.ip and currentPeers6[ci6].port == lp6.port:
-        found6 = true
-      ci6 += 1
-    if not found6:
-      dropped6.add(lp6)
-
+  let added6 = peerDelta(currentPeers6, client.lastPexPeers6)
+  let dropped6 = peerDelta(client.lastPexPeers6, currentPeers6)
   client.lastPexPeers6 = currentPeers6
 
   if added.len == 0 and dropped.len == 0 and added6.len == 0 and dropped6.len == 0:
@@ -4792,16 +4770,7 @@ proc start*(client: TorrentClient): CpsVoidFuture {.cps.} =
   if client.lsdSock != nil and client.config.sharedLsdSock == nil:
     client.lsdSock.close()
   # Cancel any remaining pending DHT queries to avoid dangling futures
-  withSpinLock(client.dhtSpinLock):
-    var dhtKeys2: seq[string]
-    for k in client.dhtPendingQueries.keys:
-      dhtKeys2.add(k)
-    for k in dhtKeys2:
-      if k in client.dhtPendingQueries:
-        let fut = client.dhtPendingQueries[k]
-        if not fut.finished:
-          fut.cancel()
-    client.dhtPendingQueries.clear()
+  client.dhtCleanup()
   client.state = csStopped
   await client.events.send(ClientEvent(kind: cekStopped))
 

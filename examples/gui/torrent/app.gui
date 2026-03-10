@@ -78,7 +78,10 @@ app CpsTorrent {
     protocolWebSeedActiveUrl: String,
     protocolHolepunchAttempts: Int,
     protocolHolepunchSuccesses: Int,
-    protocolHolepunchLastError: String
+    protocolHolepunchLastError: String,
+    pctVerified: Double,
+    pctOptimistic: Double,
+    pctPartial: Double
   }
 
   model TorrentFile {
@@ -284,6 +287,7 @@ app CpsTorrent {
   }
 
   escape swiftFile "swift/PieceMapView.swift"
+  escape swiftFile "swift/TorrentProgressBar.swift"
   escape swiftFile "swift/TorrentFilePickerButton.swift"
   escape swiftFile "swift/RateFormatter.swift"
   escape swiftFile "swift/TorrentDropModifier.swift"
