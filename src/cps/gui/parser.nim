@@ -95,6 +95,38 @@ proc synchronizeToDeclBoundary(p: var ParserState) =
       return
     discard p.advance()
 
+proc parseClosureParams(p: var ParserState): seq[string] =
+  ## Parses optional closure parameter list: `ident, ident in`.
+  ## Returns parameter names (empty if no param list found).
+  if not p.atKind(gtkIdentifier) or p.curr.lexeme == "in":
+    return
+  var lookIdx = 0
+  while p.peekToken(lookIdx).kind == gtkIdentifier and
+      p.peekToken(lookIdx).lexeme != "in":
+    inc lookIdx
+    if p.peekToken(lookIdx).kind == gtkComma:
+      inc lookIdx
+  if p.peekToken(lookIdx).kind != gtkIdentifier or
+      p.peekToken(lookIdx).lexeme != "in":
+    return
+  while p.atKind(gtkIdentifier) and p.curr.lexeme != "in":
+    result.add p.advance().lexeme
+    discard p.matchKind(gtkComma)
+  if p.atIdent("in"):
+    discard p.advance()
+
+proc makeBinary(left, right: GuiExpr, op: string): GuiExpr {.inline.} =
+  GuiExpr(kind: geBinary, range: rangeSpan(left.range, right.range),
+          left: left, right: right, op: op)
+
+template defineBinaryParser(name, inner, ops: untyped) =
+  proc name(p: var ParserState): GuiExpr =
+    result = p.inner()
+    while p.curr.kind in ops:
+      let opTok = p.advance()
+      let rhs = p.inner()
+      result = makeBinary(result, rhs, opTok.lexeme)
+
 proc parseIdentifierPath(p: var ParserState): tuple[path: seq[string], range: GuiSourceRange] =
   let first = p.expectIdentifier("in identifier path")
   result.path.add first.lexeme
@@ -105,6 +137,13 @@ proc parseIdentifierPath(p: var ParserState): tuple[path: seq[string], range: Gu
     result.range.stop = nextPart.range.stop
 
 proc parseExpression(p: var ParserState): GuiExpr
+
+proc parseExprNoTrailingClosures(p: var ParserState): GuiExpr =
+  ## Parse an expression with trailing closure suppression.
+  let saved = p.noTrailingClosures
+  p.noTrailingClosures = true
+  result = p.parseExpression()
+  p.noTrailingClosures = saved
 
 proc parseCallArgList(p: var ParserState): tuple[args: seq[GuiExpr], named: seq[GuiNamedArg]] =
   if p.matchKind(gtkRParen):
@@ -146,11 +185,7 @@ proc parsePrimary(p: var ParserState): GuiExpr =
     parts.add endTok.lexeme
     GuiExpr(
       kind: geInterpolatedString,
-      range: sourceRange(
-        tok.range.start.file,
-        tok.range.start.line, tok.range.start.col,
-        endTok.range.stop.line, endTok.range.stop.col
-      ),
+      range: rangeSpan(tok.range, endTok.range),
       parts: parts,
       expressions: exprs
     )
@@ -202,11 +237,7 @@ proc parsePrimary(p: var ParserState): GuiExpr =
     # Empty braces {} → empty map literal
     if p.atKind(gtkRBrace):
       let endTok = p.advance()
-      GuiExpr(kind: geMapLit, range: sourceRange(
-        tok.range.start.file,
-        tok.range.start.line, tok.range.start.col,
-        endTok.range.stop.line, endTok.range.stop.col
-      ))
+      GuiExpr(kind: geMapLit, range: rangeSpan(tok.range, endTok.range))
     else:
       # Lookahead to distinguish closure from map:
       #   closure: { ident in ... } or { ident, ident in ... } or { body_expr }
@@ -257,35 +288,12 @@ proc parsePrimary(p: var ParserState): GuiExpr =
         mapExpr
       else:
         # Parse as closure: { params in body } or { body }
-        var closureParams: seq[string] = @[]
-        # Check if there's a param list followed by 'in'
-        var hasParamList = false
-        if p.atKind(gtkIdentifier) and p.curr.lexeme != "in":
-          var lookIdx = 0
-          while p.peekToken(lookIdx).kind == gtkIdentifier and
-              p.peekToken(lookIdx).lexeme != "in":
-            inc lookIdx
-            if p.peekToken(lookIdx).kind == gtkComma:
-              inc lookIdx
-          if p.peekToken(lookIdx).kind == gtkIdentifier and
-              p.peekToken(lookIdx).lexeme == "in":
-            hasParamList = true
-        if hasParamList:
-          while p.atKind(gtkIdentifier) and p.curr.lexeme != "in":
-            closureParams.add p.advance().lexeme
-            discard p.matchKind(gtkComma)
-          # consume 'in'
-          if p.atIdent("in"):
-            discard p.advance()
+        let closureParams = p.parseClosureParams()
         let bodyExpr = p.parseExpression()
         let endTok = p.expectKind(gtkRBrace, "to close closure")
         GuiExpr(
           kind: geClosure,
-          range: sourceRange(
-            tok.range.start.file,
-            tok.range.start.line, tok.range.start.col,
-            endTok.range.stop.line, endTok.range.stop.col
-          ),
+          range: rangeSpan(tok.range, endTok.range),
           closureParams: closureParams,
           closureBody: bodyExpr
         )
@@ -307,11 +315,7 @@ proc parsePrimary(p: var ParserState): GuiExpr =
     # Handle \.self shorthand — rootType would be empty, first member from above
     GuiExpr(
       kind: geKeyPath,
-      range: sourceRange(
-        tok.range.start.file,
-        tok.range.start.line, tok.range.start.col,
-        p.prev.range.stop.line, p.prev.range.stop.col
-      ),
+      range: rangeSpan(tok.range, p.prev.range),
       keyPathRoot: rootType,
       keyPathMembers: members
     )
@@ -322,11 +326,7 @@ proc parsePrimary(p: var ParserState): GuiExpr =
       let numTok = p.advance()
       GuiExpr(
         kind: geShorthandParam,
-        range: sourceRange(
-          tok.range.start.file,
-          tok.range.start.line, tok.range.start.col,
-          numTok.range.stop.line, numTok.range.stop.col
-        ),
+        range: rangeSpan(tok.range, numTok.range),
         intVal: (try: parseBiggestInt(numTok.lexeme) except ValueError: 0)
       )
     elif p.atKind(gtkIdentifier):
@@ -334,11 +334,7 @@ proc parsePrimary(p: var ParserState): GuiExpr =
       let nameTok = p.advance()
       GuiExpr(
         kind: geBindingPrefix,
-        range: sourceRange(
-          tok.range.start.file,
-          tok.range.start.line, tok.range.start.col,
-          nameTok.range.stop.line, nameTok.range.stop.col
-        ),
+        range: rangeSpan(tok.range, nameTok.range),
         ident: nameTok.lexeme
       )
     else:
@@ -352,11 +348,7 @@ proc parsePrimary(p: var ParserState): GuiExpr =
       # Support chained dots: .easeInOut(duration: 0.3) etc via parsePostfix
       GuiExpr(
         kind: geEnumValue,
-        range: sourceRange(
-          tok.range.start.file,
-          tok.range.start.line, tok.range.start.col,
-          nameTok.range.stop.line, nameTok.range.stop.col
-        ),
+        range: rangeSpan(tok.range, nameTok.range),
         ident: nameTok.lexeme
       )
     else:
@@ -385,13 +377,7 @@ proc parsePostfix(p: var ParserState): GuiExpr =
       let memberTok = p.expectIdentifier("after '?.'")
       base = GuiExpr(
         kind: geMember,
-        range: sourceRange(
-          base.range.start.file,
-          base.range.start.line,
-          base.range.start.col,
-          memberTok.range.stop.line,
-          memberTok.range.stop.col
-        ),
+        range: rangeSpan(base.range, memberTok.range),
         left: base,
         ident: memberTok.lexeme,
         isOptional: true
@@ -402,13 +388,7 @@ proc parsePostfix(p: var ParserState): GuiExpr =
       let memberTok = p.expectIdentifier("after '.'")
       base = GuiExpr(
         kind: geMember,
-        range: sourceRange(
-          base.range.start.file,
-          base.range.start.line,
-          base.range.start.col,
-          memberTok.range.stop.line,
-          memberTok.range.stop.col
-        ),
+        range: rangeSpan(base.range, memberTok.range),
         left: base,
         ident: memberTok.lexeme
       )
@@ -435,46 +415,18 @@ proc parsePostfix(p: var ParserState): GuiExpr =
       # Suppressed in if/while/for conditions to avoid consuming the body's { as a closure
       if p.atKind(gtkLBrace) and p.curr.range.start.line == closeParenLine and not p.noTrailingClosures:
         discard p.advance() # consume '{'
-        var closureParams: seq[string] = @[]
-        var hasParamList = false
-        if p.atKind(gtkIdentifier) and p.curr.lexeme != "in":
-          var lookIdx = 0
-          while p.peekToken(lookIdx).kind == gtkIdentifier and
-              p.peekToken(lookIdx).lexeme != "in":
-            inc lookIdx
-            if p.peekToken(lookIdx).kind == gtkComma:
-              inc lookIdx
-          if p.peekToken(lookIdx).kind == gtkIdentifier and
-              p.peekToken(lookIdx).lexeme == "in":
-            hasParamList = true
-        if hasParamList:
-          while p.atKind(gtkIdentifier) and p.curr.lexeme != "in":
-            closureParams.add p.advance().lexeme
-            discard p.matchKind(gtkComma)
-          if p.atIdent("in"):
-            discard p.advance()
+        let closureParams = p.parseClosureParams()
         let bodyExpr = p.parseExpression()
         let endTok = p.expectKind(gtkRBrace, "to close trailing closure")
-        let trailingClosure = GuiExpr(
+        callArgs.add GuiExpr(
           kind: geClosure,
-          range: sourceRange(
-            base.range.start.file,
-            base.range.start.line, base.range.start.col,
-            endTok.range.stop.line, endTok.range.stop.col
-          ),
+          range: rangeSpan(base.range, endTok.range),
           closureParams: closureParams,
           closureBody: bodyExpr
         )
-        callArgs.add trailingClosure
       base = GuiExpr(
         kind: geCall,
-        range: sourceRange(
-          base.range.start.file,
-          base.range.start.line,
-          base.range.start.col,
-          p.prev.range.stop.line,
-          p.prev.range.stop.col
-        ),
+        range: rangeSpan(base.range, p.prev.range),
         callee: base,
         args: callArgs,
         namedArgs: callNamed
@@ -487,13 +439,7 @@ proc parsePostfix(p: var ParserState): GuiExpr =
       let closeBracket = p.expectKind(gtkRBracket, "to close subscript")
       base = GuiExpr(
         kind: geSubscript,
-        range: sourceRange(
-          base.range.start.file,
-          base.range.start.line,
-          base.range.start.col,
-          closeBracket.range.stop.line,
-          closeBracket.range.stop.col
-        ),
+        range: rangeSpan(base.range, closeBracket.range),
         left: base,
         right: indexExpr
       )
@@ -508,26 +454,12 @@ proc parsePostfix(p: var ParserState): GuiExpr =
         discard p.advance()
         base = GuiExpr(
           kind: geForceUnwrap,
-          range: sourceRange(
-            base.range.start.file,
-            base.range.start.line, base.range.start.col,
-            bangTok.range.stop.line, bangTok.range.stop.col
-          ),
+          range: rangeSpan(base.range, bangTok.range),
           left: base
         )
         continue
 
     break
-
-  # Token reference sugar: token.<group>.<name>
-  let path = memberPath(base)
-  if path.len == 3 and path[0] == "token":
-    base = GuiExpr(
-      kind: geTokenRef,
-      range: base.range,
-      tokenGroup: path[1],
-      tokenName: path[2]
-    )
 
   base
 
@@ -537,13 +469,7 @@ proc parseUnary(p: var ParserState): GuiExpr =
     let rhs = p.parseUnary()
     return GuiExpr(
       kind: geCall,
-      range: sourceRange(
-        opTok.range.start.file,
-        opTok.range.start.line,
-        opTok.range.start.col,
-        rhs.range.stop.line,
-        rhs.range.stop.col
-      ),
+      range: rangeSpan(opTok.range, rhs.range),
       callee: exprIdent("not", opTok.range),
       args: @[rhs]
     )
@@ -553,13 +479,7 @@ proc parseUnary(p: var ParserState): GuiExpr =
     let rhs = p.parseUnary()
     return GuiExpr(
       kind: geBinary,
-      range: sourceRange(
-        opTok.range.start.file,
-        opTok.range.start.line,
-        opTok.range.start.col,
-        rhs.range.stop.line,
-        rhs.range.stop.col
-      ),
+      range: rangeSpan(opTok.range, rhs.range),
       left: exprInt(0, opTok.range),
       right: rhs,
       op: "-"
@@ -568,93 +488,18 @@ proc parseUnary(p: var ParserState): GuiExpr =
     return p.parseUnary()
   p.parsePostfix()
 
-proc parseMulDiv(p: var ParserState): GuiExpr =
-  var expr = p.parseUnary()
-  while p.atKind(gtkStar) or p.atKind(gtkSlash):
-    let opTok = p.advance()
-    let rhs = p.parseUnary()
-    expr = GuiExpr(
-      kind: geBinary,
-      range: sourceRange(
-        expr.range.start.file,
-        expr.range.start.line,
-        expr.range.start.col,
-        rhs.range.stop.line,
-        rhs.range.stop.col
-      ),
-      left: expr,
-      right: rhs,
-      op: opTok.lexeme
-    )
-  expr
-
-proc parseAddSub(p: var ParserState): GuiExpr =
-  var expr = p.parseMulDiv()
-  while p.atKind(gtkPlus) or p.atKind(gtkMinus):
-    let opTok = p.advance()
-    let rhs = p.parseMulDiv()
-    expr = GuiExpr(
-      kind: geBinary,
-      range: sourceRange(
-        expr.range.start.file,
-        expr.range.start.line,
-        expr.range.start.col,
-        rhs.range.stop.line,
-        rhs.range.stop.col
-      ),
-      left: expr,
-      right: rhs,
-      op: opTok.lexeme
-    )
-  expr
-
-proc parseRangeExpr(p: var ParserState): GuiExpr =
-  var expr = p.parseAddSub()
-  while p.atKind(gtkDotDotDot) or p.atKind(gtkDotDotLess):
-    let opTok = p.advance()
-    let rhs = p.parseAddSub()
-    expr = GuiExpr(
-      kind: geBinary,
-      range: sourceRange(
-        expr.range.start.file,
-        expr.range.start.line,
-        expr.range.start.col,
-        rhs.range.stop.line,
-        rhs.range.stop.col
-      ),
-      left: expr,
-      right: rhs,
-      op: opTok.lexeme
-    )
-  expr
-
-proc parseComparison(p: var ParserState): GuiExpr =
-  var expr = p.parseRangeExpr()
-  while p.atKind(gtkLess) or p.atKind(gtkLessEqual) or
-      p.atKind(gtkGreater) or p.atKind(gtkGreaterEqual):
-    let opTok = p.advance()
-    let rhs = p.parseRangeExpr()
-    expr = GuiExpr(
-      kind: geBinary,
-      range: sourceRange(
-        expr.range.start.file,
-        expr.range.start.line,
-        expr.range.start.col,
-        rhs.range.stop.line,
-        rhs.range.stop.col
-      ),
-      left: expr,
-      right: rhs,
-      op: opTok.lexeme
-    )
-  expr
+defineBinaryParser(parseMulDiv, parseUnary, {gtkStar, gtkSlash})
+defineBinaryParser(parseAddSub, parseMulDiv, {gtkPlus, gtkMinus})
+defineBinaryParser(parseRangeExpr, parseAddSub, {gtkDotDotDot, gtkDotDotLess})
+defineBinaryParser(parseComparison, parseRangeExpr,
+    {gtkLess, gtkLessEqual, gtkGreater, gtkGreaterEqual})
 
 proc parseTypeCast(p: var ParserState): GuiExpr =
   var expr = p.parseComparison()
   # Handle: expr as Type, expr as? Type, expr as! Type, expr is Type
   while true:
     if p.atIdent("as"):
-      let asTok = p.advance()
+      discard p.advance()
       var castOp = "as"
       if p.atKind(gtkQuestion):
         discard p.advance()
@@ -670,10 +515,7 @@ proc parseTypeCast(p: var ParserState): GuiExpr =
         typeName.add "." & next.lexeme
       expr = GuiExpr(
         kind: geTypeCast,
-        range: sourceRange(
-          expr.range.start.file, expr.range.start.line, expr.range.start.col,
-          p.prev.range.stop.line, p.prev.range.stop.col
-        ),
+        range: rangeSpan(expr.range, p.prev.range),
         left: expr,
         ident: typeName,
         op: castOp
@@ -687,10 +529,7 @@ proc parseTypeCast(p: var ParserState): GuiExpr =
         typeName.add "." & next.lexeme
       expr = GuiExpr(
         kind: geTypeCheck,
-        range: sourceRange(
-          expr.range.start.file, expr.range.start.line, expr.range.start.col,
-          p.prev.range.stop.line, p.prev.range.stop.col
-        ),
+        range: rangeSpan(expr.range, p.prev.range),
         left: expr,
         ident: typeName
       )
@@ -698,85 +537,10 @@ proc parseTypeCast(p: var ParserState): GuiExpr =
       break
   expr
 
-proc parseEquality(p: var ParserState): GuiExpr =
-  var expr = p.parseTypeCast()
-  while p.atKind(gtkEqualEqual) or p.atKind(gtkBangEqual):
-    let opTok = p.advance()
-    let rhs = p.parseTypeCast()
-    expr = GuiExpr(
-      kind: geBinary,
-      range: sourceRange(
-        expr.range.start.file,
-        expr.range.start.line,
-        expr.range.start.col,
-        rhs.range.stop.line,
-        rhs.range.stop.col
-      ),
-      left: expr,
-      right: rhs,
-      op: opTok.lexeme
-    )
-  expr
-
-proc parseAnd(p: var ParserState): GuiExpr =
-  var expr = p.parseEquality()
-  while p.atKind(gtkAndAnd):
-    let opTok = p.advance()
-    let rhs = p.parseEquality()
-    expr = GuiExpr(
-      kind: geBinary,
-      range: sourceRange(
-        expr.range.start.file,
-        expr.range.start.line,
-        expr.range.start.col,
-        rhs.range.stop.line,
-        rhs.range.stop.col
-      ),
-      left: expr,
-      right: rhs,
-      op: opTok.lexeme
-    )
-  expr
-
-proc parseOr(p: var ParserState): GuiExpr =
-  var expr = p.parseAnd()
-  while p.atKind(gtkOrOr):
-    let opTok = p.advance()
-    let rhs = p.parseAnd()
-    expr = GuiExpr(
-      kind: geBinary,
-      range: sourceRange(
-        expr.range.start.file,
-        expr.range.start.line,
-        expr.range.start.col,
-        rhs.range.stop.line,
-        rhs.range.stop.col
-      ),
-      left: expr,
-      right: rhs,
-      op: opTok.lexeme
-    )
-  expr
-
-proc parseNilCoalescing(p: var ParserState): GuiExpr =
-  var expr = p.parseOr()
-  while p.atKind(gtkQuestionQuestion):
-    let opTok = p.advance()
-    let rhs = p.parseOr()
-    expr = GuiExpr(
-      kind: geBinary,
-      range: sourceRange(
-        expr.range.start.file,
-        expr.range.start.line,
-        expr.range.start.col,
-        rhs.range.stop.line,
-        rhs.range.stop.col
-      ),
-      left: expr,
-      right: rhs,
-      op: opTok.lexeme
-    )
-  expr
+defineBinaryParser(parseEquality, parseTypeCast, {gtkEqualEqual, gtkBangEqual})
+defineBinaryParser(parseAnd, parseEquality, {gtkAndAnd})
+defineBinaryParser(parseOr, parseAnd, {gtkOrOr})
+defineBinaryParser(parseNilCoalescing, parseOr, {gtkQuestionQuestion})
 
 proc parseTernary(p: var ParserState): GuiExpr =
   var condExpr = p.parseNilCoalescing()
@@ -788,13 +552,7 @@ proc parseTernary(p: var ParserState): GuiExpr =
   let falseExpr = p.parseTernary()
   GuiExpr(
     kind: geCall,
-    range: sourceRange(
-      condExpr.range.start.file,
-      condExpr.range.start.line,
-      condExpr.range.start.col,
-      falseExpr.range.stop.line,
-      falseExpr.range.stop.col
-    ),
+    range: rangeSpan(condExpr.range, falseExpr.range),
     callee: exprIdent("select", condExpr.range),
     args: @[condExpr, trueExpr, falseExpr]
   )
@@ -838,23 +596,11 @@ proc parseTypeAtom(p: var ParserState, context: string): tuple[text: string, ran
       let valueType = parseTypeInner(p, "for dictionary value type")
       let closeTok = p.expectKind(gtkRBracket, "to close dictionary type")
       result.text = "[" & firstType.text & ":" & valueType.text & "]"
-      result.range = sourceRange(
-        startTok.range.start.file,
-        startTok.range.start.line,
-        startTok.range.start.col,
-        closeTok.range.stop.line,
-        closeTok.range.stop.col
-      )
+      result.range = rangeSpan(startTok.range, closeTok.range)
     else:
       let closeTok = p.expectKind(gtkRBracket, "to close bracketed type")
       result.text = "[" & firstType.text & "]"
-      result.range = sourceRange(
-        startTok.range.start.file,
-        startTok.range.start.line,
-        startTok.range.start.col,
-        closeTok.range.stop.line,
-        closeTok.range.stop.col
-      )
+      result.range = rangeSpan(startTok.range, closeTok.range)
     return
 
   if p.matchKind(gtkLParen):
@@ -869,13 +615,7 @@ proc parseTypeAtom(p: var ParserState, context: string): tuple[text: string, ran
         break
     let closeTok = p.expectKind(gtkRParen, "to close tuple type")
     result.text = "(" & parts.join(", ") & ")"
-    result.range = sourceRange(
-      startTok.range.start.file,
-      startTok.range.start.line,
-      startTok.range.start.col,
-      closeTok.range.stop.line,
-      closeTok.range.stop.col
-    )
+    result.range = rangeSpan(startTok.range, closeTok.range)
     return
 
   let badTok = p.curr
@@ -921,13 +661,7 @@ proc parseParamList(p: var ParserState): seq[GuiParamDecl] =
       name: nameTok.lexeme,
       typ: typ.text,
       isBinding: isBinding,
-      range: sourceRange(
-        nameTok.range.start.file,
-        nameTok.range.start.line,
-        nameTok.range.start.col,
-        typ.range.stop.line,
-        typ.range.stop.col
-      )
+      range: rangeSpan(nameTok.range, typ.range)
     )
 
     if p.matchKind(gtkComma):
@@ -949,13 +683,7 @@ proc parseFieldDecl(p: var ParserState): GuiFieldDecl =
     name: nameTok.lexeme,
     typ: typ.text,
     defaultValue: defaultExpr,
-    range: sourceRange(
-      nameTok.range.start.file,
-      nameTok.range.start.line,
-      nameTok.range.start.col,
-      typ.range.stop.line,
-      typ.range.stop.col
-    )
+    range: rangeSpan(nameTok.range, typ.range)
   )
   p.optionalDelimiter()
 
@@ -1367,10 +1095,7 @@ proc parseConditionalBranch(p: var ParserState): GuiUiNode =
     discard p.expectKind(gtkRBrace, "to close if-let body")
     return
 
-  let savedNoTrailing = p.noTrailingClosures
-  p.noTrailingClosures = true
-  let condition = p.parseExpression()
-  p.noTrailingClosures = savedNoTrailing
+  let condition = p.parseExprNoTrailingClosures()
   result = GuiUiNode(
     name: "__if__",
     isConditional: true,
@@ -1465,6 +1190,26 @@ proc parseSwitchNode(p: var ParserState): GuiUiNode =
 
   discard p.expectKind(gtkRBrace, "to close switch body")
 
+proc parseOneModifier(p: var ParserState): GuiModifierDecl =
+  let modNameTok = p.expectIdentifier("for modifier name")
+  var modRange = modNameTok.range
+  var parsedArgs: tuple[args: seq[GuiExpr], named: seq[GuiNamedArg]]
+  if p.atKind(gtkLParen):
+    parsedArgs = p.parseUiArgList()
+    modRange.stop = p.prev.range.stop
+  var modChildren: seq[GuiUiNode] = @[]
+  if p.matchKind(gtkLBrace):
+    while not p.atEnd and not p.atKind(gtkRBrace):
+      modChildren.add p.parseUiNodeOrConditional()
+    modRange.stop = p.expectKind(gtkRBrace, "to close modifier block").range.stop
+  GuiModifierDecl(
+    name: modNameTok.lexeme,
+    args: parsedArgs.args,
+    namedArgs: parsedArgs.named,
+    children: modChildren,
+    range: modRange
+  )
+
 proc parseUiNode(p: var ParserState): GuiUiNode =
   # Handle conditional views
   if p.atIdent("if"):
@@ -1494,28 +1239,7 @@ proc parseUiNode(p: var ParserState): GuiUiNode =
 
   var modifiers: seq[GuiModifierDecl] = @[]
   while p.matchKind(gtkDot):
-    let modNameTok = p.expectIdentifier("for modifier name")
-    var modArgs: seq[GuiExpr] = @[]
-    var modNamed: seq[GuiNamedArg] = @[]
-    var modChildren: seq[GuiUiNode] = @[]
-    var modRange = modNameTok.range
-    if p.atKind(gtkLParen):
-      let parsedArgs = p.parseUiArgList()
-      modArgs = parsedArgs.args
-      modNamed = parsedArgs.named
-      modRange.stop = p.prev.range.stop
-    if p.matchKind(gtkLBrace):
-      while not p.atEnd and not p.atKind(gtkRBrace):
-        modChildren.add p.parseUiNodeOrConditional()
-      let endTok = p.expectKind(gtkRBrace, "to close modifier block")
-      modRange.stop = endTok.range.stop
-    modifiers.add GuiModifierDecl(
-      name: modNameTok.lexeme,
-      args: modArgs,
-      namedArgs: modNamed,
-      children: modChildren,
-      range: modRange
-    )
+    modifiers.add p.parseOneModifier()
 
   GuiUiNode(
     name: nodeName,
@@ -1532,28 +1256,7 @@ proc parseViewModifierDecl(p: var ParserState): GuiViewModifierDecl =
   discard p.expectKind(gtkLBrace, "to open modifier body")
   while not p.atEnd and not p.atKind(gtkRBrace):
     if p.matchKind(gtkDot):
-      let modNameTok = p.expectIdentifier("for modifier name")
-      var modArgs: seq[GuiExpr] = @[]
-      var modNamed: seq[GuiNamedArg] = @[]
-      var modChildren: seq[GuiUiNode] = @[]
-      var modRange = modNameTok.range
-      if p.atKind(gtkLParen):
-        let parsedArgs = p.parseUiArgList()
-        modArgs = parsedArgs.args
-        modNamed = parsedArgs.named
-        modRange.stop = p.prev.range.stop
-      if p.matchKind(gtkLBrace):
-        while not p.atEnd and not p.atKind(gtkRBrace):
-          modChildren.add p.parseUiNodeOrConditional()
-        let endTok = p.expectKind(gtkRBrace, "to close modifier block")
-        modRange.stop = endTok.range.stop
-      result.modifiers.add GuiModifierDecl(
-        name: modNameTok.lexeme,
-        args: modArgs,
-        namedArgs: modNamed,
-        children: modChildren,
-        range: modRange
-      )
+      result.modifiers.add p.parseOneModifier()
     else:
       p.addDiagTok(p.curr, "expected '.' for modifier in modifier block", "GUI_PARSE_VIEWMOD")
       discard p.advance()
@@ -1926,69 +1629,22 @@ proc parseDeclBody(
   if p.atIdent("window"):
     discard p.advance()
     let parsedWindow = p.parseWindowDecl()
-    if prog.window.hasWidth and parsedWindow.hasWidth:
-      p.addDiag(parsedWindow.range, "duplicate window.width declaration", "GUI_PARSE_WINDOW_DUP")
-    if prog.window.hasHeight and parsedWindow.hasHeight:
-      p.addDiag(parsedWindow.range, "duplicate window.height declaration", "GUI_PARSE_WINDOW_DUP")
-    if prog.window.hasMinWidth and parsedWindow.hasMinWidth:
-      p.addDiag(parsedWindow.range, "duplicate window.minWidth declaration", "GUI_PARSE_WINDOW_DUP")
-    if prog.window.hasMinHeight and parsedWindow.hasMinHeight:
-      p.addDiag(parsedWindow.range, "duplicate window.minHeight declaration", "GUI_PARSE_WINDOW_DUP")
-    if prog.window.hasMaxWidth and parsedWindow.hasMaxWidth:
-      p.addDiag(parsedWindow.range, "duplicate window.maxWidth declaration", "GUI_PARSE_WINDOW_DUP")
-    if prog.window.hasMaxHeight and parsedWindow.hasMaxHeight:
-      p.addDiag(parsedWindow.range, "duplicate window.maxHeight declaration", "GUI_PARSE_WINDOW_DUP")
-    if prog.window.hasTitle and parsedWindow.hasTitle:
-      p.addDiag(parsedWindow.range, "duplicate window.title declaration", "GUI_PARSE_WINDOW_DUP")
-    if prog.window.hasClosePolicy and parsedWindow.hasClosePolicy:
-      p.addDiag(
-        parsedWindow.range,
-        "duplicate window.closeAppOnLastWindowClose declaration",
-        "GUI_PARSE_WINDOW_DUP"
-      )
-    if prog.window.hasShowTitleBar and parsedWindow.hasShowTitleBar:
-      p.addDiag(
-        parsedWindow.range,
-        "duplicate window.showTitleBar declaration",
-        "GUI_PARSE_WINDOW_DUP"
-      )
-    if prog.window.hasSuppressDefaultMenus and parsedWindow.hasSuppressDefaultMenus:
-      p.addDiag(
-        parsedWindow.range,
-        "duplicate window.suppressDefaultMenus declaration",
-        "GUI_PARSE_WINDOW_DUP"
-      )
-
-    if parsedWindow.hasWidth:
-      prog.window.width = parsedWindow.width
-      prog.window.hasWidth = true
-    if parsedWindow.hasHeight:
-      prog.window.height = parsedWindow.height
-      prog.window.hasHeight = true
-    if parsedWindow.hasMinWidth:
-      prog.window.minWidth = parsedWindow.minWidth
-      prog.window.hasMinWidth = true
-    if parsedWindow.hasMinHeight:
-      prog.window.minHeight = parsedWindow.minHeight
-      prog.window.hasMinHeight = true
-    if parsedWindow.hasMaxWidth:
-      prog.window.maxWidth = parsedWindow.maxWidth
-      prog.window.hasMaxWidth = true
-    if parsedWindow.hasMaxHeight:
-      prog.window.maxHeight = parsedWindow.maxHeight
-      prog.window.hasMaxHeight = true
-    if parsedWindow.hasTitle:
-      prog.window.title = parsedWindow.title
-      prog.window.hasTitle = true
-    if parsedWindow.hasClosePolicy:
-      prog.window.closeAppOnLastWindowClose = parsedWindow.closeAppOnLastWindowClose
-      prog.window.hasClosePolicy = true
-    if parsedWindow.hasShowTitleBar:
-      prog.window.showTitleBar = parsedWindow.showTitleBar
-      prog.window.hasShowTitleBar = true
-    if parsedWindow.hasSuppressDefaultMenus:
-      prog.window.suppressDefaultMenus = parsedWindow.suppressDefaultMenus
-      prog.window.hasSuppressDefaultMenus = true
+    template mergeField(field, hasField: untyped, label: string) =
+      if prog.window.hasField and parsedWindow.hasField:
+        p.addDiag(parsedWindow.range, "duplicate window." & label & " declaration", "GUI_PARSE_WINDOW_DUP")
+      if parsedWindow.hasField:
+        prog.window.field = parsedWindow.field
+        prog.window.hasField = true
+    mergeField(width, hasWidth, "width")
+    mergeField(height, hasHeight, "height")
+    mergeField(minWidth, hasMinWidth, "minWidth")
+    mergeField(minHeight, hasMinHeight, "minHeight")
+    mergeField(maxWidth, hasMaxWidth, "maxWidth")
+    mergeField(maxHeight, hasMaxHeight, "maxHeight")
+    mergeField(title, hasTitle, "title")
+    mergeField(closeAppOnLastWindowClose, hasClosePolicy, "closeAppOnLastWindowClose")
+    mergeField(showTitleBar, hasShowTitleBar, "showTitleBar")
+    mergeField(suppressDefaultMenus, hasSuppressDefaultMenus, "suppressDefaultMenus")
     prog.window.range = parsedWindow.range
     return
 

@@ -1,48 +1,72 @@
 ## Thread Pool for CPS MT Runtime
 ##
-## A simple worker thread pool using a shared FIFO queue with
-## Lock + Cond. Workers block on the condition variable waiting
-## for tasks. Used by spawnBlocking to offload blocking work.
+## Worker thread pool using a lock-free MPMC ring queue for task dispatch.
+## Workers park on a condition variable when idle. Used by spawnBlocking
+## to offload blocking work without stalling the event loop.
 
-import std/[locks, cpuinfo, deques]
+import std/[locks, cpuinfo, atomics, sysatomics]
+import ../private/mpmc_ring
 
 type
   TaskProc = proc() {.gcsafe.}
 
-  WorkQueue = object
-    lock: Lock
-    cond: Cond
-    spaceCond: Cond
-    tasks: Deque[TaskProc]
-    maxPending: int
-    shutdown: bool
+  PoolState = object
+    tasks: MpmcRingQueue[TaskProc]
+    parkLock: Lock
+    parkCond: Cond
+    shutdown: Atomic[bool]
+    parkedCount: Atomic[int]
 
   WorkerArg = object
-    queue: ptr WorkQueue
-    setup: proc() {.gcsafe.}  ## Called once on worker thread before processing tasks
+    state: ptr PoolState
+    setup: proc() {.gcsafe.}
 
   ThreadPool* = ref object
     workers: seq[Thread[WorkerArg]]
-    queue: ptr WorkQueue
-    numThreads*: int
+    state: ptr PoolState
+    dead: bool
 
 proc workerMain(arg: WorkerArg) {.thread.} =
   if arg.setup != nil:
     arg.setup()
-  let q = arg.queue
+  let s = arg.state
   while true:
     var task: TaskProc
-    acquire(q.lock)
-    while q.tasks.len == 0 and not q.shutdown:
-      wait(q.cond, q.lock)
-    if q.shutdown and q.tasks.len == 0:
-      release(q.lock)
+    if s.tasks.tryDequeue(task):
+      try:
+        task()
+      except CatchableError:
+        discard
+      continue
+
+    # No work available — park until signalled
+    if s.shutdown.load(moAcquire):
       break
-    task = q.tasks.popFirst()
-    if q.tasks.len < q.maxPending:
-      signal(q.spaceCond)
-    release(q.lock)
-    task()
+    acquire(s.parkLock)
+    discard s.parkedCount.fetchAdd(1, moAcquireRelease)
+    # Re-check after marking parked so producers see parkedCount > 0
+    if s.tasks.tryDequeue(task):
+      discard s.parkedCount.fetchSub(1, moAcquireRelease)
+      release(s.parkLock)
+      try:
+        task()
+      except CatchableError:
+        discard
+      continue
+    if s.shutdown.load(moAcquire):
+      discard s.parkedCount.fetchSub(1, moAcquireRelease)
+      release(s.parkLock)
+      break
+    wait(s.parkCond, s.parkLock)
+    discard s.parkedCount.fetchSub(1, moAcquireRelease)
+    release(s.parkLock)
+
+proc wakeOne(s: ptr PoolState) {.inline.} =
+  if s.parkedCount.load(moAcquire) <= 0:
+    return
+  acquire(s.parkLock)
+  signal(s.parkCond)
+  release(s.parkLock)
 
 proc newThreadPool*(numThreads: int = 0,
                     workerSetup: proc() {.gcsafe.} = nil,
@@ -51,43 +75,54 @@ proc newThreadPool*(numThreads: int = 0,
   ## If numThreads is 0, defaults to countProcessors().
   ## workerSetup is called once on each worker thread before it starts processing.
   let n = if numThreads <= 0: countProcessors() else: numThreads
-  let maxPending = if maxPendingTasks <= 0: high(int) else: maxPendingTasks
-  result = ThreadPool(numThreads: n)
-  result.queue = cast[ptr WorkQueue](allocShared0(sizeof(WorkQueue)))
-  initLock(result.queue.lock)
-  initCond(result.queue.cond)
-  initCond(result.queue.spaceCond)
-  result.queue.tasks = initDeque[TaskProc]()
-  result.queue.maxPending = maxPending
-  result.queue.shutdown = false
+  let cap = if maxPendingTasks <= 0: 65536 else: maxPendingTasks
+  result = ThreadPool()
+  result.state = cast[ptr PoolState](allocShared0(sizeof(PoolState)))
+  initMpmcRingQueue(result.state.tasks, cap)
+  initLock(result.state.parkLock)
+  initCond(result.state.parkCond)
+  result.state.shutdown.store(false, moRelaxed)
+  result.state.parkedCount.store(0, moRelaxed)
   result.workers = newSeq[Thread[WorkerArg]](n)
-  let arg = WorkerArg(queue: result.queue, setup: workerSetup)
+  let arg = WorkerArg(state: result.state, setup: workerSetup)
   for i in 0 ..< n:
     createThread(result.workers[i], workerMain, arg)
 
-proc submit*(pool: ThreadPool, task: proc() {.gcsafe.}) =
-  ## Submit a task to the thread pool for execution.
-  acquire(pool.queue.lock)
-  while pool.queue.tasks.len >= pool.queue.maxPending and not pool.queue.shutdown:
-    wait(pool.queue.spaceCond, pool.queue.lock)
-  if pool.queue.shutdown:
-    release(pool.queue.lock)
+proc trySubmit*(pool: ThreadPool, task: TaskProc): bool =
+  ## Non-blocking submit. Returns false if the queue is full or pool is shut down.
+  if pool.state.shutdown.load(moAcquire):
+    return false
+  result = pool.state.tasks.tryEnqueue(task)
+  if result:
+    wakeOne(pool.state)
+
+proc submit*(pool: ThreadPool, task: TaskProc) =
+  ## Submit a task. Spins briefly if the queue is full, then yields.
+  if pool.state.shutdown.load(moAcquire):
     return
-  pool.queue.tasks.addLast(task)
-  signal(pool.queue.cond)
-  release(pool.queue.lock)
+  while not pool.state.tasks.tryEnqueue(task):
+    if pool.state.shutdown.load(moAcquire):
+      return
+    cpuRelax()
+  wakeOne(pool.state)
+
+proc len*(pool: ThreadPool): int =
+  ## Number of worker threads.
+  pool.workers.len
 
 proc shutdown*(pool: ThreadPool) =
   ## Signal all workers to stop and wait for them to finish.
-  acquire(pool.queue.lock)
-  pool.queue.shutdown = true
-  broadcast(pool.queue.cond)
-  broadcast(pool.queue.spaceCond)
-  release(pool.queue.lock)
+  if pool.dead:
+    return
+  pool.dead = true
+  pool.state.shutdown.store(true, moRelease)
+  acquire(pool.state.parkLock)
+  broadcast(pool.state.parkCond)
+  release(pool.state.parkLock)
   for i in 0 ..< pool.workers.len:
     joinThread(pool.workers[i])
-  deinitLock(pool.queue.lock)
-  deinitCond(pool.queue.cond)
-  deinitCond(pool.queue.spaceCond)
-  deallocShared(pool.queue)
-  pool.queue = nil
+  deinitMpmcRingQueue(pool.state.tasks)
+  deinitLock(pool.state.parkLock)
+  deinitCond(pool.state.parkCond)
+  deallocShared(pool.state)
+  pool.state = nil

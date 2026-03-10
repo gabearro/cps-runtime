@@ -122,7 +122,7 @@ proc projectPbxproj(appName: string): string =
 			isa = PBXNativeTarget;
 			buildConfigurationList = A80000000000000000000002 /* Build configuration list for PBXNativeTarget \"{appName}\" */;
 			buildPhases = (
-				A70000000000000000000003 /* Build Nim Bridge */,
+				A70000000000000000000003 /* Copy Nim Bridge */,
 				A70000000000000000000002 /* Sources */,
 				A70000000000000000000001 /* Resources */,
 				A30000000000000000000001 /* Frameworks */,
@@ -179,7 +179,7 @@ proc projectPbxproj(appName: string): string =
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		A70000000000000000000003 /* Build Nim Bridge */ = {{
+		A70000000000000000000003 /* Copy Nim Bridge */ = {{
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -187,14 +187,16 @@ proc projectPbxproj(appName: string): string =
 			inputFileListPaths = (
 			);
 			inputPaths = (
+				"$SRCROOT/Bridge/Nim/libgui_bridge_latest.dylib",
 			);
 			outputFileListPaths = (
 			);
 			outputPaths = (
+				"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH/libgui_bridge_latest.dylib",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
-			shellScript = "if [ -x \"$SRCROOT/Bridge/Nim/build_bridge.sh\" ]; then\n  \"$SRCROOT/Bridge/Nim/build_bridge.sh\"\nfi\nBRIDGE_DIR=\"$SRCROOT/Bridge/Nim\"\nDEST_DIR=\"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH\"\nmkdir -p \"$DEST_DIR\"\nif [ -f \"$BRIDGE_DIR/libgui_bridge_latest.dylib\" ]; then\n  cp -f \"$BRIDGE_DIR/libgui_bridge_latest.dylib\" \"$DEST_DIR/libgui_bridge_latest.dylib\"\nelif [ -f \"$BRIDGE_DIR/libgui_bridge_latest.so\" ]; then\n  cp -f \"$BRIDGE_DIR/libgui_bridge_latest.so\" \"$DEST_DIR/libgui_bridge_latest.so\"\nfi";
+			shellScript = "BRIDGE_DIR=\"$SRCROOT/Bridge/Nim\"\nDEST_DIR=\"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH\"\nmkdir -p \"$DEST_DIR\"\nif [ -f \"$BRIDGE_DIR/libgui_bridge_latest.dylib\" ]; then\n  cp -f \"$BRIDGE_DIR/libgui_bridge_latest.dylib\" \"$DEST_DIR/libgui_bridge_latest.dylib\"\nelif [ -f \"$BRIDGE_DIR/libgui_bridge_latest.so\" ]; then\n  cp -f \"$BRIDGE_DIR/libgui_bridge_latest.so\" \"$DEST_DIR/libgui_bridge_latest.so\"\nfi";
 		}};
 /* End PBXShellScriptBuildPhase section */
 
@@ -223,6 +225,7 @@ proc projectPbxproj(appName: string): string =
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;
 			}};
@@ -238,6 +241,7 @@ proc projectPbxproj(appName: string): string =
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;
 			}};

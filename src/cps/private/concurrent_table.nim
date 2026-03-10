@@ -8,7 +8,7 @@
 ## sections). All operations hold the lock for O(1) except snapshot/clear
 ## which are O(n).
 
-import std/[tables, atomics]
+import std/tables
 import spinlock
 
 type
@@ -16,10 +16,9 @@ type
     lock: SpinLock
     data: Table[K, V]
 
-proc initConcurrentTable*[K, V](ct: var ConcurrentTable[K, V]) =
-  ## Initialize the concurrent table.
-  initSpinLock(ct.lock)
-  ct.data = initTable[K, V]()
+proc initConcurrentTable*[K, V](): ConcurrentTable[K, V] =
+  ## Create an empty concurrent table.
+  initSpinLock(result.lock)
 
 proc `[]=`*[K, V](ct: var ConcurrentTable[K, V], key: K, val: V) =
   ## Insert or update a key-value pair.
@@ -32,12 +31,12 @@ proc `[]`*[K, V](ct: var ConcurrentTable[K, V], key: K): V =
     result = ct.data[key]
 
 proc getOrDefault*[K, V](ct: var ConcurrentTable[K, V], key: K): V =
-  ## Look up a value by key, returning default if not found.
+  ## Look up a value, returning default(V) if not found.
   withSpinLock(ct.lock):
     result = ct.data.getOrDefault(key)
 
 proc getOrDefault*[K, V](ct: var ConcurrentTable[K, V], key: K, default: V): V =
-  ## Look up a value by key, returning the given default if not found.
+  ## Look up a value, returning the given default if not found.
   withSpinLock(ct.lock):
     result = ct.data.getOrDefault(key, default)
 
@@ -46,29 +45,45 @@ proc contains*[K, V](ct: var ConcurrentTable[K, V], key: K): bool =
   withSpinLock(ct.lock):
     result = key in ct.data
 
+proc hasKey*[K, V](ct: var ConcurrentTable[K, V], key: K): bool {.inline.} =
+  ## Alias for contains.
+  contains(ct, key)
+
 proc del*[K, V](ct: var ConcurrentTable[K, V], key: K) =
   ## Delete a key from the table (no-op if not present).
   withSpinLock(ct.lock):
     ct.data.del(key)
 
 proc tryGet*[K, V](ct: var ConcurrentTable[K, V], key: K, val: var V): bool =
-  ## Try to get a value. Returns true and sets val if found.
+  ## Try to get a value. Returns true and sets val if found. Single lookup.
   withSpinLock(ct.lock):
-    if key in ct.data:
-      val = ct.data[key]
+    ct.data.withValue(key, v):
+      val = v[]
       result = true
-    else:
+    do:
       result = false
 
 proc take*[K, V](ct: var ConcurrentTable[K, V], key: K, val: var V): bool =
-  ## Atomically get and remove a key. Returns true if found.
+  ## Atomically get and remove a key. Returns true if found. Single lookup.
   withSpinLock(ct.lock):
-    if key in ct.data:
-      val = ct.data[key]
-      ct.data.del(key)
-      result = true
-    else:
-      result = false
+    result = ct.data.pop(key, val)
+
+template withValue*[K, V](ct: var ConcurrentTable[K, V], key: K,
+                          value, body: untyped) =
+  ## Execute body with value bound to a ptr to the value for key.
+  ## No-op if key is not found. Single lock acquisition, single lookup.
+  withSpinLock(ct.lock):
+    ct.data.withValue(key, value):
+      body
+
+template withValue*[K, V](ct: var ConcurrentTable[K, V], key: K,
+                          value, body, doElse: untyped) =
+  ## Execute body with value bound to a ptr, or doElse if key not found.
+  withSpinLock(ct.lock):
+    ct.data.withValue(key, value):
+      body
+    do:
+      doElse
 
 proc len*[K, V](ct: var ConcurrentTable[K, V]): int =
   ## Return the number of entries.
@@ -82,32 +97,21 @@ proc clear*[K, V](ct: var ConcurrentTable[K, V]) =
 
 proc snapshotKeys*[K, V](ct: var ConcurrentTable[K, V]): seq[K] =
   ## Return a snapshot of all keys under a single lock acquisition.
-  ## Uses manual lock/unlock since Nim iterators cannot be called
-  ## inside withSpinLock template bodies.
-  acquire(ct.lock)
-  try:
+  withSpinLock(ct.lock):
     result = newSeqOfCap[K](ct.data.len)
     for k in ct.data.keys:
       result.add(k)
-  finally:
-    release(ct.lock)
 
 proc snapshotPairs*[K, V](ct: var ConcurrentTable[K, V]): seq[(K, V)] =
   ## Return a snapshot of all key-value pairs under a single lock acquisition.
-  acquire(ct.lock)
-  try:
+  withSpinLock(ct.lock):
     result = newSeqOfCap[(K, V)](ct.data.len)
     for k, v in ct.data.pairs:
       result.add((k, v))
-  finally:
-    release(ct.lock)
 
 proc snapshotValues*[K, V](ct: var ConcurrentTable[K, V]): seq[V] =
   ## Return a snapshot of all values under a single lock acquisition.
-  acquire(ct.lock)
-  try:
+  withSpinLock(ct.lock):
     result = newSeqOfCap[V](ct.data.len)
     for v in ct.data.values:
       result.add(v)
-  finally:
-    release(ct.lock)

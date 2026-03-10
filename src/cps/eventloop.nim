@@ -50,7 +50,7 @@ type
     running: bool
     ownerRuntime*: CpsRuntime
     # MT extensions (nil/default when single-threaded)
-    crossThreadQueue*: MpscQueue   ## Lock-free MPSC queue for cross-thread callbacks
+    crossThreadQueue*: MpscQueue[CrossThreadCallback]   ## Lock-free MPSC queue for cross-thread callbacks
     wakePipeRead*: SocketHandle   ## Read end of wake pipe (SocketHandle(-1) = not initialized)
     wakePipeWrite*: SocketHandle  ## Write end of wake pipe (SocketHandle(-1) = not initialized)
     wakePending: Atomic[bool]  ## Coalesce wake-pipe writes
@@ -247,7 +247,7 @@ proc shouldProxyToReactor*(loop: EventLoop): bool {.inline.} =
   ## thread. During bootstrap (queue/pipe not initialized) run inline.
   loop.mtActive and
     not isReactorThread and
-    loop.crossThreadQueue.head != nil and
+    loop.crossThreadQueue.isInitialized() and
     loop.wakePipeWrite != SocketHandle(-1)
 
 proc registerTimer*(loop: EventLoop, delayMs: int, cb: proc() {.closure.}): TimerHandle {.discardable.} =
@@ -404,7 +404,7 @@ proc drainCrossThreadQueue*(loop: EventLoop) =
         cpuRelax()
         continue
       break
-    let cb = node.callback
+    let cb = node.payload
     freeNode(node)
     inc drained
     cb()

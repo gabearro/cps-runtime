@@ -65,28 +65,26 @@ proc encodeHandshake*(infoHash: array[20, byte], peerId: array[20, byte],
   result = newStringOfCap(HandshakeLength)
   result.add(char(19))  # pstrlen
   result.add(ProtocolString)
-  # Reserved bytes - set extension bit if supported
   var reserved: array[8, byte]
   if supportExtensions:
-    reserved[5] = reserved[5] or 0x10  # BEP 10 extension protocol
-  reserved[7] = reserved[7] or 0x04  # BEP 6 fast extension
-  for b in reserved:
-    result.add(char(b))
-  for b in infoHash:
-    result.add(char(b))
-  for b in peerId:
-    result.add(char(b))
+    reserved[5] = 0x10  # BEP 10 extension protocol
+  reserved[7] = 0x04    # BEP 6 fast extension
+  let pos = result.len
+  result.setLen(pos + 48)  # 8 + 20 + 20
+  copyMem(addr result[pos], unsafeAddr reserved[0], 8)
+  copyMem(addr result[pos + 8], unsafeAddr infoHash[0], 20)
+  copyMem(addr result[pos + 28], unsafeAddr peerId[0], 20)
 
 proc decodeHandshake*(data: string): Handshake =
   ## Decode a BitTorrent handshake message.
   if data.len < HandshakeLength:
-    raise newException(CatchableError, "handshake too short: " & $data.len)
+    raise newException(ValueError, "handshake too short: " & $data.len)
   let pstrlen = data[0].byte
   if pstrlen != 19:
-    raise newException(CatchableError, "invalid pstrlen: " & $pstrlen)
+    raise newException(ValueError, "invalid pstrlen: " & $pstrlen)
   let pstr = data[1..19]
   if pstr != ProtocolString:
-    raise newException(CatchableError, "invalid protocol string: " & pstr)
+    raise newException(ValueError, "invalid protocol string: " & pstr)
   copyMem(addr result.reserved[0], unsafeAddr data[20], 8)
   copyMem(addr result.infoHash[0], unsafeAddr data[28], 20)
   copyMem(addr result.peerId[0], unsafeAddr data[48], 20)
@@ -97,52 +95,45 @@ proc supportsExtensions*(h: Handshake): bool =
 
 # Message encoding
 proc encodeMessage*(msg: PeerMessage): string =
-  ## Encode a peer message with 4-byte length prefix.
+  ## Encode a peer message with 4-byte length prefix. Single allocation.
+  let payloadLen = case msg.id
+    of msgChoke, msgUnchoke, msgInterested, msgNotInterested,
+       msgHaveAll, msgHaveNone: 1
+    of msgHave, msgSuggestPiece, msgAllowedFast: 5
+    of msgBitfield: 1 + msg.bitfield.len
+    of msgRequest, msgCancel, msgRejectRequest: 13
+    of msgPiece: 9 + msg.blockData.len
+    of msgPort: 3
+    of msgExtended: 2 + msg.extPayload.len
+  result = newStringOfCap(4 + payloadLen)
+  result.writeUint32BE(uint32(payloadLen))
+  result.add(char(msg.id.byte))
   case msg.id
+  of msgChoke, msgUnchoke, msgInterested, msgNotInterested,
+     msgHaveAll, msgHaveNone:
+    discard
+  of msgHave:
+    result.writeUint32BE(msg.pieceIndex)
+  of msgBitfield:
+    if msg.bitfield.len > 0:
+      let pos = result.len
+      result.setLen(pos + msg.bitfield.len)
+      copyMem(addr result[pos], unsafeAddr msg.bitfield[0], msg.bitfield.len)
+  of msgRequest, msgCancel, msgRejectRequest:
+    result.writeUint32BE(msg.reqIndex)
+    result.writeUint32BE(msg.reqBegin)
+    result.writeUint32BE(msg.reqLength)
   of msgPiece:
-    # Optimize: write directly without intermediate allocation
-    let payloadLen = 1 + 4 + 4 + msg.blockData.len
-    result = newStringOfCap(4 + payloadLen)
-    result.writeUint32BE(uint32(payloadLen))
-    result.add(char(msg.id.byte))
     result.writeUint32BE(msg.blockIndex)
     result.writeUint32BE(msg.blockBegin)
     result.add(msg.blockData)
-  else:
-    var payload = ""
-    case msg.id
-    of msgChoke, msgUnchoke, msgInterested, msgNotInterested:
-      payload.add(char(msg.id.byte))
-    of msgHave:
-      payload.add(char(msg.id.byte))
-      payload.writeUint32BE(msg.pieceIndex)
-    of msgBitfield:
-      payload.add(char(msg.id.byte))
-      for b in msg.bitfield:
-        payload.add(char(b))
-    of msgRequest, msgCancel, msgRejectRequest:
-      payload.add(char(msg.id.byte))
-      payload.writeUint32BE(msg.reqIndex)
-      payload.writeUint32BE(msg.reqBegin)
-      payload.writeUint32BE(msg.reqLength)
-    of msgPiece:
-      discard  # handled above
-    of msgPort:
-      payload.add(char(msg.id.byte))
-      payload.add(char((msg.dhtPort shr 8).byte))
-      payload.add(char((msg.dhtPort and 0xFF).byte))
-    of msgSuggestPiece, msgAllowedFast:
-      payload.add(char(msg.id.byte))
-      payload.writeUint32BE(msg.fastPieceIndex)
-    of msgHaveAll, msgHaveNone:
-      payload.add(char(msg.id.byte))
-    of msgExtended:
-      payload.add(char(msg.id.byte))
-      payload.add(char(msg.extId))
-      payload.add(msg.extPayload)
-    result = newStringOfCap(4 + payload.len)
-    result.writeUint32BE(uint32(payload.len))
-    result.add(payload)
+  of msgPort:
+    result.writeUint16BE(msg.dhtPort)
+  of msgSuggestPiece, msgAllowedFast:
+    result.writeUint32BE(msg.fastPieceIndex)
+  of msgExtended:
+    result.add(char(msg.extId))
+    result.add(msg.extPayload)
 
 proc encodeKeepAlive*(): string =
   ## Encode a keep-alive message (4 zero bytes).
@@ -170,8 +161,8 @@ proc decodeMessage*(data: string): PeerMessage =
     result = PeerMessage(id: msgHave, pieceIndex: readUint32BE(data, 1))
   of msgBitfield.byte:
     var bf = newSeq[byte](data.len - 1)
-    for i in 0 ..< bf.len:
-      bf[i] = data[i + 1].byte
+    if bf.len > 0:
+      copyMem(addr bf[0], unsafeAddr data[1], bf.len)
     result = PeerMessage(id: msgBitfield, bitfield: bf)
   of msgRequest.byte:
     if data.len < 13:
@@ -228,26 +219,22 @@ proc decodeMessage*(data: string): PeerMessage =
 
 # Bitfield helpers
 proc hasPiece*(bitfield: seq[byte], index: int): bool =
-  let byteIdx = index div 8
-  let bitIdx = 7 - (index mod 8)
-  if byteIdx >= bitfield.len: return false
-  (bitfield[byteIdx] and (1'u8 shl bitIdx)) != 0
+  let byteIdx = index shr 3
+  let mask = 1'u8 shl (7 - (index and 7))
+  byteIdx < bitfield.len and (bitfield[byteIdx] and mask) != 0
 
 proc setPiece*(bitfield: var seq[byte], index: int) =
-  let byteIdx = index div 8
-  let bitIdx = 7 - (index mod 8)
+  let byteIdx = index shr 3
   if byteIdx < bitfield.len:
-    bitfield[byteIdx] = bitfield[byteIdx] or (1'u8 shl bitIdx)
+    bitfield[byteIdx] = bitfield[byteIdx] or (1'u8 shl (7 - (index and 7)))
 
 proc clearPiece*(bitfield: var seq[byte], index: int) =
-  let byteIdx = index div 8
-  let bitIdx = 7 - (index mod 8)
+  let byteIdx = index shr 3
   if byteIdx < bitfield.len:
-    bitfield[byteIdx] = bitfield[byteIdx] and (not (1'u8 shl bitIdx))
+    bitfield[byteIdx] = bitfield[byteIdx] and not (1'u8 shl (7 - (index and 7)))
 
 proc newBitfield*(numPieces: int): seq[byte] =
-  let numBytes = (numPieces + 7) div 8
-  result = newSeq[byte](numBytes)
+  newSeq[byte]((numPieces + 7) shr 3)
 
 proc countPieces*(bitfield: seq[byte], total: int): int =
   countBitsSet(bitfield, total)

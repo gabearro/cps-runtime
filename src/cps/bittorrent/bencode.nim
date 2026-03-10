@@ -6,7 +6,10 @@
 ## - Lists: l...e
 ## - Dictionaries: d...e (keys must be byte strings, sorted)
 
-import std/[tables, algorithm, strutils, hashes]
+import std/[tables, algorithm, strutils, sequtils]
+
+const
+  MaxDecodeDepth = 512 ## Maximum nesting depth for decode (prevents stack overflow on untrusted input)
 
 type
   BencodeKind* = enum
@@ -65,10 +68,59 @@ proc contains*(d: BencodeValue, key: string): bool =
   d.kind == bkDict and key in d.dictVal
 
 proc getOrDefault*(d: BencodeValue, key: string): BencodeValue =
-  if d.kind == bkDict and key in d.dictVal:
-    d.dictVal[key]
+  if d.kind == bkDict:
+    d.dictVal.getOrDefault(key)
   else:
     nil
+
+# Require/opt helpers — shared error formatting
+proc raiseFieldError(key: string, context: string) {.noreturn, noinline.} =
+  let ctx = if context.len > 0: " in " & context else: ""
+  raise newException(BencodeError, "missing '" & key & "'" & ctx)
+
+template requireField(d: BencodeValue, key: string, context: string,
+                      expectedKind: BencodeKind, field: untyped): untyped =
+  let node = d.getOrDefault(key)
+  if node == nil or node.kind != expectedKind:
+    raiseFieldError(key, context)
+  node.field
+
+proc requireStr*(d: BencodeValue, key: string, context: string = ""): string =
+  ## Get a required string field, raising BencodeError if missing or wrong type.
+  requireField(d, key, context, bkStr, strVal)
+
+proc requireInt*(d: BencodeValue, key: string, context: string = ""): int64 =
+  ## Get a required integer field, raising BencodeError if missing or wrong type.
+  requireField(d, key, context, bkInt, intVal)
+
+proc requireDict*(d: BencodeValue, key: string, context: string = ""): BencodeValue =
+  ## Get a required dict field, raising BencodeError if missing or wrong type.
+  let node = d.getOrDefault(key)
+  if node == nil or node.kind != bkDict:
+    raiseFieldError(key, context)
+  node
+
+proc optStr*(d: BencodeValue, key: string): string =
+  ## Get an optional string field, returning "" if missing.
+  let node = d.getOrDefault(key)
+  if node != nil and node.kind == bkStr: node.strVal else: ""
+
+proc optInt*(d: BencodeValue, key: string): int64 =
+  ## Get an optional integer field, returning 0 if missing.
+  let node = d.getOrDefault(key)
+  if node != nil and node.kind == bkInt: node.intVal else: 0
+
+proc optStrList*(d: BencodeValue, key: string): seq[string] =
+  ## Get an optional list-of-strings field. Also accepts a single string.
+  let node = d.getOrDefault(key)
+  if node == nil: return @[]
+  case node.kind
+  of bkStr: return @[node.strVal]
+  of bkList:
+    for item in node.listVal:
+      if item.kind == bkStr:
+        result.add(item.strVal)
+  else: discard
 
 proc len*(v: BencodeValue): int =
   case v.kind
@@ -94,124 +146,170 @@ proc `$`*(v: BencodeValue): string =
     s
   of bkDict:
     var s = "{"
-    var first = true
+    var i = 0
     for k, val in v.dictVal:
-      if not first: s.add(", ")
-      first = false
+      if i > 0: s.add(", ")
       s.add("\"" & k & "\": " & $val)
+      inc i
     s.add("}")
     s
 
 # Encoder
-proc encode*(v: BencodeValue): string =
+proc encodeInto*(v: BencodeValue, result: var string) =
+  ## Encode a BencodeValue, appending to `result`. Zero intermediate allocations.
   case v.kind
   of bkInt:
-    result = "i" & $v.intVal & "e"
+    result.add('i')
+    result.add($v.intVal)
+    result.add('e')
   of bkStr:
-    result = $v.strVal.len & ":" & v.strVal
+    result.add($v.strVal.len)
+    result.add(':')
+    result.add(v.strVal)
   of bkList:
-    result = "l"
+    result.add('l')
     for item in v.listVal:
-      result.add(encode(item))
-    result.add("e")
+      encodeInto(item, result)
+    result.add('e')
   of bkDict:
-    # Keys must be sorted
-    var keys: seq[string]
-    for k in v.dictVal.keys:
-      keys.add(k)
+    var keys = toSeq(v.dictVal.keys)
     keys.sort()
-    result = "d"
+    result.add('d')
     for k in keys:
-      result.add($k.len & ":" & k)
-      result.add(encode(v.dictVal[k]))
-    result.add("e")
+      result.add($k.len)
+      result.add(':')
+      result.add(k)
+      encodeInto(v.dictVal[k], result)
+    result.add('e')
+
+proc encode*(v: BencodeValue): string =
+  encodeInto(v, result)
 
 # Decoder
 type
   BencodeParser = object
-    data: string
+    data: ptr UncheckedArray[char]
+    len: int
     pos: int
+    depth: int
 
-proc peek(p: BencodeParser): char =
-  if p.pos >= p.data.len:
+template atEnd(p: BencodeParser): bool =
+  p.pos >= p.len
+
+proc peek(p: BencodeParser): char {.inline.} =
+  if p.atEnd:
     raise newException(BencodeError, "unexpected end of data")
   p.data[p.pos]
 
-proc advance(p: var BencodeParser) =
-  inc p.pos
-
-proc expect(p: var BencodeParser, c: char) =
-  if p.pos >= p.data.len or p.data[p.pos] != c:
+proc expect(p: var BencodeParser, c: char) {.inline.} =
+  if p.atEnd or p.data[p.pos] != c:
     raise newException(BencodeError, "expected '" & $c & "' at pos " & $p.pos)
   inc p.pos
+
+proc enterNested(p: var BencodeParser) {.inline.} =
+  inc p.depth
+  if p.depth > MaxDecodeDepth:
+    raise newException(BencodeError, "maximum nesting depth exceeded at pos " & $p.pos)
+
+proc leaveNested(p: var BencodeParser) {.inline.} =
+  dec p.depth
 
 proc parseValue(p: var BencodeParser): BencodeValue
 
 proc parseInt(p: var BencodeParser): BencodeValue =
   p.expect('i')
-  var numStr = ""
-  while p.pos < p.data.len and p.data[p.pos] != 'e':
-    numStr.add(p.data[p.pos])
+  let start = p.pos
+  while not p.atEnd and p.data[p.pos] != 'e':
     inc p.pos
+  let numLen = p.pos - start
+  let numStr = block:
+    var s = newString(numLen)
+    if numLen > 0:
+      copyMem(addr s[0], addr p.data[start], numLen)
+    s
   p.expect('e')
   if numStr.len == 0:
     raise newException(BencodeError, "empty integer")
-  # Leading zeros are not allowed (except i0e)
   if numStr.len > 1 and numStr[0] == '0':
     raise newException(BencodeError, "leading zero in integer")
   if numStr.len > 1 and numStr[0] == '-' and numStr[1] == '0':
     raise newException(BencodeError, "negative zero in integer")
-  result = bInt(parseBiggestInt(numStr))
+  bInt(parseBiggestInt(numStr))
 
-proc parseStr(p: var BencodeParser): BencodeValue =
-  var lenStr = ""
-  while p.pos < p.data.len and p.data[p.pos] != ':':
-    lenStr.add(p.data[p.pos])
+proc parseRawStr(p: var BencodeParser): string =
+  ## Parse a bencode string, returning the raw string value without BencodeValue allocation.
+  let start = p.pos
+  while not p.atEnd and p.data[p.pos] != ':':
     inc p.pos
+  let lenStr = block:
+    var s = newString(p.pos - start)
+    if s.len > 0:
+      copyMem(addr s[0], addr p.data[start], p.pos - start)
+    s
   p.expect(':')
   let strLen = parseInt(lenStr)
   if strLen < 0:
     raise newException(BencodeError, "negative string length")
-  if p.pos + strLen > p.data.len:
+  if p.pos + strLen > p.len:
     raise newException(BencodeError, "string length exceeds data")
-  result = bStr(p.data[p.pos ..< p.pos + strLen])
+  result = newString(strLen)
+  if strLen > 0:
+    copyMem(addr result[0], addr p.data[p.pos], strLen)
   p.pos += strLen
+
+proc parseStr(p: var BencodeParser): BencodeValue =
+  bStr(parseRawStr(p))
 
 proc parseList(p: var BencodeParser): BencodeValue =
   p.expect('l')
+  p.enterNested()
   result = BencodeValue(kind: bkList, listVal: @[])
   while p.peek() != 'e':
     result.listVal.add(parseValue(p))
   p.expect('e')
+  p.leaveNested()
 
 proc parseDict(p: var BencodeParser): BencodeValue =
   p.expect('d')
+  p.enterNested()
   result = bDict()
   while p.peek() != 'e':
-    let key = parseStr(p)
+    let key = parseRawStr(p)
     let val = parseValue(p)
-    result.dictVal[key.strVal] = val
+    result.dictVal[key] = val
   p.expect('e')
+  p.leaveNested()
 
 proc parseValue(p: var BencodeParser): BencodeValue =
   let c = p.peek()
   case c
-  of 'i': result = parseInt(p)
-  of 'l': result = parseList(p)
-  of 'd': result = parseDict(p)
-  of '0'..'9': result = parseStr(p)
+  of 'i': parseInt(p)
+  of 'l': parseList(p)
+  of 'd': parseDict(p)
+  of '0'..'9': parseStr(p)
   else:
     raise newException(BencodeError, "unexpected character '" & $c & "' at pos " & $p.pos)
 
+proc initParser(data: string, startPos: int = 0): BencodeParser =
+  if data.len == 0:
+    BencodeParser(data: nil, len: 0, pos: startPos, depth: 0)
+  else:
+    BencodeParser(
+      data: cast[ptr UncheckedArray[char]](unsafeAddr data[0]),
+      len: data.len,
+      pos: startPos,
+      depth: 0
+    )
+
 proc decode*(data: string): BencodeValue =
-  var p = BencodeParser(data: data, pos: 0)
+  var p = initParser(data)
   result = parseValue(p)
-  if p.pos != data.len:
+  if p.pos != p.len:
     raise newException(BencodeError, "trailing data at pos " & $p.pos)
 
 proc decodePartial*(data: string, startPos: int = 0): tuple[value: BencodeValue, endPos: int] =
   ## Decode a bencode value starting at startPos, returning value and end position.
-  var p = BencodeParser(data: data, pos: startPos)
+  var p = initParser(data, startPos)
   result.value = parseValue(p)
   result.endPos = p.pos
 
@@ -219,15 +317,15 @@ proc decodePartial*(data: string, startPos: int = 0): tuple[value: BencodeValue,
 proc extractRawValue*(data: string, key: string): string =
   ## Find a top-level dict key and return the raw bencoded bytes of its value.
   ## Used to extract the raw "info" dict for SHA1 hashing.
-  var p = BencodeParser(data: data, pos: 0)
+  var p = initParser(data)
   if p.peek() != 'd':
     raise newException(BencodeError, "not a dictionary")
-  p.advance()
+  inc p.pos
   while p.peek() != 'e':
-    let k = parseStr(p)
+    let k = parseRawStr(p)
     let valStart = p.pos
     discard parseValue(p)
     let valEnd = p.pos
-    if k.strVal == key:
+    if k == key:
       return data[valStart ..< valEnd]
   raise newException(BencodeError, "key not found: " & key)

@@ -10,6 +10,7 @@ type
     stateNames: HashSet[string]
     localNames: HashSet[string]
     actionCaseByName: Table[string, string]
+    componentByName: Table[string, GuiComponentDecl]
 
 proc swiftIdent(name: string): string =
   var text = ""
@@ -313,9 +314,25 @@ proc emitAnyValueExpr(ctx: EmitContext, expr: GuiExpr): string =
 proc emitNode(
   ctx: EmitContext,
   node: GuiUiNode,
-  level: int,
-  componentByName: Table[string, GuiComponentDecl]
+  level: int
 ): string
+
+proc emitChildrenBlock(ctx: EmitContext, head: string, children: seq[GuiUiNode], level: int): string =
+  ## Emit `head {\n  children... \n}`.
+  result = indent(level) & head & " {\n"
+  for child in children:
+    result.add emitNode(ctx, child, level + 1)
+    result.add "\n"
+  result.add indent(level) & "}"
+
+proc extractActionExpr(modDecl: GuiModifierDecl): GuiExpr =
+  ## Extract action expression from modifier's named args ("perform"/"action") or first positional arg.
+  for arg in modDecl.namedArgs:
+    if swiftIdent(arg.name) in ["perform", "action"]:
+      return arg.value
+  if modDecl.args.len > 0:
+    return modDecl.args[0]
+  nil
 
 proc emitModifierNamedArgExpr(ctx: EmitContext, modName: string, arg: GuiNamedArg): string =
   let key = swiftIdent(arg.name)
@@ -326,8 +343,7 @@ proc emitModifierNamedArgExpr(ctx: EmitContext, modName: string, arg: GuiNamedAr
 proc emitModifierCall(
   ctx: EmitContext,
   modDecl: GuiModifierDecl,
-  level: int,
-  componentByName: Table[string, GuiComponentDecl]
+  level: int
 ): string =
   let modName = swiftIdent(modDecl.name)
 
@@ -359,12 +375,7 @@ proc emitModifierCall(
     argParts.add otherNamedArgs
 
     if modDecl.children.len > 0:
-      result = indent(level) & "." & modName & "(" & argParts.join(", ") & ") {\n"
-      for child in modDecl.children:
-        result.add emitNode(ctx, child, level + 1, componentByName)
-        result.add "\n"
-      result.add indent(level) & "}"
-      return result
+      return emitChildrenBlock(ctx, "." & modName & "(" & argParts.join(", ") & ")", modDecl.children, level)
     else:
       return indent(level) & "." & modName & "(" & argParts.join(", ") & ")"
 
@@ -385,87 +396,50 @@ proc emitModifierCall(
     if ofExpr.len > 0:
       var parts: seq[string] = @["of: " & ofExpr]
       parts.add otherArgs
+      let head = "." & modName & "(" & parts.join(", ") & ")"
       if actionExpr != nil:
         let sendExpr = emitActionSendExpr(ctx, actionExpr)
         if sendExpr.len > 0:
-          return indent(level) & "." & modName & "(" & parts.join(", ") & ") { _, _ in store.send(" & sendExpr & ") }"
+          return indent(level) & head & " { _, _ in store.send(" & sendExpr & ") }"
       if modDecl.children.len > 0:
-        result = indent(level) & "." & modName & "(" & parts.join(", ") & ") {\n"
-        for child in modDecl.children:
-          result.add emitNode(ctx, child, level + 1, componentByName)
-          result.add "\n"
-        result.add indent(level) & "}"
-        return result
-      return indent(level) & "." & modName & "(" & parts.join(", ") & ") { _, _ in }"
+        return emitChildrenBlock(ctx, head, modDecl.children, level)
+      return indent(level) & head & " { _, _ in }"
 
-  # onAppear/onDisappear with action dispatch
-  if modName in ["onAppear", "onDisappear"]:
-    var actionExpr: GuiExpr = nil
+  # Action-dispatch modifiers: onAppear, onDisappear, refreshable, onTapGesture, onLongPressGesture
+  if modName in ["onAppear", "onDisappear", "refreshable", "onLongPressGesture", "onTapGesture"]:
+    let actionExpr = extractActionExpr(modDecl)
+    var otherArgs: seq[string] = @[]
     for arg in modDecl.namedArgs:
-      if swiftIdent(arg.name) in ["perform", "action"]:
-        actionExpr = arg.value
-    if modDecl.args.len > 0 and actionExpr == nil:
-      actionExpr = modDecl.args[0]
+      let key = swiftIdent(arg.name)
+      if key notin ["perform", "action"]:
+        otherArgs.add key & ": " & emitExpr(ctx, arg.value, uiContext = true)
     if actionExpr != nil:
       let sendExpr = emitActionSendExpr(ctx, actionExpr)
       if sendExpr.len > 0:
-        return indent(level) & "." & modName & " { store.send(" & sendExpr & ") }"
+        let argsStr = if otherArgs.len > 0: "(" & otherArgs.join(", ") & ")" else: ""
+        return indent(level) & "." & modName & argsStr & " { store.send(" & sendExpr & ") }"
     if modDecl.children.len > 0:
-      result = indent(level) & "." & modName & " {\n"
-      for child in modDecl.children:
-        result.add emitNode(ctx, child, level + 1, componentByName)
-        result.add "\n"
-      result.add indent(level) & "}"
-      return result
-
-  # refreshable with action dispatch
-  if modName == "refreshable":
-    var actionExpr: GuiExpr = nil
-    for arg in modDecl.namedArgs:
-      if swiftIdent(arg.name) in ["perform", "action"]:
-        actionExpr = arg.value
-    if modDecl.args.len > 0 and actionExpr == nil:
-      actionExpr = modDecl.args[0]
-    if actionExpr != nil:
-      let sendExpr = emitActionSendExpr(ctx, actionExpr)
-      if sendExpr.len > 0:
-        return indent(level) & ".refreshable { store.send(" & sendExpr & ") }"
+      let argsStr = if otherArgs.len > 0: "." & modName & "(" & otherArgs.join(", ") & ")" else: "." & modName
+      return emitChildrenBlock(ctx, argsStr, modDecl.children, level)
 
   # onSubmit modifier with action dispatch
   if modName == "onSubmit":
-    var actionExpr: GuiExpr = nil
     var triggerArg = ""
     for arg in modDecl.namedArgs:
-      let key = swiftIdent(arg.name)
-      if key in ["perform", "action"]:
-        actionExpr = arg.value
-      elif key == "of":
+      if swiftIdent(arg.name) == "of":
         triggerArg = emitExpr(ctx, arg.value, uiContext = true)
-    if modDecl.args.len > 0 and actionExpr == nil:
-      actionExpr = modDecl.args[0]
-
+    let actionExpr = extractActionExpr(modDecl)
     if actionExpr != nil:
       let sendExpr = emitActionSendExpr(ctx, actionExpr)
       if sendExpr.len > 0:
-        if triggerArg.len > 0:
-          return indent(level) & ".onSubmit(of: " & triggerArg & ") { store.send(" & sendExpr & ") }"
-        return indent(level) & ".onSubmit { store.send(" & sendExpr & ") }"
+        let prefix = if triggerArg.len > 0: ".onSubmit(of: " & triggerArg & ")" else: ".onSubmit"
+        return indent(level) & prefix & " { store.send(" & sendExpr & ") }"
 
   # task modifier: .task { await ... }
   if modName == "task":
     if modDecl.children.len > 0:
-      result = indent(level) & ".task {\n"
-      for child in modDecl.children:
-        result.add emitNode(ctx, child, level + 1, componentByName)
-        result.add "\n"
-      result.add indent(level) & "}"
-      return result
-    var actionExpr: GuiExpr = nil
-    for arg in modDecl.namedArgs:
-      if swiftIdent(arg.name) in ["perform", "action"]:
-        actionExpr = arg.value
-    if modDecl.args.len > 0 and actionExpr == nil:
-      actionExpr = modDecl.args[0]
+      return emitChildrenBlock(ctx, ".task", modDecl.children, level)
+    let actionExpr = extractActionExpr(modDecl)
     if actionExpr != nil:
       let sendExpr = emitActionSendExpr(ctx, actionExpr)
       if sendExpr.len > 0:
@@ -480,31 +454,7 @@ proc emitModifierCall(
         edgeArg = emitExpr(ctx, arg.value, uiContext = true)
     if modDecl.children.len > 0:
       let head = if edgeArg.len > 0: ".swipeActions(edge: " & edgeArg & ")" else: ".swipeActions"
-      result = indent(level) & head & " {\n"
-      for child in modDecl.children:
-        result.add emitNode(ctx, child, level + 1, componentByName)
-        result.add "\n"
-      result.add indent(level) & "}"
-      return result
-
-  # Gesture action modifiers: onLongPressGesture, onTapGesture, etc.
-  if modName in ["onLongPressGesture", "onTapGesture"]:
-    var actionExpr: GuiExpr = nil
-    var otherArgs: seq[string] = @[]
-    for arg in modDecl.namedArgs:
-      let key = swiftIdent(arg.name)
-      if key in ["perform", "action"]:
-        actionExpr = arg.value
-      else:
-        otherArgs.add key & ": " & emitExpr(ctx, arg.value, uiContext = true)
-    if modDecl.args.len > 0 and actionExpr == nil:
-      actionExpr = modDecl.args[0]
-    if actionExpr != nil:
-      let sendExpr = emitActionSendExpr(ctx, actionExpr)
-      if sendExpr.len > 0:
-        if otherArgs.len > 0:
-          return indent(level) & "." & modName & "(" & otherArgs.join(", ") & ") { store.send(" & sendExpr & ") }"
-        return indent(level) & "." & modName & " { store.send(" & sendExpr & ") }"
+      return emitChildrenBlock(ctx, head, modDecl.children, level)
 
   # focused modifier: .focused($focusVar) — needs binding
   # Optional autoFocus param: .focused(myVar, autoFocus: true) → emits .onAppear { myVar = true }
@@ -542,15 +492,10 @@ proc emitModifierCall(
         argsText.add key & ": " & emitExpr(ctx, arg.value, uiContext = true)
     for arg in modDecl.args:
       argsText.add emitExpr(ctx, arg, uiContext = true)
+    let head = ".searchable(" & argsText.join(", ") & ")"
     if modDecl.children.len > 0:
-      result = indent(level) & ".searchable(" & argsText.join(", ") & ")"
-      result.add " {\n"
-      for child in modDecl.children:
-        result.add emitNode(ctx, child, level + 1, componentByName)
-        result.add "\n"
-      result.add indent(level) & "}"
-      return result
-    return indent(level) & ".searchable(" & argsText.join(", ") & ")"
+      return emitChildrenBlock(ctx, head, modDecl.children, level)
+    return indent(level) & head
 
   # padding with named edge args → EdgeInsets
   if modName == "padding" and modDecl.namedArgs.len > 0 and modDecl.args.len == 0:
@@ -588,31 +533,26 @@ proc emitModifierCall(
   for arg in modDecl.namedArgs:
     argsText.add emitModifierNamedArgExpr(ctx, modDecl.name, arg)
 
-  if modDecl.children.len == 0:
-    return indent(level) & "." & modName & "(" & argsText.join(", ") & ")"
-
   let head =
     if argsText.len > 0:
       "." & modName & "(" & argsText.join(", ") & ")"
     else:
-      "." & modName
+      "." & modName & "()"
 
-  result = indent(level) & head & " {\n"
-  for child in modDecl.children:
-    result.add emitNode(ctx, child, level + 1, componentByName)
-    result.add "\n"
-  result.add indent(level) & "}"
+  if modDecl.children.len == 0:
+    return indent(level) & head
+
+  emitChildrenBlock(ctx, head, modDecl.children, level)
 
 proc appendRenderedModifiers(
   rendered: var string,
   ctx: EmitContext,
   level: int,
   modifiers: seq[GuiModifierDecl],
-  postModifiers: seq[string],
-  componentByName: Table[string, GuiComponentDecl]
+  postModifiers: seq[string]
 ) =
   for modDecl in modifiers:
-    rendered.add "\n" & emitModifierCall(ctx, modDecl, level, componentByName)
+    rendered.add "\n" & emitModifierCall(ctx, modDecl, level)
 
   for modText in postModifiers:
     rendered.add "\n" & indent(level) & modText
@@ -620,8 +560,7 @@ proc appendRenderedModifiers(
 proc emitConditionalNode(
   ctx: EmitContext,
   node: GuiUiNode,
-  level: int,
-  componentByName: Table[string, GuiComponentDecl]
+  level: int
 ): string =
   # Handle if-let binding: if let name = expr { ... } or chained: if let a = x, let b = y { ... }
   if node.isIfLet:
@@ -639,14 +578,14 @@ proc emitConditionalNode(
       let letExprStr = emitExpr(ctx, node.letExpr, uiContext = true)
       result = indent(level) & "if let " & letName & " = " & letExprStr & " {\n"
     for child in node.children:
-      result.add emitNode(ctx, child, level + 1, componentByName)
+      result.add emitNode(ctx, child, level + 1)
       result.add "\n"
     result.add indent(level) & "}"
   else:
     # Emit: if condition { children } else if condition { children } else { children }
     result = indent(level) & "if " & emitExpr(ctx, node.condition, uiContext = true) & " {\n"
     for child in node.children:
-      result.add emitNode(ctx, child, level + 1, componentByName)
+      result.add emitNode(ctx, child, level + 1)
       result.add "\n"
     result.add indent(level) & "}"
 
@@ -667,22 +606,21 @@ proc emitConditionalNode(
     else:
       result.add " else if " & emitExpr(ctx, elifNode.condition, uiContext = true) & " {\n"
     for child in elifNode.children:
-      result.add emitNode(ctx, child, level + 1, componentByName)
+      result.add emitNode(ctx, child, level + 1)
       result.add "\n"
     result.add indent(level) & "}"
 
   if node.elseChildren.len > 0:
     result.add " else {\n"
     for child in node.elseChildren:
-      result.add emitNode(ctx, child, level + 1, componentByName)
+      result.add emitNode(ctx, child, level + 1)
       result.add "\n"
     result.add indent(level) & "}"
 
 proc emitNode(
   ctx: EmitContext,
   node: GuiUiNode,
-  level: int,
-  componentByName: Table[string, GuiComponentDecl]
+  level: int
 ): string =
   if node.isNil:
     return indent(level) & "EmptyView()"
@@ -691,19 +629,19 @@ proc emitNode(
   if node.isPlatformConditional:
     result = indent(level) & "#if " & node.platformCondition & "\n"
     for child in node.children:
-      result.add emitNode(ctx, child, level, componentByName)
+      result.add emitNode(ctx, child, level)
       result.add "\n"
     if node.platformElseChildren.len > 0:
       result.add indent(level) & "#else\n"
       for child in node.platformElseChildren:
-        result.add emitNode(ctx, child, level, componentByName)
+        result.add emitNode(ctx, child, level)
         result.add "\n"
     result.add indent(level) & "#endif"
     return
 
   # Handle conditional nodes (if/else if/else)
   if node.isConditional:
-    return emitConditionalNode(ctx, node, level, componentByName)
+    return emitConditionalNode(ctx, node, level)
 
   # Handle switch/case pattern matching
   if node.isSwitch:
@@ -718,7 +656,7 @@ proc emitNode(
           patternStrs.add emitExpr(ctx, pat, uiContext = true)
         result.add indent(level) & "case " & patternStrs.join(", ") & ":\n"
       for child in c.body:
-        result.add emitNode(ctx, child, level + 1, componentByName)
+        result.add emitNode(ctx, child, level + 1)
         result.add "\n"
     result.add indent(level) & "}"
     return result
@@ -754,10 +692,10 @@ proc emitNode(
       retainedNamed.add arg
   named = retainedNamed
 
-  if nodeLeaf in componentByName:
+  if nodeLeaf in ctx.componentByName:
     callHead = "Component_" & swiftIdent(nodeLeaf)
     constructorParts.add "store: store"
-    let compDecl = componentByName[nodeLeaf]
+    let compDecl = ctx.componentByName[nodeLeaf]
     for arg in node.args:
       constructorParts.add emitExpr(ctx, arg, uiContext = true)
     for arg in named:
@@ -798,7 +736,7 @@ proc emitNode(
           indent(level) & "Button(" & btnArgs.join(", ") & ") { store.send(" & sendExpr & ") }"
         else:
           indent(level) & "Button(" & btnArgs.join(", ") & ") { }"
-      appendRenderedModifiers(rendered, ctx, level, node.modifiers, postModifiers, componentByName)
+      appendRenderedModifiers(rendered, ctx, level, node.modifiers, postModifiers)
       return rendered
     else:
       var actionParts: seq[string] = @[]
@@ -810,15 +748,14 @@ proc emitNode(
       let header = "Button(" & actionParts.join(", ") & ")"
       var rendered = indent(level) & header & " {\n"
       for child in node.children:
-        rendered.add emitNode(ctx, child, level + 1, componentByName)
+        rendered.add emitNode(ctx, child, level + 1)
         rendered.add "\n"
       rendered.add indent(level) & "}"
-      appendRenderedModifiers(rendered, ctx, level, node.modifiers, postModifiers, componentByName)
+      appendRenderedModifiers(rendered, ctx, level, node.modifiers, postModifiers)
       return rendered
   elif nodeLeaf == "NavigationLink":
     # NavigationLink with value-based navigation or label closure
     var valueExpr = ""
-    var destinationNode: GuiUiNode = nil
     for arg in named:
       if arg.name == "value":
         valueExpr = emitExpr(ctx, arg.value, uiContext = true)
@@ -835,10 +772,10 @@ proc emitNode(
       else:
         rendered = indent(level) & "NavigationLink(value: " & valueExpr & ") {\n"
         for child in node.children:
-          rendered.add emitNode(ctx, child, level + 1, componentByName)
+          rendered.add emitNode(ctx, child, level + 1)
           rendered.add "\n"
         rendered.add indent(level) & "}"
-      appendRenderedModifiers(rendered, ctx, level, node.modifiers, postModifiers, componentByName)
+      appendRenderedModifiers(rendered, ctx, level, node.modifiers, postModifiers)
       return rendered
     elif node.children.len > 0:
       # NavigationLink { destination } label: { label }
@@ -847,10 +784,10 @@ proc emitNode(
       if titleExpr.len > 0:
         var rendered = indent(level) & "NavigationLink(" & titleExpr & ") {\n"
         for child in node.children:
-          rendered.add emitNode(ctx, child, level + 1, componentByName)
+          rendered.add emitNode(ctx, child, level + 1)
           rendered.add "\n"
         rendered.add indent(level) & "}"
-        appendRenderedModifiers(rendered, ctx, level, node.modifiers, postModifiers, componentByName)
+        appendRenderedModifiers(rendered, ctx, level, node.modifiers, postModifiers)
         return rendered
     # Fall through to generic handling
     callHead = "NavigationLink"
@@ -871,10 +808,10 @@ proc emitNode(
 
     var rendered = indent(level) & "GeometryReader { " & geoName & " in\n"
     for child in node.children:
-      rendered.add emitNode(localCtx, child, level + 1, componentByName)
+      rendered.add emitNode(localCtx, child, level + 1)
       rendered.add "\n"
     rendered.add indent(level) & "}"
-    appendRenderedModifiers(rendered, ctx, level, node.modifiers, postModifiers, componentByName)
+    appendRenderedModifiers(rendered, ctx, level, node.modifiers, postModifiers)
     return rendered
 
   elif nodeLeaf in ["List", "Section"]:
@@ -942,10 +879,10 @@ proc emitNode(
       # Identifiable/keyed iteration: ForEach(items, id: \.key) { item in ... }
       var rendered = indent(level) & "ForEach(" & itemsText & ", id: " & idKeyPath & ") { " & itemName & " in\n"
       for child in node.children:
-        rendered.add emitNode(localCtx, child, level + 1, componentByName)
+        rendered.add emitNode(localCtx, child, level + 1)
         rendered.add "\n"
       rendered.add indent(level) & "}"
-      appendRenderedModifiers(rendered, localCtx, level, node.modifiers, postModifiers, componentByName)
+      appendRenderedModifiers(rendered, localCtx, level, node.modifiers, postModifiers)
       return rendered
     else:
       # Index-based iteration (fallback)
@@ -961,9 +898,9 @@ proc emitNode(
 
       for child in node.children:
         rendered.add "\n"
-        rendered.add emitNode(localCtx, child, level + 1, componentByName)
+        rendered.add emitNode(localCtx, child, level + 1)
       rendered.add "\n" & indent(level) & "}"
-      appendRenderedModifiers(rendered, localCtx, level, node.modifiers, postModifiers, componentByName)
+      appendRenderedModifiers(rendered, localCtx, level, node.modifiers, postModifiers)
       return rendered
   elif nodeLeaf == "NavigationSplitView":
     callHead = nodeLeaf
@@ -980,20 +917,20 @@ proc emitNode(
           callHead
 
       var rendered = indent(level) & splitHead & " {\n"
-      rendered.add emitNode(ctx, node.children[0], level + 1, componentByName)
+      rendered.add emitNode(ctx, node.children[0], level + 1)
       rendered.add "\n"
 
       if node.children.len == 2:
         rendered.add indent(level) & "} detail: {\n"
-        rendered.add emitNode(ctx, node.children[1], level + 1, componentByName)
+        rendered.add emitNode(ctx, node.children[1], level + 1)
       else:
         rendered.add indent(level) & "} content: {\n"
-        rendered.add emitNode(ctx, node.children[1], level + 1, componentByName)
+        rendered.add emitNode(ctx, node.children[1], level + 1)
         rendered.add "\n" & indent(level) & "} detail: {\n"
-        rendered.add emitNode(ctx, node.children[2], level + 1, componentByName)
+        rendered.add emitNode(ctx, node.children[2], level + 1)
 
       rendered.add "\n" & indent(level) & "}"
-      appendRenderedModifiers(rendered, ctx, level, node.modifiers, postModifiers, componentByName)
+      appendRenderedModifiers(rendered, ctx, level, node.modifiers, postModifiers)
       return rendered
   elif nodeLeaf in ["TextField", "SecureField", "Toggle", "Picker",
                      "Slider", "Stepper", "DatePicker", "ColorPicker", "TextEditor"]:
@@ -1031,19 +968,12 @@ proc emitNode(
       else:
         constructorParts.add key & ": " & emitExpr(ctx, arg.value, uiContext = true)
 
-  elif nodeLeaf == "LabeledContent":
-    # LabeledContent("Label") { content } or LabeledContent("Label", value: expr)
+  elif nodeLeaf in ["LabeledContent", "TableColumn"]:
     callHead = nodeLeaf
     for arg in node.args:
       constructorParts.add emitExpr(ctx, arg, uiContext = true)
     for arg in named:
-      let key = swiftIdent(arg.name)
-      if key == "value":
-        constructorParts.add key & ": " & emitExpr(ctx, arg.value, uiContext = true)
-      elif key == "format":
-        constructorParts.add key & ": " & emitExpr(ctx, arg.value, uiContext = true)
-      else:
-        constructorParts.add key & ": " & emitExpr(ctx, arg.value, uiContext = true)
+      constructorParts.add swiftIdent(arg.name) & ": " & emitExpr(ctx, arg.value, uiContext = true)
 
   elif nodeLeaf == "Table":
     # Table with selection binding: Table(items, selection: $selection) { columns }
@@ -1054,21 +984,6 @@ proc emitNode(
       let key = swiftIdent(arg.name)
       if key in ["selection", "sortOrder"]:
         constructorParts.add key & ": " & emitBindingExpr(ctx, arg.value)
-      else:
-        constructorParts.add key & ": " & emitExpr(ctx, arg.value, uiContext = true)
-
-  elif nodeLeaf == "TableColumn":
-    # TableColumn("Header", value: \.keyPath) or TableColumn("Header") { row in ... }
-    callHead = nodeLeaf
-    for arg in node.args:
-      constructorParts.add emitExpr(ctx, arg, uiContext = true)
-    for arg in named:
-      let key = swiftIdent(arg.name)
-      if key == "value":
-        # Key path support: value: \.fieldName → value: \.fieldName
-        constructorParts.add key & ": " & emitExpr(ctx, arg.value, uiContext = true)
-      elif key == "sortUsing":
-        constructorParts.add key & ": " & emitExpr(ctx, arg.value, uiContext = true)
       else:
         constructorParts.add key & ": " & emitExpr(ctx, arg.value, uiContext = true)
 
@@ -1099,17 +1014,13 @@ proc emitNode(
     else:
       callHead & "()"
 
-  var rendered = ""
-  if node.children.len > 0:
-    rendered = indent(level) & callText & " {\n"
-    for child in node.children:
-      rendered.add emitNode(ctx, child, level + 1, componentByName)
-      rendered.add "\n"
-    rendered.add indent(level) & "}"
-  else:
-    rendered = indent(level) & callText
+  var rendered =
+    if node.children.len > 0:
+      emitChildrenBlock(ctx, callText, node.children, level)
+    else:
+      indent(level) & callText
 
-  appendRenderedModifiers(rendered, ctx, level, node.modifiers, postModifiers, componentByName)
+  appendRenderedModifiers(rendered, ctx, level, node.modifiers, postModifiers)
 
   rendered
 
@@ -1237,16 +1148,17 @@ proc bridgeWireKind(typ: string): string =
     return "string"
   "json"
 
+const bridgeRequestCandidates = [
+  "selectedTorrentId", "detailTab", "showAddTorrent", "addMagnetLink", "addTorrentPath",
+  "showSettings", "downloadDir", "listenPort", "downloadBandwidth", "uploadBandwidth",
+  "downloadBandwidthUnit", "uploadBandwidthUnit", "bandwidthPercent",
+  "maxPeers", "dhtEnabled", "pexEnabled", "lsdEnabled", "utpEnabled", "webSeedEnabled",
+  "trackerScrapeEnabled", "holepunchEnabled", "encryptionMode", "actionPriority",
+  "showRemoveConfirm", "removeDeleteFiles", "actionTorrentId", "pollActive"
+]
+
 proc isBridgeRequestCandidate(name: string): bool =
-  let n = swiftIdent(name)
-  n in [
-    "selectedTorrentId", "detailTab", "showAddTorrent", "addMagnetLink", "addTorrentPath",
-    "showSettings", "downloadDir", "listenPort", "downloadBandwidth", "uploadBandwidth",
-    "downloadBandwidthUnit", "uploadBandwidthUnit", "bandwidthPercent",
-    "maxPeers", "dhtEnabled", "pexEnabled", "lsdEnabled", "utpEnabled", "webSeedEnabled",
-    "trackerScrapeEnabled", "holepunchEnabled", "encryptionMode", "actionPriority",
-    "showRemoveConfirm", "removeDeleteFiles", "actionTorrentId", "pollActive"
-  ]
+  swiftIdent(name) in bridgeRequestCandidates
 
 proc emitBridgeStateHelpers(ir: GuiIrProgram, outLines: var seq[string]) =
   var storageFields: seq[GuiFieldDecl]
@@ -1679,9 +1591,8 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
   outLines.add ""
 
   # Custom ViewModifier declarations
-  var componentByName: Table[string, GuiComponentDecl]
   for component in ir.components:
-    componentByName[component.name] = component
+    ctx.componentByName[component.name] = component
 
   for vm in ir.viewModifiers:
     let structName = swiftIdent(vm.name) & "Modifier"
@@ -1689,7 +1600,7 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
     outLines.add "  func body(content: Content) -> some View {"
     outLines.add "    content"
     for modDecl in vm.modifiers:
-      outLines.add emitModifierCall(ctx, modDecl, 3, componentByName)
+      outLines.add emitModifierCall(ctx, modDecl, 3)
     outLines.add "  }"
     outLines.add "}"
     outLines.add ""
@@ -1803,54 +1714,23 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
           innerNode = innerNode.children[0]
         # If inner node has 2+ children and total output is large, split
         if innerNode.children.len >= 2:
+          # Emit each child once, cache results for both line-counting and output.
+          var childOutputs: seq[string] = @[]
           var totalLines = 0
           for child in innerNode.children:
-            totalLines += emitNode(localCtx, child, 3, componentByName).countLines
+            let rendered = emitNode(localCtx, child, 2)
+            childOutputs.add rendered
+            totalLines += rendered.countLines
           if totalLines > 60:
             # Emit each child as a section property
-            for i, child in innerNode.children:
+            for i, output in childOutputs:
               let sectionName = "_section" & $i
               outLines.add "  @ViewBuilder private var " & sectionName & ": some View {"
-              outLines.add emitNode(localCtx, child, 2, componentByName)
+              outLines.add output
               outLines.add "  }"
               outLines.add ""
-            # Emit body with section references replacing children
+            # Emit body: reconstruct container chain with section references
             outLines.add "  var body: some View {"
-            # Rebuild container chain with section references
-            proc emitContainerChain(node: GuiUiNode, inner: GuiUiNode, ctx: EmitContext, level: int, sectionCount: int, componentByName: Table[string, GuiComponentDecl], outLines: var seq[string]) =
-              let nodeLeaf = node.name.split('.')[^1]
-              var head = indent(level) & nodeLeaf & "("
-              var parts: seq[string]
-              for arg in node.args:
-                parts.add emitExpr(ctx, arg, uiContext = true)
-              for arg in node.namedArgs:
-                parts.add swiftIdent(arg.name) & ": " & emitExpr(ctx, arg.value, uiContext = true)
-              head.add parts.join(", ")
-              head.add ") {"
-              outLines.add head
-              if node == inner:
-                for i in 0 ..< sectionCount:
-                  outLines.add indent(level + 1) & "_section" & $i
-              else:
-                emitContainerChain(node.children[0], inner, ctx, level + 1, sectionCount, componentByName, outLines)
-              outLines.add indent(level) & "}"
-              # Apply modifiers
-              for m in node.modifiers:
-                discard  # modifiers are part of emitNode output; we handle them below
-
-            # Simpler approach: emit the root node but replace innerNode's children
-            # We can't easily rewrite the tree, so generate by reconstructing manually
-            var savedChildren = innerNode.children
-            innerNode.children = @[]
-            for i in 0 ..< savedChildren.len:
-              let placeholder = GuiUiNode(name: "_section" & $i)
-              innerNode.children.add placeholder
-            # Override emitNode for placeholder nodes — this won't work directly.
-            # Instead, just emit the structure manually.
-            innerNode.children = savedChildren  # restore
-
-            # Practical approach: emit the nesting manually
-            # Find the chain of containers: root -> ... -> innerNode
             var chain: seq[GuiUiNode] = @[]
             var cur = rootNode
             chain.add cur
@@ -1858,7 +1738,6 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
               cur = cur.children[0]
               chain.add cur
 
-            # Emit opening tags
             for depth, node in chain:
               let nodeLeaf = node.name.split('.')[^1]
               var head = indent(2 + depth) & nodeLeaf & "("
@@ -1871,17 +1750,15 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
               head.add ") {"
               outLines.add head
 
-            # Emit section references
             let innerDepth = chain.len + 1
             for i in 0 ..< innerNode.children.len:
               outLines.add indent(innerDepth) & "_section" & $i
 
-            # Emit closing tags and modifiers (reverse order)
             for depth in countdown(chain.len - 1, 0):
               let node = chain[depth]
               var closing = indent(2 + depth) & "}"
               for m in node.modifiers:
-                closing.add "\n" & emitModifierCall(localCtx, m, 2 + depth, componentByName)
+                closing.add "\n" & emitModifierCall(localCtx, m, 2 + depth)
               outLines.add closing
 
             outLines.add "  }"
@@ -1900,11 +1777,11 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
       if component.body.len == 0:
         outLines.add "    EmptyView()"
       elif component.body.len == 1:
-        outLines.add emitNode(localCtx, component.body[0], 2, componentByName)
+        outLines.add emitNode(localCtx, component.body[0], 2)
       else:
         outLines.add "    Group {"
         for node in component.body:
-          outLines.add emitNode(localCtx, node, 3, componentByName)
+          outLines.add emitNode(localCtx, node, 3)
         outLines.add "    }"
 
       outLines.add "  }"
@@ -1916,7 +1793,6 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
     var previewArgs = "store: GUIStore()"
     for param in component.params:
       let pName = swiftIdent(param.name)
-      let pType = swiftTypeName(param.typ)
       if param.isBinding:
         previewArgs.add ", " & pName & ": .constant(" & defaultValueForType(param.typ) & ")"
       else:

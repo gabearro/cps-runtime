@@ -26,16 +26,16 @@ const
 
 type
   UtpStream* = ref object of AsyncStream
-    manager*: UtpManager
-    sock*: UtpSocket
+    manager: UtpManager
+    sock: UtpSocket
     remoteIp*: string
     remotePort*: int
     readWaiter: CpsFuture[string]
     readWaiterSize: int
     connectWaiter: CpsVoidFuture
-    writeWaiter*: CpsVoidFuture
-    writePending*: string      ## Unsent data waiting for window space
-    writeOffset*: int          ## Offset into writePending
+    writeWaiter: CpsVoidFuture
+    writePending: string       ## Unsent data waiting for window space
+    writeOffset: int           ## Offset into writePending
 
   UtpManager* = ref object
     udpSock*: UdpSocket
@@ -208,6 +208,26 @@ proc failWriteWaiter(stream: UtpStream, msg: string) =
       ww.fail(newException(AsyncIoError, msg))
     )
 
+proc drainReceiveBuffer(stream: UtpStream, size: int): string =
+  ## Extract up to `size` bytes from the receive buffer, removing them.
+  let toRead = min(size, stream.sock.receiveBuffer.len)
+  if toRead <= 0: return ""
+  result = stream.sock.receiveBuffer[0 ..< toRead]
+  if toRead >= stream.sock.receiveBuffer.len:
+    stream.sock.receiveBuffer = ""
+  else:
+    stream.sock.receiveBuffer.delete(0 .. toRead - 1)
+
+proc teardownStream(stream: UtpStream, reason: string) =
+  ## Tear down a stream: fail all pending waiters and mark as closed.
+  stream.closed = true
+  stream.failConnectWaiter(reason)
+  if stream.sock.state == usReset:
+    stream.failReadWaiter(reason)
+  else:
+    stream.wakeReadWaiterEof()
+  stream.failWriteWaiter(reason)
+
 proc resumePendingWrite(stream: UtpStream) =
   ## Try to send more of the pending write data now that window space opened.
   if stream.writeWaiter == nil or stream.writePending.len == 0:
@@ -252,7 +272,6 @@ proc dispatchPacket(mgr: UtpManager, data: string, srcIp: string, srcPort: int) 
   let connKey = utpConnKey(hdr.connectionId, srcIp, srcPort)
   var stream: UtpStream
   if mgr.connections.tryGet(connKey, stream):
-    let prevState = stream.sock.state
     var res: tuple[response: string, payload: string, stateChanged: bool]
     try:
       res = stream.sock.processIncoming(data)
@@ -280,21 +299,9 @@ proc dispatchPacket(mgr: UtpManager, data: string, srcIp: string, srcPort: int) 
       if stream.readWaiter != nil:
         let rw = stream.readWaiter
         stream.readWaiter = nil
-        let requested: int = max(0, stream.readWaiterSize)
+        let requested = max(0, stream.readWaiterSize)
         stream.readWaiterSize = 0
-        let toRead: int = min(requested, stream.sock.receiveBuffer.len)
-        let buf: string =
-          if toRead <= 0:
-            ""
-          elif toRead == stream.sock.receiveBuffer.len:
-            stream.sock.receiveBuffer
-          else:
-            stream.sock.receiveBuffer[0 ..< toRead]
-        if toRead > 0:
-          if toRead == stream.sock.receiveBuffer.len:
-            stream.sock.receiveBuffer = ""
-          else:
-            stream.sock.receiveBuffer = stream.sock.receiveBuffer[toRead .. ^1]
+        let buf = stream.drainReceiveBuffer(requested)
         dispatchDeferred(stream.manager, proc() =
           rw.complete(buf)
         )
@@ -304,14 +311,7 @@ proc dispatchPacket(mgr: UtpManager, data: string, srcIp: string, srcPort: int) 
       if stream.sock.state == usConnected:
         stream.wakeConnectWaiter()
       elif stream.sock.state in {usDestroyed, usReset}:
-        stream.closed = true
-        stream.failConnectWaiter("uTP " & $stream.sock.state)
-        if stream.sock.state == usReset:
-          stream.failReadWaiter("uTP connection reset")
-          stream.failWriteWaiter("uTP connection reset")
-        else:
-          stream.wakeReadWaiterEof()
-          stream.failWriteWaiter("uTP connection closed")
+        stream.teardownStream("uTP " & $stream.sock.state)
         removeConnection(mgr, stream.sock.connectionId, stream.remoteIp, stream.remotePort)
 
   elif hdr.packetType == StSyn:
@@ -389,7 +389,7 @@ proc newUtpManager*(listenPort: int = 0, domain: Domain = AF_INET): UtpManager =
     reactorLoop: nil
   )
   result.nextConnId.store(1000, moRelaxed)
-  initConcurrentTable(result.connections)
+  result.connections = initConcurrentTable[string, UtpStream]()
   # Dual-stack: allow IPv6 socket to handle IPv4 (as ::ffff:x.x.x.x) too
   if domain == AF_INET6:
     var no: cint = 0
@@ -444,14 +444,7 @@ proc start*(mgr: UtpManager) =
       if not mgr.connections.contains(cKey):
         continue
       if stream.sock.state in {usReset, usDestroyed}:
-        stream.closed = true
-        stream.failConnectWaiter("uTP timeout reset")
-        if stream.sock.state == usReset:
-          stream.failReadWaiter("uTP connection reset (timeout)")
-          stream.failWriteWaiter("uTP connection reset (timeout)")
-        else:
-          stream.wakeReadWaiterEof()
-          stream.failWriteWaiter("uTP connection closed (timeout)")
+        stream.teardownStream("uTP timeout " & $stream.sock.state)
         toRemove.add(cKey)
     for cKey in toRemove:
       mgr.connections.del(cKey)
@@ -475,10 +468,7 @@ proc close*(mgr: UtpManager) =
     if stream.sock.state == usConnected:
       let fin = stream.sock.makeFinPacket()
       mgr.sendPacket(fin, stream.remoteIp, stream.remotePort)
-    stream.closed = true
-    stream.failConnectWaiter("uTP manager closed")
-    stream.wakeReadWaiterEof()
-    stream.failWriteWaiter("uTP manager closed")
+    stream.teardownStream("uTP manager closed")
   mgr.connections.clear()
   mgr.udpSock.close()
 
@@ -566,10 +556,7 @@ proc utpStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
   # to avoid data races with dispatchPacket (UDP read handler).
   ensureOnReactor(stream.manager, proc() =
     if stream.sock.receiveBuffer.len > 0:
-      let toRead = min(size, stream.sock.receiveBuffer.len)
-      let data = stream.sock.receiveBuffer[0 ..< toRead]
-      stream.sock.receiveBuffer = stream.sock.receiveBuffer[toRead .. ^1]
-      fut.complete(data)
+      fut.complete(stream.drainReceiveBuffer(size))
     elif stream.closed or stream.sock.state in {usDestroyed, usReset}:
       fut.complete("")  # EOF
     else:
@@ -642,9 +629,7 @@ proc utpStreamClose(s: AsyncStream) =
     if stream.sock.state == usConnected:
       let fin = stream.sock.makeFinPacket()
       stream.manager.sendPacket(fin, stream.remoteIp, stream.remotePort)
-    stream.failConnectWaiter("uTP stream closed")
-    stream.wakeReadWaiterEof()
-    stream.failWriteWaiter("uTP stream closed")
+    stream.teardownStream("uTP stream closed")
     if stream.manager != nil and not stream.manager.closed:
       removeConnection(stream.manager, stream.sock.connectionId, stream.remoteIp, stream.remotePort)
   )

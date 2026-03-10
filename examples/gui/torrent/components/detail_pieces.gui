@@ -17,6 +17,14 @@ component DetailPieces(isDark: Bool) {
         }
         HStack(spacing: 5) {
           RoundedRectangle(cornerRadius: 2)
+            .fill(Color(token.color.optimistic))
+            .frame(width: 10, height: 10)
+          Text("Optimistic")
+            .font(.system(size: 10))
+            .foregroundColor(fgSecondary)
+        }
+        HStack(spacing: 5) {
+          RoundedRectangle(cornerRadius: 2)
             .fill(Color(token.color.downloading))
             .frame(width: 10, height: 10)
           Text("Partial")

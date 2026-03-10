@@ -3,40 +3,28 @@
 ## Contains: PRNG, CRC32C, IP parsing, compact peer format,
 ## hex encoding/decoding helpers.
 
-import std/strutils
+import std/[bitops, strutils, times]
+import ../private/xorshift
+export xorshift
 
-# ============================================================
-# XorShift32 PRNG (avoids std/random which clobbers OpenSSL on macOS)
-# ============================================================
+# Thread-local PRNG — lazy-initialized per thread to avoid
+# data races when CPS tasks run on MT scheduler workers.
+var defaultRng {.threadvar.}: XorShift32
+var defaultRngReady {.threadvar.}: bool
 
-type
-  XorShift32* = object
-    state: uint32
-
-proc initXorShift32*(seed: uint32): XorShift32 =
-  result.state = if seed == 0: 2654435761'u32 else: seed
-
-proc next*(rng: var XorShift32): uint32 =
-  rng.state = rng.state xor (rng.state shl 13)
-  rng.state = rng.state xor (rng.state shr 17)
-  rng.state = rng.state xor (rng.state shl 5)
-  result = rng.state
-
-proc rand*(rng: var XorShift32, bound: int): int =
-  ## Return a pseudo-random int in [0, bound).
-  if bound <= 1: return 0
-  int(rng.next() mod bound.uint32)
-
-# Module-level default PRNG instance for convenience.
-import std/times
-var defaultRng* = initXorShift32(uint32(epochTime() * 1000) or 1)
+proc ensureRng() {.inline.} =
+  if not defaultRngReady:
+    defaultRng = initXorShift32(uint32(epochTime() * 1000) or 1)
+    defaultRngReady = true
 
 proc btRand*(bound: int): int =
-  ## Module-level random in [0, bound) using the default PRNG.
+  ## Thread-safe random in [0, bound) using the thread-local PRNG.
+  ensureRng()
   defaultRng.rand(bound)
 
 proc btRandU32*(): uint32 =
-  ## Module-level random uint32 using the default PRNG.
+  ## Thread-safe random uint32 using the thread-local PRNG.
+  ensureRng()
   defaultRng.next()
 
 # ============================================================
@@ -90,8 +78,34 @@ proc ipv4ToString*(b: array[4, byte]): string =
   $b[0] & "." & $b[1] & "." & $b[2] & "." & $b[3]
 
 # ============================================================
-# IPv6 canonicalization (RFC 5952)
+# IPv6 parsing and canonicalization (RFC 5952)
 # ============================================================
+
+proc parseIpv6Words*(ip: string): array[8, uint16] =
+  ## Parse an IPv6 address string into 8 uint16 groups.
+  var raw = ip
+  if raw.len > 0 and raw[0] == '[':
+    raw = raw[1 .. ^1]
+  if raw.len > 0 and raw[^1] == ']':
+    raw = raw[0 .. ^2]
+  let parts = raw.split(':')
+  var pi = 0
+  var gi = 0
+  while pi < parts.len and gi < 8:
+    if parts[pi].len == 0:
+      pi += 1
+      if pi < parts.len and parts[pi].len == 0:
+        pi += 1
+      var tailCount = 0
+      for ti in pi ..< parts.len:
+        if parts[ti].len > 0:
+          tailCount += 1
+      let zeroFill = 8 - gi - tailCount
+      gi += zeroFill
+    else:
+      result[gi] = uint16(parseHexInt(parts[pi]))
+      gi += 1
+      pi += 1
 
 proc canonicalizeIpv6*(ip: string): string =
   ## Canonicalize an IPv6 address to RFC 5952 compressed form.
@@ -99,34 +113,7 @@ proc canonicalizeIpv6*(ip: string): string =
   ## Returns the input unchanged if it does not look like IPv6.
   if ':' notin ip:
     return ip
-  # Strip brackets if present
-  var raw = ip
-  if raw.len > 0 and raw[0] == '[':
-    raw = raw[1 .. ^1]
-  if raw.len > 0 and raw[^1] == ']':
-    raw = raw[0 .. ^2]
-
-  # Parse 8 groups from the address
-  var groups: array[8, uint16]
-  let parts = raw.split(':')
-  var pi = 0
-  var gi = 0
-  while pi < parts.len and gi < 8:
-    if parts[pi].len == 0:
-      # Found "::" — determine how many zero groups to fill
-      pi += 1
-      if pi < parts.len and parts[pi].len == 0:
-        pi += 1  # skip second empty from "::"
-      var tailCount = 0
-      for ti in pi ..< parts.len:
-        if parts[ti].len > 0:
-          tailCount += 1
-      let zeroFill = 8 - gi - tailCount
-      gi += zeroFill  # groups default to 0
-    else:
-      groups[gi] = uint16(parseHexInt(parts[pi]))
-      gi += 1
-      pi += 1
+  let groups = parseIpv6Words(ip)
 
   # Find longest run of consecutive zero groups (RFC 5952 section 4.2.3)
   var bestStart = -1
@@ -173,6 +160,14 @@ proc canonicalizeIpv6*(ip: string): string =
   result = result.toLowerAscii()
 
 # ============================================================
+# IPv6 detection
+# ============================================================
+
+proc isIpv6*(ip: string): bool {.inline.} =
+  ## Quick check: IPv6 addresses contain colons.
+  ':' in ip
+
+# ============================================================
 # Compact peer format (6 bytes per IPv4 peer: 4 IP + 2 port BE)
 # ============================================================
 
@@ -202,32 +197,6 @@ proc encodeCompactPeers*(peers: seq[CompactPeer]): string =
       result.add(char(parseInt(p).byte))
     result.add(char((peer.port shr 8).byte))
     result.add(char((peer.port and 0xFF).byte))
-
-proc parseIpv6Words*(ip: string): array[8, uint16] =
-  ## Parse an IPv6 address string into 8 uint16 groups.
-  var raw = ip
-  if raw.len > 0 and raw[0] == '[':
-    raw = raw[1 .. ^1]
-  if raw.len > 0 and raw[^1] == ']':
-    raw = raw[0 .. ^2]
-  let parts = raw.split(':')
-  var pi = 0
-  var gi = 0
-  while pi < parts.len and gi < 8:
-    if parts[pi].len == 0:
-      pi += 1
-      if pi < parts.len and parts[pi].len == 0:
-        pi += 1
-      var tailCount = 0
-      for ti in pi ..< parts.len:
-        if parts[ti].len > 0:
-          tailCount += 1
-      let zeroFill = 8 - gi - tailCount
-      gi += zeroFill
-    else:
-      result[gi] = uint16(parseHexInt(parts[pi]))
-      gi += 1
-      pi += 1
 
 proc decodeCompactPeers6*(data: string): seq[CompactPeer] =
   ## Decode compact IPv6 peer format (18 bytes per peer: 16 IP + 2 port).
@@ -345,22 +314,16 @@ proc readInt32BE*(data: string, offset: int): int32 =
 # Bitfield popcount
 # ============================================================
 
-proc popcnt8(b: byte): int {.inline.} =
-  ## Count set bits in a byte.
-  var x = b.uint8
-  x = x - ((x shr 1) and 0x55'u8)
-  x = (x and 0x33'u8) + ((x shr 2) and 0x33'u8)
-  int((x + (x shr 4)) and 0x0F'u8)
-
 proc countBitsSet*(bitfield: openArray[byte], totalBits: int): int =
   ## Count the number of set bits in a bitfield, up to totalBits.
+  ## Uses hardware popcount via std/bitops when available.
   let fullBytes = totalBits div 8
   for i in 0 ..< fullBytes:
-    result += popcnt8(bitfield[i])
+    result += countSetBits(bitfield[i])
   let remainingBits = totalBits mod 8
   if remainingBits > 0 and fullBytes < bitfield.len:
     let mask = byte(0xFF shl (8 - remainingBits))
-    result += popcnt8(bitfield[fullBytes] and mask)
+    result += countSetBits(bitfield[fullBytes] and mask)
 
 # ============================================================
 # Safe parseInt wrappers

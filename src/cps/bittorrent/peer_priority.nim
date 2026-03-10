@@ -4,11 +4,8 @@
 ## Uses CRC32C of masked IP addresses to prioritize peers consistently
 ## across the swarm, reducing duplicate connections.
 
-import std/[algorithm]
+import std/algorithm
 import utils
-
-proc isIpv6*(ip: string): bool {.inline.} =
-  ':' in ip
 
 proc peerPriority*(ourIp, peerIp: string): uint32 =
   ## Compute canonical peer priority (BEP 40).
@@ -23,24 +20,24 @@ proc peerPriority*(ourIp, peerIp: string): uint32 =
       let x = a[i] xor b[i]
       masked[i * 2] = byte((x shr 8) and 0xFF)
       masked[i * 2 + 1] = byte(x and 0xFF)
-    result = crc32c(masked)
+    crc32c(masked)
   else:
     # IPv4: /24 mask (first 3 octets)
     let a = parseIpv4(ourIp)
     let b = parseIpv4(peerIp)
     var masked: array[4, byte]
-    masked[0] = a[0] xor b[0]
-    masked[1] = a[1] xor b[1]
-    masked[2] = a[2] xor b[2]
-    masked[3] = 0  # Last octet masked out
-    result = crc32c(masked)
+    for i in 0 ..< 3:
+      masked[i] = a[i] xor b[i]
+    crc32c(masked)
 
-proc sortByPriority*(peers: var seq[tuple[ip: string, port: uint16]], ourIp: string) =
+proc sortByPriority*(peers: var seq[CompactPeer], ourIp: string) =
   ## Sort peers by canonical priority (lowest CRC32C first = highest priority).
-  peers.sort(proc(a, b: tuple[ip: string, port: uint16]): int =
-    let pa = peerPriority(ourIp, a.ip)
-    let pb = peerPriority(ourIp, b.ip)
-    if pa < pb: -1
-    elif pa > pb: 1
-    else: 0
-  )
+  ## Computes each priority once via decorate-sort-undecorate.
+  var keyed = newSeqOfCap[(uint32, int)](peers.len)
+  for i in 0 ..< peers.len:
+    keyed.add((peerPriority(ourIp, peers[i].ip), i))
+  keyed.sort(proc(a, b: (uint32, int)): int = cmp(a[0], b[0]))
+  var sorted = newSeq[CompactPeer](peers.len)
+  for i in 0 ..< keyed.len:
+    sorted[i] = peers[keyed[i][1]]
+  peers = sorted

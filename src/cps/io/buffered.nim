@@ -38,25 +38,15 @@ proc atEof*(br: BufferedReader): bool {.inline.} =
   ## Returns true if the underlying stream has reached EOF and no buffered data remains.
   br.eof and br.available == 0
 
-proc bufferPtr*(br: BufferedReader): ptr string {.inline.} =
-  ## Direct access to the internal buffer (for zero-copy parsing).
-  addr br.buf
+proc extract(br: BufferedReader, count: int): string {.inline.} =
+  ## Extract `count` bytes from the buffer at the current position and advance.
+  result = newString(count)
+  if count > 0:
+    copyMem(addr result[0], addr br.buf[br.pos], count)
+  br.pos += count
 
-proc bufferPos*(br: BufferedReader): int {.inline.} =
-  ## Current read position in the buffer.
-  br.pos
-
-proc bufferCap*(br: BufferedReader): int {.inline.} =
-  ## End of valid data in the buffer.
-  br.cap
-
-proc advancePos*(br: BufferedReader, n: int) {.inline.} =
-  ## Advance the read position by n bytes (after parsing from buffer directly).
-  br.pos += n
-
-proc drainBuffer*(br: BufferedReader): string =
-  ## Return any unconsumed buffered data and reset the buffer.
-  ## Useful when switching from buffered header reading to raw stream processing.
+proc extractRemaining(br: BufferedReader): string {.inline.} =
+  ## Extract all remaining buffered data.
   let avail = br.available
   if avail > 0:
     result = newString(avail)
@@ -65,7 +55,12 @@ proc drainBuffer*(br: BufferedReader): string =
   else:
     result = ""
 
-proc compact(br: BufferedReader) =
+proc drainBuffer*(br: BufferedReader): string =
+  ## Return any unconsumed buffered data and reset the buffer.
+  ## Useful when switching from buffered header reading to raw stream processing.
+  br.extractRemaining()
+
+proc compact(br: BufferedReader) {.inline.} =
   ## Shift unread data to the front of the buffer.
   if br.pos > 0:
     let avail = br.available
@@ -92,6 +87,21 @@ proc ensureSpace(br: BufferedReader) {.inline.} =
   if br.buf.len - br.cap < br.bufSize:
     br.buf.setLen(br.cap + br.bufSize)
 
+template fillAndRetry(fillFut: CpsFuture[bool], fut, retryCall: untyped) =
+  ## Common pattern: chain on a fillBuffer future — sync fast path or async callback.
+  if fillFut.finished():
+    if fillFut.hasError():
+      fut.fail(fillFut.getError())
+    else:
+      retryCall
+  else:
+    fillFut.addCallback(proc() =
+      if fillFut.hasError():
+        fut.fail(fillFut.getError())
+      else:
+        retryCall
+    )
+
 proc fillBuffer*(br: BufferedReader): CpsFuture[bool] =
   ## Read a chunk from the underlying stream into the buffer.
   ## Returns true if data was read, false on EOF.
@@ -101,7 +111,6 @@ proc fillBuffer*(br: BufferedReader): CpsFuture[bool] =
   br.compact()
 
   # Zero-copy fast path: read directly into buffer via readInto vtable.
-  # Avoids: newString(size), completedFuture(buf), copyMem from temp string.
   if br.stream.readIntoProc != nil:
     br.ensureSpace()
     let n = br.stream.readIntoProc(br.stream, addr br.buf[br.cap], br.bufSize)
@@ -131,7 +140,6 @@ proc fillBuffer*(br: BufferedReader): CpsFuture[bool] =
               brLocal.eof = true
               fut.complete(false)
             elif n2 == -1:
-              # Still EAGAIN after select — shouldn't happen, treat as temporary
               fut.complete(false)
             else:
               fut.fail(newException(streams.AsyncIoError, "Read failed"))
@@ -139,28 +147,26 @@ proc fillBuffer*(br: BufferedReader): CpsFuture[bool] =
         return fut
       # No waitReadable — fall through to allocating read() path
     else:
-      let fut = newCpsFuture[bool]()
-      fut.fail(newException(streams.AsyncIoError, "Read failed"))
-      return fut
+      return failedFuture[bool](newException(streams.AsyncIoError, "Read failed"))
 
   # Allocating fallback: use stream.read() (creates temp string + CpsFuture)
-  let readSize = br.bufSize
-  let streamFut = br.stream.read(readSize)
+  let streamFut = br.stream.read(br.bufSize)
 
-  if streamFut.finished():
-    if streamFut.hasError():
-      let fut = newCpsFuture[bool]()
-      fut.fail(streamFut.getError())
-      return fut
-    let data = streamFut.read()
-    if data.len == 0:
-      br.eof = true
-      return completedBoolFalse()
+  proc copyInto(br: BufferedReader, data: string) {.inline.} =
     let needed = br.cap + data.len
     if needed > br.buf.len:
       br.buf.setLen(needed)
     copyMem(addr br.buf[br.cap], unsafeAddr data[0], data.len)
     br.cap += data.len
+
+  if streamFut.finished():
+    if streamFut.hasError():
+      return failedFuture[bool](streamFut.getError())
+    let data = streamFut.read()
+    if data.len == 0:
+      br.eof = true
+      return completedBoolFalse()
+    br.copyInto(data)
     return completedBoolTrue()
 
   let fut = newCpsFuture[bool]()
@@ -173,11 +179,7 @@ proc fillBuffer*(br: BufferedReader): CpsFuture[bool] =
         br.eof = true
         fut.complete(false)
       else:
-        let needed = br.cap + data.len
-        if needed > br.buf.len:
-          br.buf.setLen(needed)
-        copyMem(addr br.buf[br.cap], unsafeAddr data[0], data.len)
-        br.cap += data.len
+        br.copyInto(data)
         fut.complete(true)
   )
   result = fut
@@ -186,63 +188,60 @@ proc readLine*(br: BufferedReader, delimiter: string = "\r\n",
                maxLen: int = 65536): CpsFuture[string] =
   ## Read until `delimiter` is found. Returns the line without the delimiter.
   ## Returns "" on EOF (with no data remaining).
+
+  proc findDelimiter(br: BufferedReader, delimiter: string): int {.inline.} =
+    ## Returns the buffer index where delimiter starts, or -1.
+    let avail = br.available
+    if avail <= 0 or delimiter.len <= 0: return -1
+    let searchEnd = br.pos + avail - delimiter.len
+    for i in br.pos .. searchEnd:
+      var found = true
+      for j in 0 ..< delimiter.len:
+        if br.buf[i + j] != delimiter[j]:
+          found = false
+          break
+      if found: return i
+    return -1
+
+  # Fast path: delimiter already in buffer
+  let idx = br.findDelimiter(delimiter)
+  if idx >= 0:
+    let lineLen = idx - br.pos
+    let line = br.extract(lineLen)
+    br.pos += delimiter.len  # skip delimiter
+    return completedFuture(line)
+
+  let avail = br.available
+  if avail >= maxLen:
+    return completedFuture(br.extract(avail))
+  if br.eof:
+    return completedFuture(br.extractRemaining())
+
+  # Need more data — allocate future and retry loop
   let fut = newCpsFuture[string]()
 
   proc tryReadLine() =
-    # Search for delimiter in buffered data
-    let avail = br.available
-    if avail > 0 and delimiter.len > 0:
-      let searchEnd = br.pos + avail - delimiter.len
-      for i in br.pos .. searchEnd:
-        var found = true
-        for j in 0 ..< delimiter.len:
-          if br.buf[i + j] != delimiter[j]:
-            found = false
-            break
-        if found:
-          let lineLen = i - br.pos
-          var line = newString(lineLen)
-          if lineLen > 0:
-            copyMem(addr line[0], addr br.buf[br.pos], lineLen)
-          br.pos = i + delimiter.len
-          fut.complete(line)
-          return
-
-    if avail >= maxLen:
-      # Max length reached without delimiter — return what we have
-      var line = newString(avail)
-      copyMem(addr line[0], addr br.buf[br.pos], avail)
-      br.pos = br.cap
+    let idx = br.findDelimiter(delimiter)
+    if idx >= 0:
+      let lineLen = idx - br.pos
+      let line = br.extract(lineLen)
+      br.pos += delimiter.len
       fut.complete(line)
       return
 
+    let avail = br.available
+    if avail >= maxLen:
+      fut.complete(br.extract(avail))
+      return
     if br.eof:
-      # EOF — return whatever is left
-      if avail > 0:
-        var line = newString(avail)
-        copyMem(addr line[0], addr br.buf[br.pos], avail)
-        br.pos = br.cap
-        fut.complete(line)
-      else:
-        fut.complete("")
+      fut.complete(br.extractRemaining())
       return
 
-    # Need more data
     let fillFut = br.fillBuffer()
-    if fillFut.finished():
-      if fillFut.hasError():
-        fut.fail(fillFut.getError())
-      else:
-        tryReadLine()
-    else:
-      fillFut.addCallback(proc() =
-        if fillFut.hasError():
-          fut.fail(fillFut.getError())
-        else:
-          tryReadLine()
-      )
+    fillAndRetry(fillFut, fut, tryReadLine())
 
-  tryReadLine()
+  let fillFut = br.fillBuffer()
+  fillAndRetry(fillFut, fut, tryReadLine())
   result = fut
 
 proc searchHeaderEnd*(br: BufferedReader): int {.inline.} =
@@ -250,104 +249,35 @@ proc searchHeaderEnd*(br: BufferedReader): int {.inline.} =
   ## or -1 if not found.
   let avail = br.available
   if avail < 4: return -1
-  let searchEnd = br.pos + avail - 3
-  for i in br.pos ..< searchEnd:
-    if br.buf[i] == '\r' and br.buf[i+1] == '\n' and
-       br.buf[i+2] == '\r' and br.buf[i+3] == '\n':
-      return i
+  let last = br.pos + avail - 4
+  var i = br.pos
+  while i <= last:
+    if br.buf[i] == '\r':
+      if br.buf[i+1] == '\n' and br.buf[i+2] == '\r' and br.buf[i+3] == '\n':
+        return i
+    i += 1
   return -1
 
 proc extractHeaderBlock*(br: BufferedReader, endIdx: int): string {.inline.} =
   ## Extract header block from buffer up to endIdx, advance past \r\n\r\n.
   let blockLen = endIdx - br.pos
-  result = newString(blockLen)
-  if blockLen > 0:
-    copyMem(addr result[0], addr br.buf[br.pos], blockLen)
-  br.pos = endIdx + 4
+  result = br.extract(blockLen)
+  br.pos += 4  # skip \r\n\r\n (extract already advanced by blockLen)
 
 proc readUntilHeaderEnd*(br: BufferedReader,
                          maxLen: int = 65536): CpsFuture[string] =
   ## Read until \r\n\r\n is found. Returns the complete header block WITHOUT
   ## the trailing \r\n\r\n delimiter. On EOF, returns "" (empty headers).
-  ## This is a fast path for HTTP/1.1 header parsing — a single read gets
-  ## the entire header block, avoiding multiple readLine calls and futures.
 
-  # Ultra-fast path: headers already in buffer (no future/closure allocation)
+  # Ultra-fast path: headers already in buffer
   var idx = br.searchHeaderEnd()
   if idx >= 0:
     return completedFuture(br.extractHeaderBlock(idx))
 
-  # Try one sync fill, then check again (common for keep-alive)
-  if not br.eof and br.available < maxLen:
-    let fillFut = br.fillBuffer()
-    if fillFut.finished():
-      if not fillFut.hasError():
-        idx = br.searchHeaderEnd()
-        if idx >= 0:
-          return completedFuture(br.extractHeaderBlock(idx))
-        # EOF after fill?
-        if br.eof:
-          let avail = br.available
-          if avail > 0:
-            var hdrBlock = newString(avail)
-            copyMem(addr hdrBlock[0], addr br.buf[br.pos], avail)
-            br.pos = br.cap
-            return completedFuture(hdrBlock)
-          else:
-            return completedFuture("")
-        # Not enough data yet, fall through to slow path
-      else:
-        let fut = newCpsFuture[string]()
-        fut.fail(fillFut.getError())
-        return fut
-    else:
-      # fillBuffer is pending (EAGAIN) — set up callback chain, do NOT call tryRead
-      let fut = newCpsFuture[string]()
+  if br.eof:
+    return completedFuture(br.extractRemaining())
 
-      proc tryRead() =
-        let foundIdx = br.searchHeaderEnd()
-        if foundIdx >= 0:
-          fut.complete(br.extractHeaderBlock(foundIdx))
-          return
-        let avail = br.available
-        if avail >= maxLen:
-          var hdrBlock = newString(avail)
-          copyMem(addr hdrBlock[0], addr br.buf[br.pos], avail)
-          br.pos = br.cap
-          fut.complete(hdrBlock)
-          return
-        if br.eof:
-          if avail > 0:
-            var hdrBlock = newString(avail)
-            copyMem(addr hdrBlock[0], addr br.buf[br.pos], avail)
-            br.pos = br.cap
-            fut.complete(hdrBlock)
-          else:
-            fut.complete("")
-          return
-        let innerFillFut = br.fillBuffer()
-        if innerFillFut.finished():
-          if innerFillFut.hasError():
-            fut.fail(innerFillFut.getError())
-          else:
-            tryRead()
-        else:
-          innerFillFut.addCallback(proc() =
-            if innerFillFut.hasError():
-              fut.fail(innerFillFut.getError())
-            else:
-              tryRead()
-          )
-
-      fillFut.addCallback(proc() =
-        if fillFut.hasError():
-          fut.fail(fillFut.getError())
-        else:
-          tryRead()
-      )
-      return fut
-
-  # Slow path: need async I/O — allocate future and closure
+  # Shared retry closure for both sync-fill and async-fill paths
   let fut = newCpsFuture[string]()
 
   proc tryRead() =
@@ -355,122 +285,86 @@ proc readUntilHeaderEnd*(br: BufferedReader,
     if foundIdx >= 0:
       fut.complete(br.extractHeaderBlock(foundIdx))
       return
-
-    let avail = br.available
-    if avail >= maxLen:
-      var hdrBlock = newString(avail)
-      copyMem(addr hdrBlock[0], addr br.buf[br.pos], avail)
-      br.pos = br.cap
-      fut.complete(hdrBlock)
+    if br.available >= maxLen:
+      fut.complete(br.extractRemaining())
       return
-
     if br.eof:
-      if avail > 0:
-        var hdrBlock = newString(avail)
-        copyMem(addr hdrBlock[0], addr br.buf[br.pos], avail)
-        br.pos = br.cap
-        fut.complete(hdrBlock)
-      else:
-        fut.complete("")
+      fut.complete(br.extractRemaining())
       return
-
     let fillFut = br.fillBuffer()
-    if fillFut.finished():
+    fillAndRetry(fillFut, fut, tryRead())
+
+  # Try one sync fill first (common for keep-alive)
+  let fillFut = br.fillBuffer()
+  if fillFut.finished():
+    if fillFut.hasError():
+      fut.fail(fillFut.getError())
+    else:
+      idx = br.searchHeaderEnd()
+      if idx >= 0:
+        # Don't use fut — return pre-completed directly
+        return completedFuture(br.extractHeaderBlock(idx))
+      if br.eof:
+        return completedFuture(br.extractRemaining())
+      # Still need more data, fall through to tryRead loop
+      let fillFut2 = br.fillBuffer()
+      fillAndRetry(fillFut2, fut, tryRead())
+  else:
+    fillFut.addCallback(proc() =
       if fillFut.hasError():
         fut.fail(fillFut.getError())
       else:
         tryRead()
-    else:
-      fillFut.addCallback(proc() =
-        if fillFut.hasError():
-          fut.fail(fillFut.getError())
-        else:
-          tryRead()
-      )
-
-  tryRead()
+    )
   result = fut
 
 proc readExact*(br: BufferedReader, size: int): CpsFuture[string] =
   ## Read exactly `size` bytes. Fails with ConnectionClosedError on short read.
+
+  # Fast path: already buffered
+  if br.available >= size:
+    return completedFuture(br.extract(size))
+
   let fut = newCpsFuture[string]()
 
   proc tryRead() =
     if br.available >= size:
-      var data = newString(size)
-      copyMem(addr data[0], addr br.buf[br.pos], size)
-      br.pos += size
-      fut.complete(data)
+      fut.complete(br.extract(size))
       return
-
     if br.eof:
       fut.fail(newException(ConnectionClosedError,
         "Connection closed before receiving all data (got " & $br.available & " of " & $size & " bytes)"))
       return
-
     let fillFut = br.fillBuffer()
-    if fillFut.finished():
-      if fillFut.hasError():
-        fut.fail(fillFut.getError())
-      else:
-        tryRead()
-    else:
-      fillFut.addCallback(proc() =
-        if fillFut.hasError():
-          fut.fail(fillFut.getError())
-        else:
-          tryRead()
-      )
+    fillAndRetry(fillFut, fut, tryRead())
 
-  tryRead()
+  let fillFut = br.fillBuffer()
+  fillAndRetry(fillFut, fut, tryRead())
   result = fut
 
 proc read*(br: BufferedReader, size: int): CpsFuture[string] =
   ## Read up to `size` bytes. Returns "" on EOF.
+
+  # Fast path: data already buffered
+  if br.available > 0:
+    return completedFuture(br.extract(min(size, br.available)))
+  if br.eof:
+    return completedFuture("")
+
   let fut = newCpsFuture[string]()
 
   proc tryRead() =
     if br.available > 0:
-      let toRead = min(size, br.available)
-      var data = newString(toRead)
-      copyMem(addr data[0], addr br.buf[br.pos], toRead)
-      br.pos += toRead
-      fut.complete(data)
+      fut.complete(br.extract(min(size, br.available)))
       return
-
     if br.eof:
       fut.complete("")
       return
-
     let fillFut = br.fillBuffer()
-    if fillFut.finished():
-      if fillFut.hasError():
-        fut.fail(fillFut.getError())
-      else:
-        if br.available > 0:
-          let toRead = min(size, br.available)
-          var data = newString(toRead)
-          copyMem(addr data[0], addr br.buf[br.pos], toRead)
-          br.pos += toRead
-          fut.complete(data)
-        else:
-          fut.complete("")  # EOF
-    else:
-      fillFut.addCallback(proc() =
-        if fillFut.hasError():
-          fut.fail(fillFut.getError())
-        else:
-          if br.available > 0:
-            let toRead = min(size, br.available)
-            var data = newString(toRead)
-            copyMem(addr data[0], addr br.buf[br.pos], toRead)
-            br.pos += toRead
-            fut.complete(data)
-          else:
-            fut.complete("")  # EOF
-      )
+    fillAndRetry(fillFut, fut, tryRead())
 
-  tryRead()
+  let fillFut = br.fillBuffer()
+  fillAndRetry(fillFut, fut, tryRead())
   result = fut
 
 # ============================================================
@@ -493,11 +387,9 @@ proc newBufferedWriter*(stream: AsyncStream, bufSize: int = 8192): BufferedWrite
 proc flush*(bw: BufferedWriter): CpsVoidFuture =
   ## Flush the internal buffer to the underlying stream.
   if bw.buf.len == 0:
-    let fut = newCpsVoidFuture()
-    fut.complete()
-    return fut
-  let data = bw.buf
-  bw.buf = ""
+    return completedVoidFuture()
+  let data = move bw.buf
+  bw.buf = newStringOfCap(bw.bufSize)
   bw.stream.write(data)
 
 proc write*(bw: BufferedWriter, data: string): CpsVoidFuture =
@@ -505,22 +397,24 @@ proc write*(bw: BufferedWriter, data: string): CpsVoidFuture =
   bw.buf.add(data)
   if bw.buf.len >= bw.bufSize:
     return bw.flush()
-  else:
-    let fut = newCpsVoidFuture()
-    fut.complete()
-    return fut
+  return completedVoidFuture()
 
 proc writeLine*(bw: BufferedWriter, line: string,
                 delimiter: string = "\r\n"): CpsVoidFuture =
   ## Write a line followed by delimiter, then flush.
   bw.buf.add(line)
   bw.buf.add(delimiter)
-  bw.flush()
+  return bw.flush()
 
 proc close*(bw: BufferedWriter): CpsVoidFuture =
   ## Flush remaining data and close the underlying stream.
-  let fut = newCpsVoidFuture()
   let flushFut = bw.flush()
+  if flushFut.finished():
+    if flushFut.hasError():
+      return failedVoidFuture(flushFut.getError())
+    bw.stream.close()
+    return completedVoidFuture()
+  let fut = newCpsVoidFuture()
   flushFut.addCallback(proc() =
     if flushFut.hasError():
       fut.fail(flushFut.getError())

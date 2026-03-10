@@ -3,7 +3,7 @@
 ## Manages tracker communication, peer connections, piece downloading,
 ## and disk I/O. This is the top-level API for the BitTorrent client.
 
-import std/[tables, sets, times, os, algorithm, nativesockets, strutils, math, atomics]
+import std/[tables, sets, times, os, algorithm, nativesockets, strutils, math, atomics, deques]
 import ../private/spinlock
 import ../runtime
 import ../transform
@@ -53,7 +53,8 @@ template btDebug(args: varargs[string, `$`]) =
     var msg = ""
     for a in args:
       msg.add(a)
-    echo msg
+    stderr.writeLine(msg)
+    stderr.flushFile()
 
 # Lock-free Treiber stack nodes for reactor → CPS message handoff.
 # Reactor callback pushes parsed messages; CPS drain loop pops and processes.
@@ -132,6 +133,9 @@ type
     enableRacing*: bool              ## Enable block racing (request from multiple peers)
     maxRacersPerBlock*: int          ## Max concurrent requesters per block (default 3)
     raceSlowPeerSec*: float          ## Race blocks from peers silent > N seconds (default 5.0)
+    enableOptimisticVerification*: bool  ## Use peer consensus as fast verification proxy
+    optimisticMinAgreePeers*: int        ## Min total peers that must agree (default 2)
+    optimisticMinAgreeBlocks*: int       ## Min absolute number of agreed blocks needed (default 3)
 
   PendingPeer = tuple[ip: string, port: uint16, source: PeerSource, pexFlags: uint8]
 
@@ -156,6 +160,7 @@ type
     storageMgr*: StorageManager
     events*: AsyncChannel[ClientEvent]
     peers: Table[string, PeerConn]  ## addr -> PeerConn
+    peerKeysCached: seq[string]    ## Shadow list of peers keys (avoids table iterator assertion in MT)
     peerEvents: AsyncChannel[PeerEvent]
     availability: seq[int]     ## Per-piece availability count
     connectedPeerCount*: int   ## Active (handshaked) peers
@@ -173,13 +178,12 @@ type
     lastPexPeers6: seq[tuple[ip: string, port: uint16]]  ## For computing deltas (IPv6)
     # BEP 55: cached peer hints from inbound PEX
     pexPeerFlags: Table[string, uint8]  ## canonical peer key -> added.f flags
-    holepunchRelayByTarget: Table[string, HashSet[string]] ## target key -> set of relay peer keys
-    holepunchInFlight: HashSet[string]            ## target keys currently being direct-attempted
-    holepunchExpected: Table[string, float]       ## keys where we expect incoming holepunch (key -> expiry)
+    hp*: HolepunchState              ## BEP 55: consolidated holepunch bookkeeping
     nextConnGeneration: uint32                    ## monotonic counter for peer connection identity
     # BEP 5: DHT
     dhtNodeId: NodeId
-    dhtRoutingTable: RoutingTable
+    dhtRoutingTable: RoutingTable    ## IPv4 nodes
+    dhtRoutingTable6: RoutingTable   ## IPv6 nodes (BEP 32)
     dhtSock: UdpSocket
     dhtPendingQueries: Table[string, CpsFuture[DhtMessage]]
     dhtTransIdCounter: int
@@ -202,7 +206,6 @@ type
     # Connection backoff: track recently-failed peers to avoid hammering
     failedPeers: Table[string, float]  ## addr -> last failure time
     failedIps: Table[string, tuple[count: int, lastFail: float]]  ## IP-level failure tracking
-    holepunchBackoff: Table[string, float]  ## canonical peer key -> retry-after epoch
     # Seeder eviction: addresses of peers evicted as seeders (prevents reconnection)
     knownSeeders: HashSet[string]
     # PEX peer discovery counter: total unique peers received via PEX (monotonically increasing)
@@ -213,9 +216,6 @@ type
     lsdAnnounceCount*: int
     lsdPeersDiscovered*: int
     lsdLastError*: string
-    holepunchAttempts*: int
-    holepunchSuccesses*: int
-    holepunchLastError*: string
     trackerRuntime*: Table[string, TrackerRuntime]
     webSeedBytes*: int64
     webSeedFailures*: int
@@ -230,6 +230,8 @@ type
     # Per-torrent wire byte counters (for accurate per-torrent rate display)
     wireDownloaded*: int64
     wireUploaded*: int64
+    # Optimistic verification: background SHA1 queue
+    optimisticVerifyQueue*: Deque[int]  ## Piece indices awaiting background SHA1 confirmation
     # MT synchronization
     mtx*: AsyncMutex              ## Protects shared mutable state across CPS tasks
     trackerLock*: SpinLock        ## Protects trackerRuntime table (non-suspending reads/writes)
@@ -252,6 +254,7 @@ type
     cekInfo              ## Informational status messages (DHT, etc.)
     cekStopped
     cekTrackerResponse
+    cekPieceStateChanged ## Piece state update (optimistic→verified/failed) without counter change
 
   ClientEvent* = object
     case kind*: ClientEventKind
@@ -259,6 +262,7 @@ type
       discard
     of cekPieceVerified:
       pieceIndex*: int
+      pieceState*: PieceState  ## State at time of event (psOptimistic or psVerified)
     of cekProgress:
       completedPieces*: int
       totalPieces*: int
@@ -273,6 +277,9 @@ type
       newPeers*: int
       seeders*: int
       leechers*: int
+    of cekPieceStateChanged:
+      changedPieceIndex*: int
+      changedPieceState*: PieceState
 
 proc defaultConfig*(): ClientConfig =
   ClientConfig(
@@ -292,22 +299,27 @@ proc defaultConfig*(): ClientConfig =
     encryptionMode: emPreferEncrypted,
     enableRacing: true,
     maxRacersPerBlock: 10,
-    raceSlowPeerSec: 5.0
+    raceSlowPeerSec: 5.0,
+    enableOptimisticVerification: true,
+    optimisticMinAgreePeers: 2,
+    optimisticMinAgreeBlocks: 3
   )
 
 proc buildSelectedPiecesMask(client: TorrentClient)
 proc applyPrivateProtocolGating(client: TorrentClient)
+proc initClientCommon(client: TorrentClient, config: ClientConfig)
 
 proc newTorrentClient*(metainfo: TorrentMetainfo,
                        config: ClientConfig = defaultConfig()): TorrentClient =
-  let pm = newPieceManager(metainfo.info, config.maxRacersPerBlock)
+  let pm = newPieceManager(metainfo.info, config.maxRacersPerBlock,
+                           config.enableOptimisticVerification)
   # Set up extension registry
   var extReg = newExtensionRegistry()
   discard extReg.registerExtension(UtMetadataName)   # BEP 9
   discard extReg.registerExtension(UtPexName)         # BEP 11
   discard extReg.registerExtension(UtHolepunchName)   # BEP 55
-  discard extReg.registerExtension("upload_only")     # BEP 21
-  discard extReg.registerExtension("lt_donthave")     # BEP 54
+  discard extReg.registerExtension(ExtUploadOnly)      # BEP 21
+  discard extReg.registerExtension(ExtLtDontHave)      # BEP 54
 
   let dhtId = generateNodeId()
 
@@ -334,11 +346,8 @@ proc newTorrentClient*(metainfo: TorrentMetainfo,
     dhtEnabled: not metainfo.info.isPrivate and config.enableDht,
     webSeeds: seeds,
     pexPeerFlags: initTable[string, uint8](),
-    holepunchRelayByTarget: initTable[string, HashSet[string]](),
-    holepunchInFlight: initHashSet[string](),
-    holepunchExpected: initTable[string, float](),
+    hp: initHolepunchState(),
     trackerRuntime: initTable[string, TrackerRuntime](),
-    holepunchBackoff: initTable[string, float](),
     stopSignal: newCpsVoidFuture(),
     selectedFiles: initHashSet[int](),
     filePriorities: initTable[int, string](),
@@ -346,22 +355,9 @@ proc newTorrentClient*(metainfo: TorrentMetainfo,
     utpReconnectInProgress: initHashSet[string](),
     utpReconnectState: initTable[string, UtpReconnectSnapshot]()
   )
-  result.bandwidthLimiter = newBandwidthLimiter(
-    uploadBps = config.uploadBandwidth,
-    downloadBps = config.downloadBandwidth,
-    percent = config.bandwidthPercent
-  )
-  result.mtx = newAsyncMutex()
-  initSpinLock(result.trackerLock)
-  initSpinLock(result.dhtSpinLock)
-  result.dhtRecvHead.store(nil, moRelaxed)
-  result.lsdRecvHead.store(nil, moRelaxed)
+  initClientCommon(result, config)
   # Extract raw info dict for BEP 9 metadata serving
-  if metainfo.rawData.len > 0:
-    try:
-      result.rawInfoDict = extractRawValue(metainfo.rawData, "info")
-    except BencodeError:
-      discard  # Magnet links won't have rawData
+  result.rawInfoDict = metainfo.rawInfoDict
   result.applyPrivateProtocolGating()
   result.buildSelectedPiecesMask()
 
@@ -390,11 +386,8 @@ proc newMagnetClient*(infoHash: array[20, byte],
     dhtRoutingTable: newRoutingTable(dhtId),
     dhtEnabled: config.enableDht,
     pexPeerFlags: initTable[string, uint8](),
-    holepunchRelayByTarget: initTable[string, HashSet[string]](),
-    holepunchInFlight: initHashSet[string](),
-    holepunchExpected: initTable[string, float](),
+    hp: initHolepunchState(),
     trackerRuntime: initTable[string, TrackerRuntime](),
-    holepunchBackoff: initTable[string, float](),
     stopSignal: newCpsVoidFuture(),
     selectedFiles: initHashSet[int](),
     filePriorities: initTable[int, string](),
@@ -402,16 +395,7 @@ proc newMagnetClient*(infoHash: array[20, byte],
     utpReconnectInProgress: initHashSet[string](),
     utpReconnectState: initTable[string, UtpReconnectSnapshot]()
   )
-  result.bandwidthLimiter = newBandwidthLimiter(
-    uploadBps = config.uploadBandwidth,
-    downloadBps = config.downloadBandwidth,
-    percent = config.bandwidthPercent
-  )
-  result.mtx = newAsyncMutex()
-  initSpinLock(result.trackerLock)
-  initSpinLock(result.dhtSpinLock)
-  result.dhtRecvHead.store(nil, moRelaxed)
-  result.lsdRecvHead.store(nil, moRelaxed)
+  initClientCommon(result, config)
   # For magnet links, privacy is unknown until metadata arrives.
   # Set up a minimal metainfo with just the info hash and trackers
   result.metainfo.info.infoHash = infoHash
@@ -520,6 +504,98 @@ proc signalStop(client: TorrentClient) {.inline.} =
 proc sleepOrStop(client: TorrentClient, ms: int): CpsVoidFuture {.inline.} =
   ## Sleep for `ms` unless the client stop signal fires first.
   sleepOrSignal(ms, client.stopSignal)
+
+# ---------------------------------------------------------------------------
+# Extracted helpers — reduce duplication across the 4800+ line orchestrator.
+# ---------------------------------------------------------------------------
+
+proc setPeer(client: TorrentClient, key: string, peer: PeerConn) =
+  ## Insert or replace a peer, keeping the cached key list in sync.
+  if key notin client.peers:
+    client.peerKeysCached.add(key)
+  client.peers[key] = peer
+
+proc delPeer(client: TorrentClient, key: string) =
+  ## Remove a peer, keeping the cached key list in sync.
+  client.peers.del(key)
+  let idx = client.peerKeysCached.find(key)
+  if idx >= 0:
+    client.peerKeysCached.del(idx)  # O(1) swap-delete
+
+proc snapshotPeerKeys(client: TorrentClient): seq[string] =
+  ## Snapshot peer keys without iterating the hash table (MT-safe).
+  result = client.peerKeysCached  # value copy
+
+proc safeTableKeys[K, V](t: Table[K, V]): seq[K] =
+  ## Collect table keys tolerating concurrent modification in MT mode.
+  ## Falls back to a partial snapshot if the table changes mid-iteration.
+  result = newSeqOfCap[K](t.len)
+  try:
+    for k in t.keys:
+      result.add(k)
+  except Exception:
+    discard  # partial snapshot
+
+proc removeActiveRequest(peer: PeerConn, pieceIdx: int, offset: int): bool =
+  ## Remove a block from activeRequests and decrement pendingRequests.
+  ## Returns true if found and removed.
+  var i = 0
+  while i < peer.activeRequests.len:
+    if peer.activeRequests[i].pieceIdx == pieceIdx and
+       peer.activeRequests[i].offset == offset:
+      peer.activeRequests.del(i)
+      peer.pendingRequests = max(0, peer.pendingRequests - 1)
+      return true
+    i += 1
+  false
+
+proc hasActiveRequest(peer: PeerConn, pieceIdx: int, offset: int): bool =
+  ## Check if peer has an active request for a specific block.
+  var i = 0
+  while i < peer.activeRequests.len:
+    if peer.activeRequests[i].pieceIdx == pieceIdx and
+       peer.activeRequests[i].offset == offset:
+      return true
+    i += 1
+  false
+
+proc collectTrackerUrls(metainfo: TorrentMetainfo): seq[string] =
+  ## Collect unique, non-empty tracker URLs from announce + announceList.
+  if metainfo.announce.len > 0:
+    result.add(metainfo.announce)
+  for tier in metainfo.announceList:
+    for url in tier:
+      if url.len > 0 and url notin result:
+        result.add(url)
+
+proc restoreVerifiedPieces(client: TorrentClient, verified: seq[bool]) =
+  ## Bulk-restore verified piece state from on-disk verification results.
+  var vi = 0
+  while vi < verified.len:
+    if verified[vi]:
+      var bj = 0
+      while bj < client.pieceMgr.pieces[vi].blocks.len:
+        client.pieceMgr.pieces[vi].blocks[bj].state = bsReceived
+        bj += 1
+      client.pieceMgr.pieces[vi].receivedBytes = client.pieceMgr.pieces[vi].totalLength
+      client.pieceMgr.pieces[vi].state = psVerified
+      client.pieceMgr.completedCount += 1
+      client.pieceMgr.verifiedCount += 1
+      client.pieceMgr.downloaded += int64(client.pieceMgr.pieces[vi].totalLength)
+    vi += 1
+
+proc initClientCommon(client: TorrentClient, config: ClientConfig) =
+  ## Shared initialization for torrent file and magnet link clients.
+  client.bandwidthLimiter = newBandwidthLimiter(
+    uploadBps = config.uploadBandwidth,
+    downloadBps = config.downloadBandwidth,
+    percent = config.bandwidthPercent
+  )
+  client.mtx = newAsyncMutex()
+  initSpinLock(client.trackerLock)
+  initSpinLock(client.dhtSpinLock)
+  client.dhtRecvHead.store(nil, moRelaxed)
+  client.lsdRecvHead.store(nil, moRelaxed)
 
 proc peerIpFromKey(key: string): string =
   if key.len == 0:
@@ -691,6 +767,25 @@ proc queuePeerIfNeeded(client: TorrentClient, ip: string, port: uint16,
   client.pendingPeers.add((ip: ip, port: port, source: source, pexFlags: pexFlags))
   true
 
+proc processPexPeers(client: TorrentClient, peers: seq[tuple[ip: string, port: uint16]],
+                     flags: seq[uint8], relayKey: string) =
+  ## Process PEX added peers — shared logic for IPv4 and IPv6 (BEP 11).
+  var pidx = 0
+  while pidx < peers.len:
+    let added = peers[pidx]
+    let pFlags = if pidx < flags.len: flags[pidx] else: 0'u8
+    pidx += 1
+    let pk = peerKey(added.ip, added.port)
+    if pk in client.pexPeerFlags:
+      client.pexPeerFlags[pk] = client.pexPeerFlags[pk] or pFlags
+    else:
+      client.pexPeerFlags[pk] = pFlags
+    if (pFlags and uint8(pexHolepunch)) != 0:
+      client.hp.recordRelay(pk, relayKey)
+    if pk notin client.peers:
+      if client.queuePeerIfNeeded(added.ip, added.port, srcPex, pFlags):
+        client.pexPeersReceived += 1
+
 proc findConnectedPeerByEndpoint(client: TorrentClient, ip: string, port: uint16): PeerConn =
   ## Find an active peer using either transport port or advertised ext-handshake port.
   ## Only returns peers in psActive state to avoid stale/connecting entries blocking lookups.
@@ -701,9 +796,7 @@ proc findConnectedPeerByEndpoint(client: TorrentClient, ip: string, port: uint16
     let p = client.peers[direct]
     if p.state == psActive:
       return p
-  var fpKeys: seq[string]
-  for k in client.peers.keys:
-    fpKeys.add(k)
+  let fpKeys = client.snapshotPeerKeys()
   var fpi = 0
   while fpi < fpKeys.len:
     let fk = fpKeys[fpi]
@@ -796,9 +889,7 @@ proc sortPendingPeersByPriority(client: TorrentClient, ourIp: string) =
 iterator activePeers*(client: TorrentClient): PeerConn =
   ## Public iterator over active peer connections (for GUI bridge).
   ## Snapshots keys to avoid table-mutation-during-iteration assertions.
-  var apKeys: seq[string]
-  for k in client.peers.keys:
-    apKeys.add(k)
+  let apKeys = client.snapshotPeerKeys()
   var api = 0
   while api < apKeys.len:
     let ak = apKeys[api]
@@ -833,7 +924,11 @@ proc addPeer(client: TorrentClient, ip: string, port: uint16,
   # Per-IP limit: prevent DHT/PEX spam from a single IP (bypassed for holepunch)
   if not bypassBackoff:
     var ipCount: int = 0
-    for pk in client.peers.keys:
+    let ipCheckKeys = client.snapshotPeerKeys()
+    var ipci = 0
+    while ipci < ipCheckKeys.len:
+      let pk = ipCheckKeys[ipci]
+      ipci += 1
       if peerIpFromKey(pk) == ip:
         ipCount += 1
         if ipCount >= MaxPerIp:
@@ -901,7 +996,7 @@ proc addPeer(client: TorrentClient, ip: string, port: uint16,
       peer.priority = btRandU32()
   else:
     peer.priority = btRandU32()
-  client.peers[key] = peer
+  client.setPeer(key, peer)
   client.halfOpenCount += 1
 
   # Spawn peer connection as background task
@@ -939,15 +1034,13 @@ proc peerHasNeededSelectedPiece(client: TorrentClient, peerBitfield: seq[byte]):
   for i in 0 ..< min(client.pieceMgr.totalPieces, client.availability.len):
     if not client.isSelectedPiece(i):
       continue
-    if hasPiece(peerBitfield, i) and client.pieceMgr.pieces[i].state notin {psVerified, psComplete}:
+    if hasPiece(peerBitfield, i) and client.pieceMgr.pieces[i].state notin {psOptimistic, psVerified, psComplete}:
       return true
   false
 
 proc unchokedPeerCount(client: TorrentClient): int =
   ## Number of active peers we are currently unchoking.
-  var ucKeys: seq[string]
-  for k in client.peers.keys:
-    ucKeys.add(k)
+  let ucKeys = client.snapshotPeerKeys()
   var uci = 0
   while uci < ucKeys.len:
     let uk = ucKeys[uci]
@@ -969,13 +1062,25 @@ proc selectHighPriorityPiece(client: TorrentClient, peerBitfield: seq[byte],
     if client.isSelectedPiece(pi) and client.isHighPriorityPiece(pi):
       if pi notin exclude and hasPiece(peerBitfield, pi):
         let st = client.pieceMgr.pieces[pi].state
-        if st notin {psVerified, psComplete}:
+        if st notin {psOptimistic, psVerified, psComplete}:
           let avail = if pi < client.availability.len: client.availability[pi] else: high(int)
           if avail < bestAvail:
             bestAvail = avail
             bestPiece = pi
     inc pi
   bestPiece
+
+proc sendRacingRequests(client: TorrentClient, peer: PeerConn, pKey: string,
+                        blocks: seq[tuple[pieceIdx: int, offset: int, length: int]]): CpsVoidFuture {.cps.} =
+  ## Register and send racing block requests to a peer.
+  var bi: int = 0
+  while bi < blocks.len:
+    let b = blocks[bi]
+    bi += 1
+    client.pieceMgr.registerRacer(b.pieceIdx, b.offset, pKey)
+    peer.activeRequests.add((pieceIdx: b.pieceIdx, offset: b.offset))
+    peer.pendingRequests += 1
+    await peer.sendRequest(uint32(b.pieceIdx), uint32(b.offset), uint32(b.length))
 
 proc requestBlocks(client: TorrentClient, peer: PeerConn): CpsVoidFuture {.cps.} =
   ## Request blocks from a peer. In endgame mode, sends duplicate requests
@@ -1013,16 +1118,7 @@ proc requestBlocks(client: TorrentClient, peer: PeerConn): CpsVoidFuture {.cps.}
       # BEP 6: when choked, only request allowed-fast pieces.
       if peer.peerChoking and uint32(egb.pieceIdx) notin peer.allowedFastSet:
         continue
-      # Skip if this peer already has a request for this block
-      var alreadyTracked = false
-      var ari = 0
-      while ari < peer.activeRequests.len:
-        if peer.activeRequests[ari].pieceIdx == egb.pieceIdx and
-           peer.activeRequests[ari].offset == egb.offset:
-          alreadyTracked = true
-          break
-        ari += 1
-      if alreadyTracked:
+      if peer.hasActiveRequest(egb.pieceIdx, egb.offset):
         continue
       client.pieceMgr.registerRacer(egb.pieceIdx, egb.offset, pKey)
       peer.activeRequests.add((pieceIdx: egb.pieceIdx, offset: egb.offset))
@@ -1035,7 +1131,16 @@ proc requestBlocks(client: TorrentClient, peer: PeerConn): CpsVoidFuture {.cps.}
   # skips them and picks a different piece on the next iteration.
   var skippedPieces: seq[int]
 
-  while peer.pendingRequests < MaxPendingRequests:
+  # Reserve 25% of pipeline slots for cross-piece racing when optimistic
+  # verification is enabled. Without this, normal blocks fill the entire
+  # pipeline (64 slots) leaving no room for racing requests.
+  let normalCap = if client.config.enableOptimisticVerification and
+                     client.config.enableRacing:
+                    MaxPendingRequests * 3 div 4
+                  else:
+                    MaxPendingRequests
+
+  while peer.pendingRequests < normalCap:
     var pieceIdx = -1
     # BEP 6: prioritize remote suggested pieces.
     if peer.suggestedPieces.len > 0:
@@ -1051,7 +1156,7 @@ proc requestBlocks(client: TorrentClient, peer: PeerConn): CpsVoidFuture {.cps.}
           continue
         if peer.peerBitfield.len > 0 and hasPiece(filteredBf, sp):
           let st = client.pieceMgr.pieces[sp].state
-          if st notin {psVerified, psComplete}:
+          if st notin {psOptimistic, psVerified, psComplete}:
             pieceIdx = sp
             break
       peer.suggestedPieces.setLen(0)
@@ -1074,7 +1179,7 @@ proc requestBlocks(client: TorrentClient, peer: PeerConn): CpsVoidFuture {.cps.}
           continue
         if peer.peerBitfield.len > 0 and hasPiece(filteredBf, afPiece):
           let st = client.pieceMgr.pieces[afPiece].state
-          if st notin {psVerified, psComplete}:
+          if st notin {psOptimistic, psVerified, psComplete}:
             pieceIdx = afPiece
             break
     elif pieceIdx < 0:
@@ -1085,7 +1190,7 @@ proc requestBlocks(client: TorrentClient, peer: PeerConn): CpsVoidFuture {.cps.}
     if not client.isSelectedPiece(pieceIdx):
       break
 
-    let blocks = client.pieceMgr.getNeededBlocks(pieceIdx, MaxPendingRequests - peer.pendingRequests)
+    let blocks = client.pieceMgr.getNeededBlocks(pieceIdx, normalCap - peer.pendingRequests)
     if blocks.len == 0:
       # All empty blocks are already bsRequested. Try racing if enabled
       # and piece is partial (close to completion) or rare (availability <= 2).
@@ -1093,16 +1198,10 @@ proc requestBlocks(client: TorrentClient, peer: PeerConn): CpsVoidFuture {.cps.}
          client.pieceMgr.pieces[pieceIdx].state == psPartial:
         let raceBlocks = client.pieceMgr.getRaceableBlocks(
           pieceIdx, pKey, peer.peerBitfield,
-          MaxPendingRequests - peer.pendingRequests)
+          normalCap - peer.pendingRequests,
+          includeVerifiable = client.config.enableOptimisticVerification)
         if raceBlocks.len > 0:
-          var rbi = 0
-          while rbi < raceBlocks.len:
-            let rb = raceBlocks[rbi]
-            rbi += 1
-            client.pieceMgr.registerRacer(pieceIdx, rb.offset, pKey)
-            peer.activeRequests.add((pieceIdx: pieceIdx, offset: rb.offset))
-            peer.pendingRequests += 1
-            await peer.sendRequest(uint32(pieceIdx), uint32(rb.offset), uint32(rb.length))
+          await client.sendRacingRequests(peer, pKey, raceBlocks)
         else:
           skippedPieces.add(pieceIdx)
       else:
@@ -1113,28 +1212,33 @@ proc requestBlocks(client: TorrentClient, peer: PeerConn): CpsVoidFuture {.cps.}
       client.pieceMgr.markBlockRequested(pieceIdx, blk.offset)
       client.pieceMgr.registerRacer(pieceIdx, blk.offset, pKey)
       peer.activeRequests.add((pieceIdx: pieceIdx, offset: blk.offset))
-      # Increment pendingRequests HERE (not in writeLoop) so subsequent
-      # requestBlocks calls see the correct in-flight count immediately.
       peer.pendingRequests += 1
       await peer.sendRequest(uint32(pieceIdx), uint32(blk.offset), uint32(blk.length))
 
-    # For rare pieces (availability <= 2), also race already-requested blocks
-    # from other peers to maximize download speed for scarce content.
-    if client.config.enableRacing and peer.pendingRequests < MaxPendingRequests:
+    # Race already-requested blocks from other peers.
+    # For rare pieces (avail <= 2): race for download speed.
+    # For optimistic verification: also race to accumulate agreement data.
+    if client.config.enableRacing and peer.pendingRequests < normalCap:
       let avail = if pieceIdx < client.availability.len: client.availability[pieceIdx]
                   else: high(int)
-      if avail <= 2:
+      if avail <= 2 or client.config.enableOptimisticVerification:
         let raceBlocks = client.pieceMgr.getRaceableBlocks(
           pieceIdx, pKey, peer.peerBitfield,
-          MaxPendingRequests - peer.pendingRequests)
-        var rbi = 0
-        while rbi < raceBlocks.len:
-          let rb = raceBlocks[rbi]
-          rbi += 1
-          client.pieceMgr.registerRacer(pieceIdx, rb.offset, pKey)
-          peer.activeRequests.add((pieceIdx: pieceIdx, offset: rb.offset))
-          peer.pendingRequests += 1
-          await peer.sendRequest(uint32(pieceIdx), uint32(rb.offset), uint32(rb.length))
+          normalCap - peer.pendingRequests,
+          includeVerifiable = client.config.enableOptimisticVerification)
+        if raceBlocks.len > 0:
+          await client.sendRacingRequests(peer, pKey, raceBlocks)
+
+  # Cross-piece racing: fill remaining pipeline slots with blocks from OTHER
+  # partial pieces to accumulate agreement data for optimistic verification.
+  if client.config.enableOptimisticVerification and
+     client.config.enableRacing and
+     peer.pendingRequests < MaxPendingRequests:
+    let crossBlocks = client.pieceMgr.getCrossRaceBlocks(
+      pKey, peer.peerBitfield,
+      MaxPendingRequests - peer.pendingRequests)
+    if crossBlocks.len > 0:
+      await client.sendRacingRequests(peer, pKey, crossBlocks)
 
 proc requestMetadata(client: TorrentClient, peerKey: string): CpsVoidFuture {.cps.} =
   ## Request needed metadata pieces from a peer (BEP 9).
@@ -1155,9 +1259,7 @@ proc sendLtDonthaveToPeers(client: TorrentClient, pieceIdx: int): CpsVoidFuture 
   if pieceIdx < 0:
     return
   let payload = encodeLtDonthave(pieceIdx)
-  var peerKeys: seq[string]
-  for k in client.peers.keys:
-    peerKeys.add(k)
+  let peerKeys = client.snapshotPeerKeys()
   var ki = 0
   while ki < peerKeys.len:
     let pk = peerKeys[ki]
@@ -1167,8 +1269,8 @@ proc sendLtDonthaveToPeers(client: TorrentClient, pieceIdx: int): CpsVoidFuture 
     let p = client.peers[pk]
     if p.state != psActive:
       continue
-    if p.extensions.supportsExtension("lt_donthave"):
-      await p.sendExtended("lt_donthave", payload)
+    if p.extensions.supportsExtension(ExtLtDontHave):
+      await p.sendExtended(ExtLtDontHave, payload)
 
 proc setFilePriority*(client: TorrentClient, fileIndex: int,
                       priority: string): CpsVoidFuture {.cps.} =
@@ -1200,9 +1302,7 @@ proc setFilePriority*(client: TorrentClient, fileIndex: int,
   # zero availability despite connected peers having them.
   for i in 0 ..< client.availability.len:
     client.availability[i] = 0
-  var peerKeys: seq[string]
-  for k in client.peers.keys:
-    peerKeys.add(k)
+  let peerKeys = client.snapshotPeerKeys()
   var avki = 0
   while avki < peerKeys.len:
     let avk = peerKeys[avki]
@@ -1263,22 +1363,23 @@ proc recheckAllPieces*(client: TorrentClient): CpsVoidFuture {.cps.} =
   var invalidated: seq[int]
   for pi in 0 ..< client.pieceMgr.totalPieces:
     let st = client.pieceMgr.pieces[pi].state
-    if st in {psVerified, psComplete}:
+    if st in {psOptimistic, psVerified, psComplete}:
       invalidated.add(pi)
     client.pieceMgr.pieces[pi].state = psEmpty
     client.pieceMgr.pieces[pi].receivedBytes = 0
+    client.pieceMgr.pieces[pi].consensus = PieceConsensus()
     for blk in client.pieceMgr.pieces[pi].blocks.mitems:
       blk.state = bsEmpty
   client.pieceMgr.completedCount = 0
   client.pieceMgr.verifiedCount = 0
+  client.pieceMgr.optimisticCount = 0
   client.pieceMgr.downloaded = 0
+  client.optimisticVerifyQueue.clear()
 
   if client.state == csSeeding:
     client.state = csDownloading
 
-  var peerKeys: seq[string]
-  for k in client.peers.keys:
-    peerKeys.add(k)
+  let peerKeys = client.snapshotPeerKeys()
   var ki = 0
   while ki < peerKeys.len:
     let pk = peerKeys[ki]
@@ -1293,15 +1394,14 @@ proc recheckAllPieces*(client: TorrentClient): CpsVoidFuture {.cps.} =
     await client.sendLtDonthaveToPeers(invalidated[ii])
     inc ii
 
-proc verifyPieceAsync(pm: PieceManager, pieceIdx: int): CpsFuture[bool] =
-  ## Verify a completed piece's SHA1 hash.
-  ## Offloads the SHA1 computation to the blocking pool when the MT runtime
-  ## is active; otherwise runs synchronously. State updates (marking piece
-  ## verified or failed) always happen on the CPS thread after the hash
-  ## result is known.
+proc verifyPieceHash(pm: PieceManager, pieceIdx: int): CpsFuture[bool] =
+  ## Compute SHA1 hash of a completed piece and return whether it matches.
+  ## Offloads the computation to the blocking pool when the MT runtime is
+  ## active; otherwise runs synchronously. Does NOT modify piece state —
+  ## the caller must call applyVerification under the mutex.
   if pieceIdx < 0 or pieceIdx >= pm.totalPieces:
     return completedFuture(false)
-  if pm.pieces[pieceIdx].state != psComplete:
+  if pm.pieces[pieceIdx].state notin {psComplete, psOptimistic}:
     return completedFuture(false)
   let expected = pm.info.pieceHash(pieceIdx)
   let data = pm.pieces[pieceIdx].data[0 ..< pm.pieces[pieceIdx].totalLength]
@@ -1314,14 +1414,11 @@ proc verifyPieceAsync(pm: PieceManager, pieceIdx: int): CpsFuture[bool] =
     let resultFut = newCpsFuture[bool]()
     hashFut.addCallback(proc() =
       {.cast(gcsafe).}:
-        let hashMatch = hashFut.read()
-        pm.applyVerification(pieceIdx, hashMatch)
-        resultFut.complete(hashMatch)
+        resultFut.complete(hashFut.read())
     )
     return resultFut
   else:
     let hashMatch = sha1mod.sha1(data) == expected
-    pm.applyVerification(pieceIdx, hashMatch)
     return completedFuture(hashMatch)
 
 proc tryUtpReconnect(client: TorrentClient, key: string): CpsVoidFuture {.cps.} =
@@ -1386,7 +1483,7 @@ proc tryUtpReconnect(client: TorrentClient, key: string): CpsVoidFuture {.cps.} 
   # 5. Remove from peers table, adjust counters
   let peerIp: string = peer.ip
   let peerPort: uint16 = peer.port
-  client.peers.del(key)
+  client.delPeer(key)
   if peer.wasConnected:
     if client.connectedPeerCount > 0:
       client.connectedPeerCount -= 1
@@ -1406,6 +1503,85 @@ proc tryUtpReconnect(client: TorrentClient, key: string): CpsVoidFuture {.cps.} 
     # Re-queue for TCP (strip uTP flag so it falls back to TCP-only)
     discard client.queuePeerIfNeeded(peerIp, peerPort, snapshot.source,
       snapshot.pexFlags and (not uint8(pexUtp)))
+
+proc tryOptimisticMark(client: TorrentClient, pieceIdx: int) =
+  ## Check if a completed piece qualifies for optimistic verification.
+  ## If so, mark it and queue for background SHA1 confirmation.
+  if client.config.enableOptimisticVerification and
+     pieceIdx >= 0 and pieceIdx < client.pieceMgr.totalPieces and
+     client.pieceMgr.pieces[pieceIdx].state == psComplete and
+     client.pieceMgr.meetsOptimisticThreshold(pieceIdx,
+       client.config.optimisticMinAgreePeers,
+       client.config.optimisticMinAgreeBlocks):
+    client.pieceMgr.markOptimistic(pieceIdx)
+    client.optimisticVerifyQueue.addLast(pieceIdx)
+
+proc onPieceVerified(client: TorrentClient, pieceIdx: int,
+                     excludeKey: string): CpsVoidFuture {.cps.} =
+  ## Common path after a piece has been accepted (optimistic or SHA1-verified).
+  ## Assumes mutex is held. Announces HAVE, clears race entries, prunes
+  ## stale requests, refills pipelines, checks completion + seed transition.
+  await client.events.send(ClientEvent(kind: cekPieceVerified,
+    pieceIndex: pieceIdx,
+    pieceState: client.pieceMgr.pieces[pieceIdx].state))
+
+  # Collect peer keys once — reused for HAVE broadcast, pruning, and seed transition.
+  let peerKeys = client.snapshotPeerKeys()
+
+  # Announce HAVE to all peers and send endgame cancels.
+  let isEndgame: bool = client.pieceMgr.inEndgame()
+  var ki: int = 0
+  while ki < peerKeys.len:
+    let pk: string = peerKeys[ki]
+    ki += 1
+    if pk in client.peers:
+      let p: PeerConn = client.peers[pk]
+      if p.state == psActive:
+        discard p.commands.trySend(haveMsg(uint32(pieceIdx)))
+        if isEndgame:
+          for blk in client.pieceMgr.pieces[pieceIdx].blocks:
+            discard p.commands.trySend(cancelMsg(uint32(pieceIdx), uint32(blk.offset), uint32(blk.length)))
+
+  client.pieceMgr.clearPieceRaceEntries(pieceIdx)
+
+  # Prune stale activeRequests for this piece and refill pipelines.
+  var pri: int = 0
+  while pri < peerKeys.len:
+    let prk: string = peerKeys[pri]
+    pri += 1
+    if prk in client.peers:
+      let prPeer: PeerConn = client.peers[prk]
+      var pruned: bool = false
+      var ari: int = prPeer.activeRequests.len - 1
+      while ari >= 0:
+        if prPeer.activeRequests[ari].pieceIdx == pieceIdx:
+          prPeer.activeRequests.del(ari)
+          prPeer.pendingRequests = max(0, prPeer.pendingRequests - 1)
+          pruned = true
+        ari -= 1
+      if (pruned or prPeer.pendingRequests == 0) and
+         prPeer.state == psActive and not prPeer.peerChoking and
+         prPeer.pendingRequests < MaxPendingRequests and prk != excludeKey:
+        await client.requestBlocks(prPeer)
+
+  if client.pieceMgr.isComplete:
+    client.state = csSeeding
+    await client.events.send(ClientEvent(kind: cekCompleted))
+    # Mark seeders for eviction and unchoke interested leechers.
+    var unchokedCount = 0
+    var msi = 0
+    while msi < peerKeys.len:
+      let msk = peerKeys[msi]
+      msi += 1
+      if msk in client.peers:
+        let sp = client.peers[msk]
+        if sp.state == psActive:
+          if client.peerIsSeed(sp):
+            client.markPeerAsSeed(sp)
+          elif sp.peerInterested and sp.amChoking and unchokedCount < MaxUnchokedPeers:
+            btDebug "[SEED-DBG] Seed-transition unchoke for ", msk
+            await sp.sendUnchoke()
+            unchokedCount += 1
 
 proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps.} =
   let key = evt.peerAddr
@@ -1448,19 +1624,18 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
       let peer = client.peers[key]
       if peer.source == srcHolepunch or
          (peer.transport == ptUtp and
-          (key in client.holepunchBackoff or key in client.holepunchInFlight)):
-        client.holepunchSuccesses += 1
+          (client.hp.isBackedOff(key) or client.hp.isInFlight(key))):
+        client.hp.recordSuccess(key)
         if peer.source != srcHolepunch:
           peer.source = srcHolepunch
         btDebug "[HP] SUCCESS: connected to ", key, " (source=", peer.source, " transport=", peer.transport, ")"
-        client.holepunchBackoff.del(key)
-        client.holepunchExpected.del(key)
-      client.holepunchInFlight.excl(key)
+      else:
+        client.hp.clearInFlight(key)
       if client.pieceMgr != nil:
         # BEP 3: BITFIELD must be the first message after handshake.
         # BEP 6: HAVE_ALL/HAVE_NONE replace BITFIELD (never send both).
         if peer.peerSupportsFastExt and
-             client.pieceMgr.verifiedCount == client.pieceMgr.totalPieces:
+             client.pieceMgr.verifiedCount + client.pieceMgr.optimisticCount == client.pieceMgr.totalPieces:
           btDebug "[SEED-DBG] Sending HAVE_ALL to ", key, " (verified=", client.pieceMgr.verifiedCount, "/", client.pieceMgr.totalPieces, ")"
           await peer.commands.send(haveAllMsg())
         elif peer.peerSupportsFastExt and client.pieceMgr.verifiedCount == 0:
@@ -1478,9 +1653,9 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
           while afIdx < afSet.len:
             let afPiece: int = afSet[afIdx].int
             afIdx += 1
-            # Only advertise pieces we actually have verified
+            # Only advertise pieces we actually have (verified or optimistic)
             if afPiece >= 0 and afPiece < client.pieceMgr.totalPieces and
-               client.pieceMgr.pieces[afPiece].state == psVerified:
+               client.pieceMgr.pieces[afPiece].state in {psOptimistic, psVerified}:
               peer.outboundAllowedFast.add(uint32(afPiece))
               await peer.sendAllowedFast(uint32(afPiece))
         # Express interest if peer has pieces we need
@@ -1511,28 +1686,10 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
         btDebug "[PEER] Ignoring stale pekDisconnected for ", key, " (event gen=", evt.connGeneration, " current gen=", peer.connGeneration, ")"
         return
       btDebug "[SEED-DBG] pekDisconnected from ", key, " peerInterested=", peer.peerInterested, " amChoking=", peer.amChoking, " bytesUp=", peer.bytesUploaded, " bytesDn=", peer.bytesDownloaded
-    if key in client.holepunchInFlight:
+    if client.hp.isInFlight(key):
       btDebug "[HP] FAILED: ", key, " disconnected while in-flight"
-      client.holepunchInFlight.excl(key)
-    # Prune holepunch/PEX state referencing this peer
-    client.holepunchBackoff.del(key)
+    client.hp.recordDisconnect(key)
     client.pexPeerFlags.del(key)
-    # Remove this peer from all relay sets; delete targets with no remaining relays.
-    # Snapshot keys to avoid "table changed while iterating" in MT mode.
-    var relayTargets: seq[string]
-    for rk in client.holepunchRelayByTarget.keys:
-      relayTargets.add(rk)
-    var relayTargetsToRemove: seq[string]
-    for target in relayTargets:
-      if target notin client.holepunchRelayByTarget:
-        continue
-      client.holepunchRelayByTarget[target].excl(key)
-      if client.holepunchRelayByTarget[target].len == 0:
-        relayTargetsToRemove.add(target)
-    var rti: int = 0
-    while rti < relayTargetsToRemove.len:
-      client.holepunchRelayByTarget.del(relayTargetsToRemove[rti])
-      rti += 1
     var freedBlocks = false
     if key in client.peers:
       let peer = client.peers[key]
@@ -1563,7 +1720,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
           client.failedIps[peerIp] = (count: 1, lastFail: epochTime())
       let disconnPeerIp: string = peer.ip
       let disconnPeerPort: uint16 = peer.port
-      client.peers.del(key)
+      client.delPeer(key)
       if peer.wasConnected:
         # Was fully connected (pekConnected fired) → decrement connectedPeerCount
         if client.connectedPeerCount > 0:
@@ -1583,9 +1740,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
             snap.source, snap.pexFlags and (not uint8(pexUtp)))
     # Re-issue freed blocks to other unchoked peers immediately
     if freedBlocks and client.pieceMgr != nil:
-      var discKeys: seq[string]
-      for k in client.peers.keys:
-        discKeys.add(k)
+      let discKeys = client.snapshotPeerKeys()
       var di: int = 0
       while di < discKeys.len:
         let dk: string = discKeys[di]
@@ -1602,7 +1757,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
       btDebug "[SELF] Detected self-connection to ", key, " — disconnecting"
       if key in client.peers:
         client.closePeerStream(key)
-        client.peers.del(key)
+        client.delPeer(key)
         if client.halfOpenCount > 0:
           client.halfOpenCount -= 1
         # Add to failed peers to prevent immediate reconnection
@@ -1623,9 +1778,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
       peer.pendingRequests = 0
       # Re-issue freed blocks to other unchoked peers immediately
       if hadRequests and client.pieceMgr != nil:
-        var chokeKeys: seq[string]
-        for k in client.peers.keys:
-          chokeKeys.add(k)
+        let chokeKeys = client.snapshotPeerKeys()
         var ci: int = 0
         while ci < chokeKeys.len:
           let ck: string = chokeKeys[ci]
@@ -1679,7 +1832,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
       if not peer.amInterested:
         if idx < client.pieceMgr.totalPieces and
            client.isSelectedPiece(idx) and
-           client.pieceMgr.pieces[idx].state notin {psVerified, psComplete}:
+           client.pieceMgr.pieces[idx].state notin {psOptimistic, psVerified, psComplete}:
           await peer.sendInterested()
       # Request blocks if unchoked and interested
       if not peer.peerChoking:
@@ -1723,13 +1876,25 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
           break
         ri += 1
     if not wasRequested:
-      # Block not in activeRequests — unsolicited or already canceled.
-      # Do NOT decrement pendingRequests or accept the data.
-      discard
+      # Block not in activeRequests — possibly a racing duplicate arriving
+      # after CANCEL. Check agreement for optimistic verification.
+      if pieceIdx >= 0 and pieceIdx < client.pieceMgr.totalPieces and
+         client.pieceMgr.pieces[pieceIdx].state in {psPartial, psComplete}:
+        discard client.pieceMgr.checkBlockAgreement(pieceIdx, offset,
+          evt.blockData.toOpenArrayByte(0, evt.blockData.len - 1))
+        client.tryOptimisticMark(pieceIdx)
     else:
       let prevDownloaded = client.pieceMgr.downloaded
       let complete = client.pieceMgr.receiveBlock(pieceIdx, offset, evt.blockData)
       let accepted = client.pieceMgr.downloaded > prevDownloaded
+
+      # Racing duplicate: check agreement even though the data wasn't stored.
+      if not accepted and not complete and
+         pieceIdx >= 0 and pieceIdx < client.pieceMgr.totalPieces and
+         client.pieceMgr.pieces[pieceIdx].state in {psPartial, psComplete}:
+        discard client.pieceMgr.checkBlockAgreement(pieceIdx, offset,
+          evt.blockData.toOpenArrayByte(0, evt.blockData.len - 1))
+        client.tryOptimisticMark(pieceIdx)
 
       # Cancel racing duplicates: send CANCEL to other peers that requested
       # this block, remove from their activeRequests, and clear the race entry.
@@ -1746,40 +1911,28 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
             if rpk in client.peers:
               let rp = client.peers[rpk]
               discard rp.commands.trySend(cancelMsg(uint32(pieceIdx), uint32(offset), uint32(blkLen)))
-              var ari = 0
-              while ari < rp.activeRequests.len:
-                if rp.activeRequests[ari].pieceIdx == pieceIdx and
-                   rp.activeRequests[ari].offset == offset:
-                  rp.activeRequests.del(ari)
-                  rp.pendingRequests = max(0, rp.pendingRequests - 1)
-                  break
-                ari += 1
+              discard rp.removeActiveRequest(pieceIdx, offset)
           client.pieceMgr.clearRaceEntry(pieceIdx, offset)
 
       if complete:
-        # Release mutex for SHA1 verification (expensive CPU or blocking pool).
-        # No state updates until re-acquired — only immutable piece data is read.
-        unlock(client.mtx)
-        let valid: bool = await verifyPieceAsync(client.pieceMgr, pieceIdx)
-        await lock(client.mtx)
-        if valid:
-          # Piece verified — NOW remove from activeRequests for this peer.
-          if key in client.peers:
-            let peer = client.peers[key]
-            var ri2 = 0
-            while ri2 < peer.activeRequests.len:
-              if peer.activeRequests[ri2].pieceIdx == pieceIdx and
-                 peer.activeRequests[ri2].offset == offset:
-                peer.activeRequests.del(ri2)
-                peer.pendingRequests = max(0, peer.pendingRequests - 1)
-                break
-              ri2 += 1
-          # Write to disk — release mutex for disk I/O, then re-acquire.
-          let pieceData = client.pieceMgr.getPieceData(pieceIdx)
+        let useOptimistic = client.config.enableOptimisticVerification and
+          client.pieceMgr.meetsOptimisticThreshold(pieceIdx,
+            client.config.optimisticMinAgreePeers,
+            client.config.optimisticMinAgreeBlocks)
+
+        # Remove completing block from this peer's activeRequests
+        if key in client.peers:
+          discard client.peers[key].removeActiveRequest(pieceIdx, offset)
+
+        if useOptimistic:
+          # Optimistic path: skip SHA1, write to disk, queue background verification
+          client.pieceMgr.markOptimistic(pieceIdx)
+          let pieceLen = client.pieceMgr.pieces[pieceIdx].totalLength
+          let writeData = client.pieceMgr.pieces[pieceIdx].data[0 ..< pieceLen]
           unlock(client.mtx)
           var writeError: string = ""
           try:
-            client.storageMgr.writePiece(pieceIdx, pieceData)
+            client.storageMgr.writePiece(pieceIdx, writeData)
           except CatchableError as e:
             writeError = e.msg
           await lock(client.mtx)
@@ -1787,113 +1940,38 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
             btDebug "ERROR: writePiece failed for piece ", pieceIdx, ": ", writeError
             client.pieceMgr.resetPiece(pieceIdx)
           else:
-            await client.events.send(ClientEvent(kind: cekPieceVerified, pieceIndex: pieceIdx))
+            client.optimisticVerifyQueue.addLast(pieceIdx)
+            await client.onPieceVerified(pieceIdx, key)
 
-            # Announce HAVE to all peers (non-blocking to avoid stalling event loop)
-            var peerKeys: seq[string] = @[]
-            for k in client.peers.keys:
-              peerKeys.add(k)
-            let isEndgame: bool = client.pieceMgr.inEndgame()
-            var ki: int = 0
-            while ki < peerKeys.len:
-              let pk: string = peerKeys[ki]
-              ki += 1
-              if pk in client.peers:
-                let p: PeerConn = client.peers[pk]
-                if p.state == psActive:
-                  # Use trySend for HAVE — don't block event loop if peer command queue is full
-                  discard p.commands.trySend(haveMsg(uint32(pieceIdx)))
-                  # Only send endgame cancels when actually in endgame mode
-                  if isEndgame:
-                    for blk in client.pieceMgr.pieces[pieceIdx].blocks:
-                      discard p.commands.trySend(cancelMsg(uint32(pieceIdx), uint32(blk.offset), uint32(blk.length)))
-
-            # Clear all race entries for this verified piece
-            client.pieceMgr.clearPieceRaceEntries(pieceIdx)
-
-            # Prune stale activeRequests for this verified piece from all peers
-            # and refill their pipelines immediately so they don't sit idle.
-            var pruneKeys: seq[string] = @[]
-            for k in client.peers.keys:
-              pruneKeys.add(k)
-            var pri: int = 0
-            while pri < pruneKeys.len:
-              let prk: string = pruneKeys[pri]
-              pri += 1
-              if prk in client.peers:
-                let prPeer: PeerConn = client.peers[prk]
-                var pruned: bool = false
-                var ari: int = prPeer.activeRequests.len - 1
-                while ari >= 0:
-                  if prPeer.activeRequests[ari].pieceIdx == pieceIdx:
-                    prPeer.activeRequests.del(ari)
-                    prPeer.pendingRequests = max(0, prPeer.pendingRequests - 1)
-                    pruned = true
-                  ari -= 1
-                # Refill this peer's pipeline if blocks were pruned OR it's
-                # idle (pendingRequests == 0). Idle peers arise when unchoke
-                # finds no blocks because the choke handler redistributed them
-                # all to other peers.
-                if (pruned or prPeer.pendingRequests == 0) and
-                   prPeer.state == psActive and not prPeer.peerChoking and
-                   prPeer.pendingRequests < MaxPendingRequests and prk != key:
-                  await client.requestBlocks(prPeer)
-
-            # Check if download complete
-            if client.pieceMgr.isComplete:
-              client.state = csSeeding
-              await client.events.send(ClientEvent(kind: cekCompleted))
-              # Mark all connected seeders for eviction and unchoke leechers
-              var unchokedCount = 0
-              var seedTransKeys: seq[string]
-              for stk in client.peers.keys:
-                seedTransKeys.add(stk)
-              var msi = 0
-              while msi < seedTransKeys.len:
-                let msk = seedTransKeys[msi]
-                msi += 1
-                if msk in client.peers:
-                  let sp = client.peers[msk]
-                  if sp.state == psActive and client.peerIsSeed(sp):
-                    client.markPeerAsSeed(sp)
-              # Proactively unchoke interested leechers now that we're seeding
-              var sti = 0
-              while sti < seedTransKeys.len:
-                let stk2 = seedTransKeys[sti]
-                sti += 1
-                if stk2 in client.peers:
-                  let stp = client.peers[stk2]
-                  if stp.state == psActive and stp.peerInterested and
-                     stp.amChoking and unchokedCount < MaxUnchokedPeers:
-                    btDebug "[SEED-DBG] Seed-transition unchoke for ", stk2
-                    await stp.sendUnchoke()
-                    unchokedCount += 1
         else:
-          # Verification failed — remove from activeRequests, then re-download
-          if key in client.peers:
-            let peer = client.peers[key]
-            var ri2 = 0
-            while ri2 < peer.activeRequests.len:
-              if peer.activeRequests[ri2].pieceIdx == pieceIdx and
-                 peer.activeRequests[ri2].offset == offset:
-                peer.activeRequests.del(ri2)
-                peer.pendingRequests = max(0, peer.pendingRequests - 1)
-                break
-              ri2 += 1
-          client.pieceMgr.resetPiece(pieceIdx)
-          await client.sendLtDonthaveToPeers(pieceIdx)
+          # Normal SHA1 verification path
+          unlock(client.mtx)
+          let valid: bool = await verifyPieceHash(client.pieceMgr, pieceIdx)
+          await lock(client.mtx)
+          # Guard against concurrent state change (e.g. racing marked optimistic)
+          if client.pieceMgr.pieces[pieceIdx].state == psComplete:
+            client.pieceMgr.applyVerification(pieceIdx, valid)
+          if valid and client.pieceMgr.pieces[pieceIdx].state == psVerified:
+            let pieceData = client.pieceMgr.getPieceData(pieceIdx)
+            unlock(client.mtx)
+            var writeError: string = ""
+            try:
+              client.storageMgr.writePiece(pieceIdx, pieceData)
+            except CatchableError as e:
+              writeError = e.msg
+            await lock(client.mtx)
+            if writeError.len > 0:
+              btDebug "ERROR: writePiece failed for piece ", pieceIdx, ": ", writeError
+              client.pieceMgr.resetPiece(pieceIdx)
+            else:
+              await client.onPieceVerified(pieceIdx, key)
+          elif client.pieceMgr.pieces[pieceIdx].state == psFailed:
+            client.pieceMgr.resetPiece(pieceIdx)
+            await client.sendLtDonthaveToPeers(pieceIdx)
       else:
         # Block accepted but piece not yet complete — remove from activeRequests now
         if key in client.peers:
-          let peer = client.peers[key]
-          var ri2 = 0
-          while ri2 < peer.activeRequests.len:
-            if peer.activeRequests[ri2].pieceIdx == pieceIdx and
-               peer.activeRequests[ri2].offset == offset:
-              peer.activeRequests.del(ri2)
-              peer.pendingRequests = max(0, peer.pendingRequests - 1)
-              break
-            ri2 += 1
+          discard client.peers[key].removeActiveRequest(pieceIdx, offset)
 
       # Only request more blocks if this block was actually accepted.
       # Rejected blocks (duplicates, already verified pieces) skip the expensive
@@ -1927,7 +2005,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
           # BEP 6: reject invalid-bounds requests. Non-BEP6 peers are silently ignored.
           if peer.peerSupportsFastExt:
             await peer.sendRejectRequest(evt.reqIndex, evt.reqBegin, evt.reqLength)
-        elif client.pieceMgr.pieces[pieceIdx].state == psVerified:
+        elif client.pieceMgr.pieces[pieceIdx].state in {psOptimistic, psVerified}:
           # Release mutex for disk read — no state changes until re-acquired.
           let peerSupportsFast = peer.peerSupportsFastExt
           unlock(client.mtx)
@@ -1977,11 +2055,8 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
         let rpKey = peerKey(peer.ip, peer.remoteListenPort)
         if key in client.pexPeerFlags:
           client.pexPeerFlags[rpKey] = client.pexPeerFlags[key]
-        if key in client.holepunchRelayByTarget:
-          if rpKey notin client.holepunchRelayByTarget:
-            client.holepunchRelayByTarget[rpKey] = initHashSet[string]()
-          for rk in client.holepunchRelayByTarget[key]:
-            client.holepunchRelayByTarget[rpKey].incl(rk)
+        for rk in client.hp.relaysFor(key):
+          client.hp.recordRelay(rpKey, rk)
       # uTP transport upgrade: if connected via TCP and the remote peer
       # advertises a listen port (implying uTP support), attempt to
       # reconnect via uTP for lower per-connection overhead.
@@ -2019,7 +2094,8 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
                 # Parse info dict and initialize piece manager + storage
                 let parsedInfo = parseRawInfoDict(assembled, client.metainfo.info.infoHash)
                 client.metainfo.info = parsedInfo
-                client.pieceMgr = newPieceManager(parsedInfo, client.config.maxRacersPerBlock)
+                client.pieceMgr = newPieceManager(parsedInfo, client.config.maxRacersPerBlock,
+                                                   client.config.enableOptimisticVerification)
                 client.availability = newSeq[int](parsedInfo.pieceCount)
                 client.isPrivate = parsedInfo.isPrivate
                 client.applyPrivateProtocolGating()
@@ -2030,25 +2106,11 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
                 client.storageMgr.openFiles()
                 # Check for existing data
                 let verified = client.storageMgr.verifyExistingFiles(parsedInfo)
-                var vi: int = 0
-                while vi < verified.len:
-                  if verified[vi]:
-                    var bj: int = 0
-                    while bj < client.pieceMgr.pieces[vi].blocks.len:
-                      client.pieceMgr.pieces[vi].blocks[bj].state = bsReceived
-                      bj += 1
-                    client.pieceMgr.pieces[vi].receivedBytes = client.pieceMgr.pieces[vi].totalLength
-                    client.pieceMgr.pieces[vi].state = psVerified
-                    client.pieceMgr.completedCount += 1
-                    client.pieceMgr.verifiedCount += 1
-                    client.pieceMgr.downloaded += int64(client.pieceMgr.pieces[vi].totalLength)
-                  vi += 1
+                client.restoreVerifiedPieces(verified)
                 if client.pieceMgr.isComplete:
                   client.state = csSeeding
                   # Mark all connected seeders for eviction
-                  var markKeys: seq[string]
-                  for mk in client.peers.keys:
-                    markKeys.add(mk)
+                  let markKeys = client.snapshotPeerKeys()
                   var mki = 0
                   while mki < markKeys.len:
                     let mkk = markKeys[mki]
@@ -2060,9 +2122,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
                 # Done with metadata exchange
                 client.metadataExchange = nil
                 # Rebuild availability from all connected peers' bitfields
-                var peerKeys: seq[string]
-                for k in client.peers.keys:
-                  peerKeys.add(k)
+                let peerKeys = client.snapshotPeerKeys()
                 var avi = 0
                 while avi < peerKeys.len:
                   let apk = peerKeys[avi]
@@ -2089,7 +2149,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
                           if not p.peerChoking:
                             await client.requestBlocks(p)
                 await client.events.send(ClientEvent(kind: cekProgress,
-                  completedPieces: client.pieceMgr.verifiedCount,
+                  completedPieces: client.pieceMgr.verifiedCount + client.pieceMgr.optimisticCount,
                   totalPieces: client.pieceMgr.totalPieces,
                   downloadRate: 0.0, uploadRate: 0.0,
                   peerCount: client.connectedPeerCount))
@@ -2100,13 +2160,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
       # BEP 11: Peer Exchange — queue for connectLoop
       if not client.isPrivate and client.config.enablePex:
         var pexDecodeError: string = ""
-        var pexMsg: tuple[
-          added: seq[tuple[ip: string, port: uint16]],
-          addedFlags: seq[uint8],
-          dropped: seq[tuple[ip: string, port: uint16]],
-          added6: seq[tuple[ip: string, port: uint16]],
-          added6Flags: seq[uint8],
-          dropped6: seq[tuple[ip: string, port: uint16]]]
+        var pexMsg: PexMessage
         try:
           pexMsg = decodePexMessage(evt.extPayload)
         except CatchableError as e:
@@ -2114,43 +2168,8 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
         if pexDecodeError.len > 0:
           discard  # Malformed PEX message — ignore
         else:
-          var pidx = 0
-          while pidx < pexMsg.added.len:
-            let added = pexMsg.added[pidx]
-            let pFlags = if pidx < pexMsg.addedFlags.len: pexMsg.addedFlags[pidx] else: 0'u8
-            pidx += 1
-            let pexKey = peerKey(added.ip, added.port)
-            # Accumulate flags with OR — never downgrade capabilities once seen.
-            if pexKey in client.pexPeerFlags:
-              client.pexPeerFlags[pexKey] = client.pexPeerFlags[pexKey] or pFlags
-            else:
-              client.pexPeerFlags[pexKey] = pFlags
-            if (pFlags and uint8(pexHolepunch)) != 0:
-              # Track which connected relays announced this holepunch candidate.
-              if pexKey notin client.holepunchRelayByTarget:
-                client.holepunchRelayByTarget[pexKey] = initHashSet[string]()
-              client.holepunchRelayByTarget[pexKey].incl(key)
-            if pexKey notin client.peers:
-              if client.queuePeerIfNeeded(added.ip, added.port, srcPex, pFlags):
-                client.pexPeersReceived += 1
-          # BEP 11: IPv6 peers (added6/added6.f)
-          var pidx6 = 0
-          while pidx6 < pexMsg.added6.len:
-            let added6 = pexMsg.added6[pidx6]
-            let pFlags6 = if pidx6 < pexMsg.added6Flags.len: pexMsg.added6Flags[pidx6] else: 0'u8
-            pidx6 += 1
-            let pexKey6 = peerKey(added6.ip, added6.port)
-            if pexKey6 in client.pexPeerFlags:
-              client.pexPeerFlags[pexKey6] = client.pexPeerFlags[pexKey6] or pFlags6
-            else:
-              client.pexPeerFlags[pexKey6] = pFlags6
-            if (pFlags6 and uint8(pexHolepunch)) != 0:
-              if pexKey6 notin client.holepunchRelayByTarget:
-                client.holepunchRelayByTarget[pexKey6] = initHashSet[string]()
-              client.holepunchRelayByTarget[pexKey6].incl(key)
-            if pexKey6 notin client.peers:
-              if client.queuePeerIfNeeded(added6.ip, added6.port, srcPex, pFlags6):
-                client.pexPeersReceived += 1
+          client.processPexPeers(pexMsg.added, pexMsg.addedFlags, key)
+          client.processPexPeers(pexMsg.added6, pexMsg.added6Flags, key)
 
     of UtHolepunchName:
       # BEP 55: relay + connect/error handling.
@@ -2167,7 +2186,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
               btDebug "[HP] Received HpConnect: ", hp.ip, ":", hp.port, " from relay ", key
               if client.utpMgr != nil and hp.port > 0:
                 let hpKey = peerKey(hp.ip, hp.port)
-                if hpKey in client.holepunchInFlight:
+                if client.hp.isInFlight(hpKey):
                   btDebug "[HP] Skip HpConnect ", hpKey, ": already in flight"
                 elif client.findConnectedPeerByEndpoint(hp.ip, hp.port) != nil:
                   # Peer already connected — might be a simultaneous-open winner.
@@ -2177,7 +2196,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
                     if ep.source == srcIncoming and ep.transport == ptUtp:
                       btDebug "[HP] Already connected (incoming→holepunch): ", hpKey
                       ep.source = srcHolepunch
-                      client.holepunchSuccesses += 1
+                      client.hp.recordSuccess(hpKey)
                     else:
                       btDebug "[HP] Skip HpConnect ", hpKey, ": already connected (source=", ep.source, ")"
                   else:
@@ -2192,8 +2211,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
                       inc qi
                   client.failedPeers.del(hpKey)
                   client.failedIps.del(hp.ip)
-                  client.holepunchInFlight.incl(hpKey)
-                  client.holepunchExpected[hpKey] = epochTime() + 30.0
+                  client.hp.markInFlight(hpKey)
                   let started = await client.addPeer(hp.ip, hp.port, srcHolepunch,
                     uint8(pexUtp) or uint8(pexHolepunch),
                     bypassBackoff = true,
@@ -2208,21 +2226,19 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
                       if existingPeer.source == srcIncoming and existingPeer.transport == ptUtp:
                         btDebug "[HP] Incoming peer already connected (simultaneous-open won by incoming): ", hpKey
                         existingPeer.source = srcHolepunch
-                        client.holepunchSuccesses += 1
+                        client.hp.recordSuccess(hpKey)
                       else:
                         btDebug "[HP] Peer already exists (source=", existingPeer.source, "): ", hpKey
                     else:
                       btDebug "[HP] addPeer failed for ", hpKey, " (peers=", client.connectedPeerCount, " halfOpen=", client.halfOpenCount, ")"
-                    client.holepunchInFlight.excl(hpKey)
+                    client.hp.clearInFlight(hpKey)
               else:
                 btDebug "[HP] Skip HpConnect: utpMgr=", client.utpMgr != nil, " port=", hp.port
             of HpError:
               let errStr = errorName(hp.errCode)
               btDebug "[HP] Received HpError: ", hp.ip, ":", hp.port, " err=", errStr
-              client.holepunchLastError = errStr
               let hpKey = peerKey(hp.ip, hp.port)
-              client.holepunchInFlight.excl(hpKey)
-              client.holepunchBackoff[hpKey] = epochTime() + 90.0
+              client.hp.recordError(hpKey, hp.errCode)
             of HpRendezvous:
               # Act as relay: forward CONNECT to both peers when possible.
               let requesterPort = if relayPeer.remoteListenPort > 0: relayPeer.remoteListenPort else: relayPeer.port
@@ -2251,9 +2267,9 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
                   await relayFut
                   await reqFut
           except CatchableError as e:
-            client.holepunchLastError = e.msg
+            client.hp.lastError = e.msg
 
-    of "lt_donthave":
+    of ExtLtDontHave:
       # BEP 54: peer no longer has a piece.
       if key in client.peers and client.pieceMgr != nil:
         let p = client.peers[key]
@@ -2304,17 +2320,7 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
     # to prevent desync from unsolicited reject messages.
     if key in client.peers and client.pieceMgr != nil:
       let peer = client.peers[key]
-      var found = false
-      var ri = 0
-      while ri < peer.activeRequests.len:
-        if peer.activeRequests[ri].pieceIdx == evt.reqIndex.int and
-           peer.activeRequests[ri].offset == evt.reqBegin.int:
-          peer.activeRequests.del(ri)
-          peer.pendingRequests = max(0, peer.pendingRequests - 1)
-          found = true
-          break
-        ri += 1
-      if found:
+      if peer.removeActiveRequest(evt.reqIndex.int, evt.reqBegin.int):
         client.pieceMgr.unregisterRacer(evt.reqIndex.int, evt.reqBegin.int, key)
         client.pieceMgr.cancelBlockRequest(evt.reqIndex.int, evt.reqBegin.int)
       # Refill the request pipeline after a rejection frees a slot.
@@ -2340,20 +2346,7 @@ proc trackerLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
   var announceParams = defaultAnnounceParams(
     client.metainfo.info, client.peerId, client.config.listenPort)
 
-  # Collect tracker URLs (filter empty strings from malformed announce-lists)
-  var trackerUrls: seq[string]
-  if client.metainfo.announce.len > 0:
-    trackerUrls.add(client.metainfo.announce)
-  var tierIdx = 0
-  while tierIdx < client.metainfo.announceList.len:
-    let tier = client.metainfo.announceList[tierIdx]
-    var urlIdx = 0
-    while urlIdx < tier.len:
-      let trackerUrl = tier[urlIdx]
-      if trackerUrl.len > 0 and trackerUrl notin trackerUrls:
-        trackerUrls.add(trackerUrl)
-      inc urlIdx
-    inc tierIdx
+  let trackerUrls = collectTrackerUrls(client.metainfo)
 
   if trackerUrls.len == 0:
     # No trackers — rely on DHT/PEX/LSD for peer discovery (common for magnet links)
@@ -2506,21 +2499,9 @@ proc trackerScrapeLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
   ## Periodic tracker scrape updates (BEP 48 / UDP scrape via BEP 15).
   if not client.config.enableTrackerScrape:
     return
-  if client.metainfo.announce.len == 0 and client.metainfo.announceList.len == 0:
+  let trackerUrls = collectTrackerUrls(client.metainfo)
+  if trackerUrls.len == 0:
     return
-  var trackerUrls: seq[string]
-  if client.metainfo.announce.len > 0:
-    trackerUrls.add(client.metainfo.announce)
-  var tierIdx = 0
-  while tierIdx < client.metainfo.announceList.len:
-    let tier = client.metainfo.announceList[tierIdx]
-    var urlIdx = 0
-    while urlIdx < tier.len:
-      let trackerUrl = tier[urlIdx]
-      if trackerUrl notin trackerUrls:
-        trackerUrls.add(trackerUrl)
-      inc urlIdx
-    inc tierIdx
   while client.state in {csDownloading, csSeeding}:
     var trackIdx = 0
     while trackIdx < trackerUrls.len:
@@ -2570,6 +2551,54 @@ proc eventLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
 
     finally:
       unlock(client.mtx)
+proc optimisticVerifyLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
+  ## Background loop that SHA1-confirms optimistically verified pieces.
+  ## Drains the optimisticVerifyQueue at a moderate pace to avoid starving I/O.
+  while client.state in {csDownloading, csSeeding}:
+    await cpsSleep(100)
+    await lock(client.mtx)
+    if client.optimisticVerifyQueue.len > 0:
+      let pieceIdx = client.optimisticVerifyQueue.popFirst()
+      if client.pieceMgr != nil and pieceIdx >= 0 and pieceIdx < client.pieceMgr.totalPieces and
+         client.pieceMgr.pieces[pieceIdx].state == psOptimistic:
+        # SHA1 outside mutex (data buffer is still alive for optimistic pieces)
+        unlock(client.mtx)
+        let hashMatch: bool = await verifyPieceHash(client.pieceMgr, pieceIdx)
+        await lock(client.mtx)
+        if client.pieceMgr != nil and pieceIdx < client.pieceMgr.totalPieces and
+           client.pieceMgr.pieces[pieceIdx].state == psOptimistic:
+          if hashMatch:
+            client.pieceMgr.applyOptimisticVerification(pieceIdx, true)
+            # Release the piece data buffer (uploads read from disk)
+            client.pieceMgr.pieces[pieceIdx].data = ""
+            client.pieceMgr.pieces[pieceIdx].consensus = PieceConsensus()
+            # Notify GUI: optimistic → verified
+            await client.events.send(ClientEvent(kind: cekPieceStateChanged,
+              changedPieceIndex: pieceIdx,
+              changedPieceState: client.pieceMgr.pieces[pieceIdx].state))
+          else:
+            # SHA1 mismatch on optimistic piece — rollback
+            btDebug "WARN: optimistic piece ", pieceIdx, " failed background SHA1"
+            client.pieceMgr.applyOptimisticVerification(pieceIdx, false)
+            # Notify GUI: optimistic → failed/reset
+            await client.events.send(ClientEvent(kind: cekPieceStateChanged,
+              changedPieceIndex: pieceIdx,
+              changedPieceState: client.pieceMgr.pieces[pieceIdx].state))
+            await client.sendLtDonthaveToPeers(pieceIdx)
+            if client.state == csSeeding:
+              client.state = csDownloading
+            # Re-request blocks from available peers
+            let vrfKeys = client.snapshotPeerKeys()
+            var ki = 0
+            while ki < vrfKeys.len:
+              let pk = vrfKeys[ki]
+              ki += 1
+              if pk in client.peers:
+                let peer = client.peers[pk]
+                if peer.state == psActive and not peer.peerChoking:
+                  await client.requestBlocks(peer)
+    unlock(client.mtx)
+
 proc requestRefreshLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
   ## Periodically recover from stale block requests.
   ## Only resets blocks that belong to peers no longer connected or that have
@@ -2583,9 +2612,7 @@ proc requestRefreshLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
 
         # Collect the set of blocks that are actively tracked by connected peers
         var trackedBlocks: HashSet[tuple[pieceIdx: int, offset: int]]
-        var peerKeys: seq[string]
-        for k in client.peers.keys:
-          peerKeys.add(k)
+        let peerKeys = client.snapshotPeerKeys()
 
         var reclaimedBlocks: bool = false
         var ki: int = 0
@@ -2671,16 +2698,7 @@ proc requestRefreshLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
             while sbi < stealBlocks.len and sp.pendingRequests < MaxPendingRequests:
               let sb = stealBlocks[sbi]
               sbi += 1
-              # Skip if this peer already has a request for this block
-              var alreadyTracked = false
-              var ari2 = 0
-              while ari2 < sp.activeRequests.len:
-                if sp.activeRequests[ari2].pieceIdx == stPi and
-                   sp.activeRequests[ari2].offset == sb.offset:
-                  alreadyTracked = true
-                  break
-                ari2 += 1
-              if alreadyTracked:
+              if sp.hasActiveRequest(stPi, sb.offset):
                 continue
               # Use trySend to avoid blocking refresh loop on congested peers
               let spKey = peerKey(sp.ip, sp.port)
@@ -2729,16 +2747,7 @@ proc requestRefreshLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
                 if fastPeer.peerBitfield.len == 0 or
                    not hasPiece(fastPeer.peerBitfield, slowReq.pieceIdx):
                   continue
-                # Check this peer doesn't already have this block
-                var alreadyHas = false
-                var chkIdx = 0
-                while chkIdx < fastPeer.activeRequests.len:
-                  if fastPeer.activeRequests[chkIdx].pieceIdx == slowReq.pieceIdx and
-                     fastPeer.activeRequests[chkIdx].offset == slowReq.offset:
-                    alreadyHas = true
-                    break
-                  chkIdx += 1
-                if alreadyHas:
+                if fastPeer.hasActiveRequest(slowReq.pieceIdx, slowReq.offset):
                   continue
                 # Check race tracker allows another racer
                 let raceKey: BlockKey = (slowReq.pieceIdx, slowReq.offset)
@@ -2824,7 +2833,7 @@ proc progressLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
       # Use maintained counter instead of iterating the peers table
       let activePeers: int = client.connectedPeerCount
 
-      let completed = client.pieceMgr.verifiedCount
+      let completed = client.pieceMgr.verifiedCount + client.pieceMgr.optimisticCount
       let changed =
         completed != lastCompleted or
         activePeers != lastPeerCount or
@@ -3037,18 +3046,28 @@ proc refreshSecureDhtIdentity(client: TorrentClient) =
 proc extractIpPort(srcAddr: Sockaddr_storage, addrLen: SockLen): tuple[ip: string, port: uint16] =
   ## Extract IP and port from a Sockaddr_storage.
   ## Handles both IPv4 (AF_INET) and IPv6 (AF_INET6) address families.
+  ## IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) are returned as plain IPv4.
   if srcAddr.ss_family.cint == toInt(AF_INET6):
     let sa6 = cast[ptr Sockaddr_in6](unsafeAddr srcAddr)
     let addrBytes = cast[ptr array[16, byte]](unsafeAddr sa6.sin6_addr)
-    var parts: array[8, uint16]
-    for i in 0 ..< 8:
-      parts[i] = (uint16(addrBytes[i*2]) shl 8) or uint16(addrBytes[i*2 + 1])
-    var expanded = ""
-    for i in 0 ..< 8:
-      if i > 0: expanded.add(':')
-      expanded.add(parts[i].int.toHex(4).toLowerAscii())
-    result.ip = canonicalizeIpv6(expanded)
     result.port = ntohs(sa6.sin6_port)
+    # Check for IPv4-mapped IPv6 (::ffff:x.x.x.x): first 10 bytes zero, bytes 10-11 = 0xFF
+    var isV4Mapped = true
+    for i in 0 ..< 10:
+      if addrBytes[i] != 0:
+        isV4Mapped = false
+        break
+    if isV4Mapped and addrBytes[10] == 0xFF and addrBytes[11] == 0xFF:
+      result.ip = $addrBytes[12] & "." & $addrBytes[13] & "." & $addrBytes[14] & "." & $addrBytes[15]
+    else:
+      var parts: array[8, uint16]
+      for i in 0 ..< 8:
+        parts[i] = (uint16(addrBytes[i*2]) shl 8) or uint16(addrBytes[i*2 + 1])
+      var expanded = ""
+      for i in 0 ..< 8:
+        if i > 0: expanded.add(':')
+        expanded.add(parts[i].int.toHex(4).toLowerAscii())
+      result.ip = canonicalizeIpv6(expanded)
   else:
     let sa = cast[ptr Sockaddr_in](unsafeAddr srcAddr)
     let addrBytes = cast[ptr array[4, byte]](addr sa.sin_addr)
@@ -3109,7 +3128,7 @@ const
 proc dhtIterativeFindNode(client: TorrentClient, target: NodeId): CpsVoidFuture {.cps, nosinks.} =
   ## Iterative Kademlia find_node: fire queries in parallel per round,
   ## collect responses, follow returned nodes closer to the target.
-  var queriedKeys: seq[string]  ## Track "ip:port" of already-queried nodes
+  var queriedKeys: HashSet[string]  ## Track "ip:port" of already-queried nodes
   var discoveredNodes: seq[DhtNode]  ## Nodes discovered but not in routing table
   var round: int = 0
   while round < DhtIterativeMaxRounds:
@@ -3154,15 +3173,9 @@ proc dhtIterativeFindNode(client: TorrentClient, target: NodeId): CpsVoidFuture 
       let node: DhtNode = candidates[ci]
       ci += 1
       let nodeKey: string = node.ip & ":" & $node.port
-      var alreadyQueried: bool = false
-      var qi: int = 0
-      while qi < queriedKeys.len:
-        if queriedKeys[qi] == nodeKey:
-          alreadyQueried = true
-        qi += 1
-      if alreadyQueried:
+      if nodeKey in queriedKeys:
         continue
-      queriedKeys.add(nodeKey)
+      queriedKeys.incl(nodeKey)
       let transId: string = client.nextDhtTransId()
       let fnData: string = encodeFindNodeQuery(transId, client.dhtNodeId, target)
       var sendOk: bool = false
@@ -3240,7 +3253,7 @@ proc dhtIterativeGetPeers(client: TorrentClient, infoHash: NodeId): CpsFuture[in
   ## and follow returned nodes closer to the target.
   ## Returns the number of new peers found.
   ## Also caches tokens and sends announce_peer to nodes that gave us tokens.
-  var queriedKeys: seq[string]
+  var queriedKeys: HashSet[string]
   var totalPeersFound: int = 0
   var totalNodesFound: int = 0
   # Track nodes that gave us tokens for announce_peer
@@ -3291,15 +3304,9 @@ proc dhtIterativeGetPeers(client: TorrentClient, infoHash: NodeId): CpsFuture[in
       let node: DhtNode = candidates[ci]
       ci += 1
       let nodeKey: string = node.ip & ":" & $node.port
-      var alreadyQueried: bool = false
-      var qi: int = 0
-      while qi < queriedKeys.len:
-        if queriedKeys[qi] == nodeKey:
-          alreadyQueried = true
-        qi += 1
-      if alreadyQueried:
+      if nodeKey in queriedKeys:
         continue
-      queriedKeys.add(nodeKey)
+      queriedKeys.incl(nodeKey)
       let transId: string = client.nextDhtTransId()
       let gpData: string = encodeGetPeersQuery(transId, client.dhtNodeId, infoHash)
       var sendOk: bool = false
@@ -3771,8 +3778,6 @@ proc unchokeLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
     # No await in this phase — lock is held only for the snapshot.
     var unchokeKeys: seq[string]
     var chokeKeys: seq[string]
-    var peerKeys: seq[string] = @[]
-
     await lock(client.mtx)
     try:
       if client.state in {csDownloading, csSeeding}:
@@ -3781,8 +3786,7 @@ proc unchokeLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
         # Collect interested peers and their transfer rates
         var interestedPeers: seq[PeerRate]
 
-        for k in client.peers.keys:
-          peerKeys.add(k)
+        let peerKeys = client.snapshotPeerKeys()
 
         var ki: int = 0
         while ki < peerKeys.len:
@@ -3936,27 +3940,26 @@ proc handleIncomingPeer*(client: TorrentClient, stream: AsyncStream,
   let key = peerKey(ip, port)
   # Check if this incoming connection is from a holepunch target we're expecting.
   # This survives the outgoing peer's disconnect cleanup.
-  if key in client.holepunchExpected and epochTime() < client.holepunchExpected[key]:
-    # BEP 55 holepunch is uTP-only; only mark as holepunch if transport matches.
+  if client.hp.isExpected(key):
     if transport == ptUtp:
       peer.source = srcHolepunch
       btDebug "[HP] Incoming peer matched holepunchExpected: ", key
-    client.holepunchExpected.del(key)
+    client.hp.clearExpected(key)
   if key in client.peers:
     let existing = client.peers[key]
-    if existing.state == psConnecting and key in client.holepunchInFlight:
+    if existing.state == psConnecting and client.hp.isInFlight(key):
       # BEP 55 simultaneous-open race: our outbound attempt is still connecting
       # but the remote's inbound SYN arrived first. Accept the inbound winner.
       btDebug "[HP] Simultaneous-open race won by incoming for ", key
       existing.state = psDisconnected
       client.halfOpenCount = max(0, client.halfOpenCount - 1)
-      client.peers.del(key)
+      client.delPeer(key)
       if transport == ptUtp:
         peer.source = srcHolepunch
     else:
       stream.close()
       return
-  client.peers[key] = peer
+  client.setPeer(key, peer)
   client.halfOpenCount += 1
   discard runIncoming(peer, stream)
 
@@ -4042,7 +4045,7 @@ proc webSeedLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
           var markOff: int = 0
           while markOff < pieceLen:
             let blkLen = min(BlockSize, pieceLen - markOff)
-            if client.pieceMgr.pieces[pieceIdx].state notin {psVerified, psComplete}:
+            if client.pieceMgr.pieces[pieceIdx].state notin {psOptimistic, psVerified, psComplete}:
               var bi: int = 0
               while bi < client.pieceMgr.pieces[pieceIdx].blocks.len:
                 if client.pieceMgr.pieces[pieceIdx].blocks[bi].offset == markOff and
@@ -4088,23 +4091,27 @@ proc webSeedLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
             if complete:
               # Release mutex for SHA1 + disk I/O
               unlock(client.mtx)
-              let valid: bool = await verifyPieceAsync(client.pieceMgr, pieceIdx)
+              let valid: bool = await verifyPieceHash(client.pieceMgr, pieceIdx)
               var wsWriteError: string = ""
+              var wsPieceData: string = ""
               if valid:
-                let wsPieceData = client.pieceMgr.getPieceData(pieceIdx)
+                wsPieceData = client.pieceMgr.getPieceData(pieceIdx)
                 try:
                   client.storageMgr.writePiece(pieceIdx, wsPieceData)
                 except CatchableError as we:
                   wsWriteError = we.msg
               await lock(client.mtx)
-              if valid:
+              # Apply state under mutex — guard against concurrent optimistic transition
+              if client.pieceMgr.pieces[pieceIdx].state == psComplete:
+                client.pieceMgr.applyVerification(pieceIdx, valid)
+              if valid and client.pieceMgr.pieces[pieceIdx].state == psVerified:
                 if wsWriteError.len > 0:
                   client.pieceMgr.resetPiece(pieceIdx)
                 else:
-                  await client.events.send(ClientEvent(kind: cekPieceVerified, pieceIndex: pieceIdx))
-                  var wsPeerKeys: seq[string] = @[]
-                  for k in client.peers.keys:
-                    wsPeerKeys.add(k)
+                  await client.events.send(ClientEvent(kind: cekPieceVerified,
+                    pieceIndex: pieceIdx,
+                    pieceState: client.pieceMgr.pieces[pieceIdx].state))
+                  let wsPeerKeys = client.snapshotPeerKeys()
                   var wki: int = 0
                   while wki < wsPeerKeys.len:
                     let wpk: string = wsPeerKeys[wki]
@@ -4117,8 +4124,6 @@ proc webSeedLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
                   if client.pieceMgr.isComplete:
                     client.state = csSeeding
                     await client.events.send(ClientEvent(kind: cekCompleted))
-              else:
-                client.pieceMgr.resetPiece(pieceIdx)
         finally:
           unlock(client.mtx)
         ws.state = wssIdle
@@ -4252,9 +4257,7 @@ proc runPexUpdate(client: TorrentClient) =
   # Build current peer lists, separated by address family (BEP 11).
   var currentPeers: seq[tuple[ip: string, port: uint16]]
   var currentPeers6: seq[tuple[ip: string, port: uint16]]
-  var pexBuildKeys: seq[string]
-  for pxk in client.peers.keys:
-    pexBuildKeys.add(pxk)
+  let pexBuildKeys = client.snapshotPeerKeys()
   var pbi: int = 0
   while pbi < pexBuildKeys.len:
     let pbKey: string = pexBuildKeys[pbi]
@@ -4341,9 +4344,7 @@ proc runPexUpdate(client: TorrentClient) =
   let pexPayload: string = encodePexMessage(added, flags, dropped, added6, flags6, dropped6)
 
   # Send to all peers that support PEX.
-  var pexSendKeys: seq[string]
-  for psk in client.peers.keys:
-    pexSendKeys.add(psk)
+  let pexSendKeys = client.snapshotPeerKeys()
   var psi: int = 0
   while psi < pexSendKeys.len:
     let psKey: string = pexSendKeys[psi]
@@ -4375,7 +4376,6 @@ proc pexLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
       unlock(client.mtx)
 const
   HolepunchIntervalMs = 5000
-  HolepunchRetrySec = 30.0
 
 proc holepunchLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
   ## BEP 55: periodically request relay rendezvous for eligible PEX candidates.
@@ -4384,22 +4384,24 @@ proc holepunchLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
   if client.utpMgr == nil:
     return
 
+  var cleanupCounter: int = 0
   while client.state in {csDownloading, csSeeding} and not client.isPrivate:
     await cpsSleep(HolepunchIntervalMs)
     await lock(client.mtx)
     try:
+      # Periodic cleanup of expired backoffs/expectations (every ~60s)
+      cleanupCounter += 1
+      if cleanupCounter >= 12:  # 12 * 5000ms = 60s
+        cleanupCounter = 0
+        client.hp.cleanupExpired()
+
       if client.connectedPeerCount < client.config.maxPeers:
 
         let nowTs = epochTime()
         # Collect candidates: (targetKey, targetIp, targetPort, relay)
-        var candKeys: seq[string]
-        var candIps: seq[string]
-        var candPorts: seq[uint16]
-        var candRelays: seq[PeerConn]
+        var candidates: seq[tuple[key: string, ip: string, port: uint16, relay: PeerConn]]
         # Snapshot keys to avoid "table changed while iterating" in MT mode.
-        var pexKeys: seq[string]
-        for pk in client.pexPeerFlags.keys:
-          pexKeys.add(pk)
+        let pexKeys = safeTableKeys(client.pexPeerFlags)
         var pxi = 0
         while pxi < pexKeys.len:
           let pKey = pexKeys[pxi]
@@ -4419,51 +4421,46 @@ proc holepunchLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
             continue
           if pKey in client.failedPeers and (nowTs - client.failedPeers[pKey]) < PeerBackoffSec:
             continue
-          if pKey in client.holepunchBackoff and client.holepunchBackoff[pKey] > nowTs:
-            continue
-          if pKey in client.holepunchInFlight:
+          if client.hp.isBackedOff(pKey, nowTs) or client.hp.isInFlight(pKey):
             continue
           var candidateRelay: PeerConn = nil
           # Try stored relays first
-          if pKey in client.holepunchRelayByTarget:
-            for rk in client.holepunchRelayByTarget[pKey]:
-              if rk in client.peers:
-                let r = client.peers[rk]
-                if r.state == psActive and r.extensions.supportsExtension(UtHolepunchName):
-                  candidateRelay = r
-                  break
+          for rk in client.hp.relaysFor(pKey):
+            if rk in client.peers:
+              let r = client.peers[rk]
+              if r.state == psActive and r.extensions.supportsExtension(UtHolepunchName):
+                candidateRelay = r
+                break
           # All stored relays gone — try any connected peer that supports ut_holepunch.
           if candidateRelay == nil:
-            for altKey in client.peers.keys:
-              if altKey in client.peers:
-                let altPeer = client.peers[altKey]
-                if altPeer.state == psActive and
-                   altPeer.extensions.supportsExtension(UtHolepunchName):
-                  candidateRelay = altPeer
-                  if pKey notin client.holepunchRelayByTarget:
-                    client.holepunchRelayByTarget[pKey] = initHashSet[string]()
-                  client.holepunchRelayByTarget[pKey].incl(altKey)
-                  break
+            let relaySearchKeys = client.snapshotPeerKeys()
+            var rsi = 0
+            while rsi < relaySearchKeys.len:
+              let altKey = relaySearchKeys[rsi]
+              rsi += 1
+              if altKey notin client.peers:
+                continue
+              let altPeer = client.peers[altKey]
+              if altPeer.state == psActive and
+                 altPeer.extensions.supportsExtension(UtHolepunchName):
+                candidateRelay = altPeer
+                client.hp.recordRelay(pKey, altKey)
+                break
           if candidateRelay == nil:
             continue
-          candKeys.add(pKey)
-          candIps.add(ip)
-          candPorts.add(port)
-          candRelays.add(candidateRelay)
-          if candKeys.len >= 3:
+          candidates.add((key: pKey, ip: ip, port: port, relay: candidateRelay))
+          if candidates.len >= MaxCandidatesPerCycle:
             break
 
         var ci = 0
-        while ci < candKeys.len:
+        while ci < candidates.len:
           try:
-            btDebug "[HP] Sending rendezvous for ", candKeys[ci], " via relay ", peerKey(candRelays[ci].ip, candRelays[ci].port)
-            let rendezvousPayload = encodeHolepunchMsg(rendezvousMsg(candIps[ci], candPorts[ci]))
-            await candRelays[ci].sendExtended(UtHolepunchName, rendezvousPayload)
-            client.holepunchAttempts += 1
-            client.holepunchBackoff[candKeys[ci]] = nowTs + HolepunchRetrySec
-            client.holepunchExpected[candKeys[ci]] = nowTs + 30.0
+            btDebug "[HP] Sending rendezvous for ", candidates[ci].key, " via relay ", peerKey(candidates[ci].relay.ip, candidates[ci].relay.port)
+            let rendezvousPayload = encodeHolepunchMsg(rendezvousMsg(candidates[ci].ip, candidates[ci].port))
+            await candidates[ci].relay.sendExtended(UtHolepunchName, rendezvousPayload)
+            client.hp.recordAttempt(candidates[ci].key)
           except CatchableError as e:
-            client.holepunchLastError = e.msg
+            client.hp.lastError = e.msg
           ci += 1
 
     finally:
@@ -4500,9 +4497,7 @@ proc seederEvictionLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
           # Count seeders eligible for eviction (past grace period)
           var toEvict: seq[string]
 
-          var evictCheckKeys: seq[string]
-          for evk in client.peers.keys:
-            evictCheckKeys.add(evk)
+          let evictCheckKeys = client.snapshotPeerKeys()
           var evci: int = 0
           while evci < evictCheckKeys.len:
             let evk2: string = evictCheckKeys[evci]
@@ -4555,20 +4550,7 @@ proc start*(client: TorrentClient): CpsVoidFuture {.cps.} =
     # Check for existing data (skip if this is a fresh download)
     if existedBefore:
       let verified = client.storageMgr.verifyExistingFiles(client.metainfo.info)
-      var vi: int = 0
-      while vi < verified.len:
-        if verified[vi]:
-          var bj: int = 0
-          while bj < client.pieceMgr.pieces[vi].blocks.len:
-            client.pieceMgr.pieces[vi].blocks[bj].state = bsReceived
-            bj += 1
-          client.pieceMgr.pieces[vi].receivedBytes = client.pieceMgr.pieces[vi].totalLength
-          # Already verified on disk — set directly to psVerified (no in-memory re-hash)
-          client.pieceMgr.pieces[vi].state = psVerified
-          client.pieceMgr.completedCount += 1
-          client.pieceMgr.verifiedCount += 1
-          client.pieceMgr.downloaded += int64(client.pieceMgr.pieces[vi].totalLength)
-        vi += 1
+      client.restoreVerifiedPieces(verified)
 
     if client.pieceMgr.isComplete:
       client.state = csSeeding
@@ -4669,6 +4651,7 @@ proc start*(client: TorrentClient): CpsVoidFuture {.cps.} =
   let eventFut = eventLoop(client)
   let progressFut = progressLoop(client)
   let requestRefreshFut = requestRefreshLoop(client)
+  let optimisticVerifyFut = optimisticVerifyLoop(client)
   let connectFut = connectLoop(client)
   let acceptFut = acceptLoop(client)
   let utpAcceptFut = utpAcceptLoop(client)
@@ -4689,6 +4672,7 @@ proc start*(client: TorrentClient): CpsVoidFuture {.cps.} =
   trackerScrapeFut.cancel()
   progressFut.cancel()
   requestRefreshFut.cancel()
+  optimisticVerifyFut.cancel()
   connectFut.cancel()
   acceptFut.cancel()
   utpAcceptFut.cancel()
@@ -4710,18 +4694,7 @@ proc start*(client: TorrentClient): CpsVoidFuture {.cps.} =
     stopParams.uploaded = client.pieceMgr.uploaded
     stopParams.left = client.pieceMgr.bytesRemaining
 
-  var trackerUrls: seq[string]
-  if client.metainfo.announce.len > 0:
-    trackerUrls.add(client.metainfo.announce)
-  var tierIdx: int = 0
-  while tierIdx < client.metainfo.announceList.len:
-    let tier = client.metainfo.announceList[tierIdx]
-    var urlIdx: int = 0
-    while urlIdx < tier.len:
-      if tier[urlIdx] notin trackerUrls:
-        trackerUrls.add(tier[urlIdx])
-      inc urlIdx
-    inc tierIdx
+  let trackerUrls = collectTrackerUrls(client.metainfo)
   try:
     discard await announceToAll(trackerUrls, stopParams)
   except CatchableError:

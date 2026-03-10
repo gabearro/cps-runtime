@@ -6,38 +6,19 @@
 ##
 ## Workers park on a condition variable when no work is available.
 
-import std/[locks, cpuinfo, atomics, os]
+import std/[locks, cpuinfo, atomics, sysatomics, os]
 import ../runtime
 import ../private/chase_lev
 import ../private/mpmc_ring
 import ../private/mpsc_queue
-
-# Simple xorshift32 PRNG for random peer selection.
-# Avoids importing std/random which causes OpenSSL library conflicts on macOS.
-type XorShift32 = object
-  state: uint32
-
-proc initXorShift32(seed: int): XorShift32 =
-  result.state = uint32(seed)
-  if result.state == 0: result.state = 1  # must be non-zero
-
-proc next(rng: var XorShift32): uint32 =
-  var x = rng.state
-  x = x xor (x shl 13)
-  x = x xor (x shr 17)
-  x = x xor (x shl 5)
-  rng.state = x
-  result = x
-
-proc rand(rng: var XorShift32, maxVal: int): int =
-  result = int(rng.next() mod uint32(maxVal + 1))
+import ../private/xorshift
 
 type
   SchedulerTask* = proc() {.closure, gcsafe.}
 
   WorkerState = object
     deque: ChaseLevDeque[SchedulerTask]  ## Lock-free work-stealing deque
-    pinnedQueue: MpscQueue               ## Lock-free MPSC queue for worker-pinned tasks
+    pinnedQueue: MpscQueue[SchedulerTask]  ## Lock-free MPSC queue for worker-pinned tasks
     parked: bool
 
   WorkerArg = object
@@ -58,7 +39,7 @@ type
     parkedCount: Atomic[int]
 
   Scheduler* = ref object
-    obj*: ptr SchedulerObj
+    obj: ptr SchedulerObj
 
 # Thread-local worker index within the scheduler (for deque access).
 # Only meaningful when isSchedulerWorker is true.
@@ -68,12 +49,12 @@ proc popLocal(ws: ptr WorkerState): SchedulerTask {.inline.} =
   ## Owner: pop from local deque (LIFO, lock-free).
   ws.deque.pop()
 
-proc popGlobal(s: ptr SchedulerObj): SchedulerTask =
+proc popGlobal(s: ptr SchedulerObj): SchedulerTask {.inline.} =
   ## Pop from lock-free MPMC inject queue.
   var task: SchedulerTask = nil
   if s.injectQueue.tryDequeue(task):
     result = task
-    discard s.injectLen.fetchSub(1, moAcquireRelease)
+    discard s.injectLen.fetchSub(1, moRelaxed)
   else:
     result = nil
 
@@ -81,26 +62,19 @@ proc popPinned(ws: ptr WorkerState): SchedulerTask {.inline.} =
   let node = dequeue(ws.pinnedQueue)
   if node == nil:
     return nil
-  result = cast[SchedulerTask](node.callback)
+  result = node.payload
   freeNode(node)
 
-proc pinnedQueueHasPending(ws: ptr WorkerState): bool {.inline.} =
-  ## MPSC enqueue has a brief window where tail is advanced before prev.next
-  ## is linked. In that window isEmpty() can transiently read true even though
-  ## work is in flight, so also check head != tail.
-  if not isEmpty(ws.pinnedQueue):
-    return true
-  let head = ws.pinnedQueue.head
-  let tail = cast[ptr MpscNode](ws.pinnedQueue.tail.load(moAcquire))
-  result = head != tail
-
 proc tryReserveInjectSlot(s: ptr SchedulerObj): bool {.inline.} =
+  ## CAS-based admission control for the inject queue.
+  ## Separate from the ring's own capacity so producers get bounded backpressure
+  ## without entering the MPMC CAS loop.
   while true:
-    let cur = s.injectLen.load(moAcquire)
+    let cur = s.injectLen.load(moRelaxed)
     if cur >= s.maxGlobalQueue:
       return false
     var expected = cur
-    if s.injectLen.compareExchange(expected, cur + 1, moAcquireRelease, moAcquire):
+    if s.injectLen.compareExchange(expected, cur + 1, moAcquireRelease, moRelaxed):
       return true
 
 proc enqueueInjectTask(s: ptr SchedulerObj, task: SchedulerTask): bool {.inline.} =
@@ -131,7 +105,7 @@ proc tryEnqueueInjectTask(s: ptr SchedulerObj, task: SchedulerTask): bool {.inli
     return true
   # Should be rare: if the ring is transiently full despite reservation,
   # roll back the occupancy reservation.
-  discard s.injectLen.fetchSub(1, moAcquireRelease)
+  discard s.injectLen.fetchSub(1, moRelaxed)
   false
 
 proc enqueueInjectTaskBlocking(s: ptr SchedulerObj, task: SchedulerTask): bool =
@@ -141,7 +115,7 @@ proc enqueueInjectTaskBlocking(s: ptr SchedulerObj, task: SchedulerTask): bool =
       if s.enqueueInjectTask(task):
         s.wakeOneWorkerIfParked()
         return true
-      discard s.injectLen.fetchSub(1, moAcquireRelease)
+      discard s.injectLen.fetchSub(1, moRelaxed)
     # Queue saturation can happen after a missed wake race. Keep nudging one
     # parked worker so producers can't spin forever on a full inject queue.
     s.wakeOneWorkerIfParked()
@@ -170,6 +144,11 @@ proc workerMain(arg: WorkerArg) {.thread.} =
   let myState = s.workers[myIdx]
   var rng = initXorShift32(myIdx * 31 + 17)
 
+  template unparkAndUnlock() =
+    myState.parked = false
+    discard s.parkedCount.fetchSub(1, moAcquireRelease)
+    release(s.globalLock)
+
   while true:
     var task: SchedulerTask = nil
 
@@ -184,49 +163,43 @@ proc workerMain(arg: WorkerArg) {.thread.} =
     if task == nil:
       task = popGlobal(s)
 
-    # 3. Try stealing from a random peer (FIFO from front)
+    # 3. Steal from peers: random-start round-robin ensures every peer
+    #    is checked exactly once (vs pure random which can revisit peers).
     if task == nil and s.numWorkers > 1:
-      var attempts = s.numWorkers - 1
-      while task == nil and attempts > 0:
-        let victim = rng.rand(s.numWorkers - 2)
-        let victimIdx = if victim >= myIdx: victim + 1 else: victim
-        task = stealFrom(s.workers[victimIdx])
-        dec attempts
+      let start = rng.rand(s.numWorkers)
+      for i in 1 ..< s.numWorkers:
+        let victimIdx = (start + i) mod s.numWorkers
+        if victimIdx != myIdx:
+          task = stealFrom(s.workers[victimIdx])
+          if task != nil:
+            break
 
     if task != nil:
       {.cast(gcsafe).}:
         task()
       continue
 
-    # No work found - check shutdown before parking
+    # No work found — check shutdown before parking
     if s.shutdown.load(moAcquire):
       break
 
-    # Park: wait on global condition
+    # Park: wait on global condition.
+    # Mark parked before checking queues so producers can reliably see
+    # parkedCount > 0 and wake us for newly enqueued work.
     acquire(s.globalLock)
     myState.parked = true
     discard s.parkedCount.fetchAdd(1, moAcquireRelease)
-    # Mark parked before checking queues so producers can reliably see
-    # parkedCount > 0 and wake us for newly enqueued work.
     if s.injectLen.load(moAcquire) > 0:
-      myState.parked = false
-      discard s.parkedCount.fetchSub(1, moAcquireRelease)
-      release(s.globalLock)
+      unparkAndUnlock()
       continue
-    if pinnedQueueHasPending(myState):
-      myState.parked = false
-      discard s.parkedCount.fetchSub(1, moAcquireRelease)
-      release(s.globalLock)
+    if hasPending(myState.pinnedQueue):
+      unparkAndUnlock()
       continue
     if s.shutdown.load(moAcquire):
-      myState.parked = false
-      discard s.parkedCount.fetchSub(1, moAcquireRelease)
-      release(s.globalLock)
+      unparkAndUnlock()
       break
     wait(s.globalCond, s.globalLock)
-    myState.parked = false
-    discard s.parkedCount.fetchSub(1, moAcquireRelease)
-    release(s.globalLock)
+    unparkAndUnlock()
   currentWorkerId = -1
 
 proc newScheduler*(runtime: CpsRuntime, numWorkers: int = 0, maxGlobalQueue: int = 65536): Scheduler =
@@ -265,7 +238,9 @@ proc schedule*(s: Scheduler, task: SchedulerTask) =
     if ws.deque.push(task):
       # Local fan-out can create stealable work on one worker. Wake one parked
       # peer if there is backlog and at least one worker is parked.
-      if ws.deque.len() > 1 and obj.parkedCount.load(moAcquire) > 0:
+      # Check parkedCount first (likely cached) to avoid the deque.len() atomic
+      # loads on the thief-contended top cache line in the common case.
+      if obj.parkedCount.load(moAcquire) > 0 and ws.deque.len() > 1:
         obj.wakeOneWorkerIfParked()
     else:
       # Local deque overflow: prefer global queue fallback; if that is also
@@ -276,10 +251,9 @@ proc schedule*(s: Scheduler, task: SchedulerTask) =
         {.cast(gcsafe).}:
           task()
   else:
-    # External thread - lock-free push to inject queue + wake
-    if not obj.enqueueInjectTaskBlocking(task):
-      return
-    obj.wakeOneWorkerIfParked()
+    # External thread - lock-free push to inject queue + wake.
+    # enqueueInjectTaskBlocking already wakes a worker on success.
+    discard obj.enqueueInjectTaskBlocking(task)
 
 proc schedulePinned*(s: Scheduler, workerId: int, task: SchedulerTask): bool =
   ## Schedule a task to run on a specific worker's pinned inbox.
@@ -293,7 +267,7 @@ proc schedulePinned*(s: Scheduler, workerId: int, task: SchedulerTask): bool =
   let ws = obj.workers[workerId]
   if ws == nil:
     return false
-  let node = allocNode(cast[CrossThreadCallback](task))
+  let node = allocNode(task)
   enqueue(ws.pinnedQueue, node)
   obj.wakeAllWorkersIfParked()
   result = true
@@ -311,12 +285,11 @@ proc shutdownScheduler*(s: Scheduler) =
     joinThread(obj.threads[i])
 
   for i in 0 ..< obj.numWorkers:
+    # Drain remaining items so their ref counts are properly released
+    # before the buffer is freed. All workers have stopped at this point.
+    drainAll(obj.workers[i].deque)
     destroyChaseLevDeque(obj.workers[i].deque)
-    while true:
-      let node = dequeue(obj.workers[i].pinnedQueue)
-      if node == nil:
-        break
-      freeNode(node)
+    discardAll(obj.workers[i].pinnedQueue)
     deallocShared(obj.workers[i])
 
   deinitMpmcRingQueue(obj.injectQueue)

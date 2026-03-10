@@ -14,7 +14,7 @@
 when not defined(posix):
   {.error: "Signal handling requires POSIX. Not available on Windows.".}
 
-import std/[posix, nativesockets]
+import std/[posix, os]
 import ../runtime
 import ../eventloop
 
@@ -27,17 +27,25 @@ const MaxSignals = 64
 var signalPipeFds: array[2, cint] = [-1.cint, -1.cint]  # [readEnd, writeEnd]
 var signalHandlers: array[MaxSignals, seq[SignalHandler]]
 var signalInitialized: bool = false
-
-# One-shot handlers registered via waitForSignal. After firing once,
-# they are removed to prevent accumulation.
 var oneShotHandlers: array[MaxSignals, seq[SignalHandler]]
 
 # ============================================================
-# Internal: install/uninstall POSIX sigaction
+# Internal helpers
 # ============================================================
 
-proc hasAnyHandler(sig: cint): bool =
-  signalHandlers[sig].len > 0 or oneShotHandlers[sig].len > 0
+proc setNonBlocking(fd: cint) =
+  let flags = posix.fcntl(fd, F_GETFL)
+  if flags < 0:
+    raiseOSError(osLastError())
+  if posix.fcntl(fd, F_SETFL, flags or O_NONBLOCK) < 0:
+    raiseOSError(osLastError())
+
+proc restoreDefault(sig: cint) =
+  var sa: Sigaction
+  sa.sa_handler = SIG_DFL
+  sa.sa_flags = 0
+  discard sigemptyset(sa.sa_mask)
+  discard sigaction(sig, sa, nil)
 
 # ============================================================
 # POSIX signal trampoline (async-signal-safe)
@@ -45,32 +53,48 @@ proc hasAnyHandler(sig: cint): bool =
 
 proc signalTrampoline(sig: cint) {.noconv.} =
   ## POSIX signal handler. Only uses async-signal-safe write().
-  let b = uint8(sig)
-  discard posix.write(signalPipeFds[1], unsafeAddr b, 1)
+  if sig >= 0 and sig < MaxSignals:
+    let b = uint8(sig)
+    discard posix.write(signalPipeFds[1], unsafeAddr b, 1)
+
+proc installTrampoline(sig: cint) =
+  var sa: Sigaction
+  sa.sa_handler = signalTrampoline
+  sa.sa_flags = SA_RESTART
+  discard sigemptyset(sa.sa_mask)
+  discard sigaction(sig, sa, nil)
+
+proc hasAnyHandler(sig: cint): bool =
+  signalHandlers[sig].len > 0 or oneShotHandlers[sig].len > 0
+
+proc ensureTrampoline(sig: cint) =
+  ## Install the POSIX sigaction trampoline if no handler exists yet.
+  if not hasAnyHandler(sig):
+    installTrampoline(sig)
 
 # ============================================================
 # Pipe read callback for the event loop
 # ============================================================
 
 proc drainSignalPipe() =
-  ## Read all pending signal bytes from the pipe and dispatch handlers.
+  ## Read all pending signal bytes from the pipe and schedule handlers.
   var buf: array[64, uint8]
+  let loop = getEventLoop()
   while true:
     let n = posix.read(signalPipeFds[0], addr buf[0], buf.len.cint)
     if n <= 0:
       break
     for i in 0 ..< n:
       let sig = cint(buf[i])
-      if sig >= 0 and sig < MaxSignals:
-        # Fire persistent handlers
+      if sig < MaxSignals:
         for handler in signalHandlers[sig]:
-          handler()
-        # Fire and remove one-shot handlers
+          let h = handler
+          loop.scheduleCallback(h)
         if oneShotHandlers[sig].len > 0:
-          let oneShots = oneShotHandlers[sig]
-          oneShotHandlers[sig] = @[]
+          let oneShots = move(oneShotHandlers[sig])
           for handler in oneShots:
-            handler()
+            let h = handler
+            loop.scheduleCallback(h)
 
 # ============================================================
 # Init / Deinit
@@ -82,26 +106,15 @@ proc initSignalHandling*() =
   if signalInitialized:
     return
 
-  # Create the pipe
   var pipeFds: array[2, cint]
   if posix.pipe(pipeFds) != 0:
     raise newException(OSError, "Failed to create signal pipe")
   signalPipeFds[0] = pipeFds[0]  # read end
   signalPipeFds[1] = pipeFds[1]  # write end
 
-  # Set both ends to non-blocking
-  let rflags = posix.fcntl(signalPipeFds[0], F_GETFL, 0)
-  discard posix.fcntl(signalPipeFds[0], F_SETFL, rflags or O_NONBLOCK)
-  let wflags = posix.fcntl(signalPipeFds[1], F_GETFL, 0)
-  discard posix.fcntl(signalPipeFds[1], F_SETFL, wflags or O_NONBLOCK)
+  setNonBlocking(signalPipeFds[0])
+  setNonBlocking(signalPipeFds[1])
 
-  # Clear all handler lists
-  for i in 0 ..< MaxSignals:
-    signalHandlers[i] = @[]
-    oneShotHandlers[i] = @[]
-
-  # Register read end with event loop. The selector keeps the registration
-  # active (persistent), so the callback fires each time data is available.
   let loop = getEventLoop()
   loop.registerRead(signalPipeFds[0].int, proc() {.closure.} =
     drainSignalPipe()
@@ -110,30 +123,21 @@ proc initSignalHandling*() =
   signalInitialized = true
 
 proc deinitSignalHandling*() =
-  ## Clean up signal handling: restore default signal handlers,
-  ## unregister from the event loop, close the pipe.
-  ## Completes all pending waitForSignal futures so they don't dangle.
+  ## Clean up: restore default signal handlers, unregister from the
+  ## event loop, close the pipe. Completes pending waitForSignal futures.
   if not signalInitialized:
     return
 
-  # Complete all pending one-shot futures so they don't dangle.
-  # The handler checks `if not fut.finished` so double-complete is safe.
   for sig in 0 ..< MaxSignals:
+    # Fire one-shot handlers so pending futures don't dangle
     for handler in oneShotHandlers[sig]:
       handler()
     oneShotHandlers[sig] = @[]
 
-  # Restore SIG_DFL for any signals we installed handlers for
-  for sig in 0 ..< MaxSignals:
     if signalHandlers[sig].len > 0:
-      var sa: Sigaction
-      sa.sa_handler = SIG_DFL
-      discard sigemptyset(sa.sa_mask)
-      sa.sa_flags = 0
-      discard sigaction(sig.cint, sa, nil)
+      restoreDefault(sig.cint)
       signalHandlers[sig] = @[]
 
-  # Unregister from event loop and close pipe fds
   if signalPipeFds[0] >= 0:
     try:
       let loop = getEventLoop()
@@ -152,21 +156,13 @@ proc deinitSignalHandling*() =
 # ============================================================
 
 proc onSignal*(sig: cint, handler: SignalHandler) =
-  ## Register a handler for the given signal. Multiple handlers per signal
-  ## are supported. The POSIX sigaction is installed on the first handler.
+  ## Register a persistent handler for the given signal. Multiple handlers
+  ## per signal are supported. The POSIX sigaction is installed on first use.
   assert signalInitialized, "Call initSignalHandling() first"
   assert sig >= 0 and sig < MaxSignals, "Signal number out of range"
 
-  let isFirst = not hasAnyHandler(sig)
+  ensureTrampoline(sig)
   signalHandlers[sig].add(handler)
-
-  # Install the POSIX signal handler if this is the first handler for this signal
-  if isFirst:
-    var sa: Sigaction
-    sa.sa_handler = signalTrampoline
-    sa.sa_flags = SA_RESTART
-    discard sigemptyset(sa.sa_mask)
-    discard sigaction(sig, sa, nil)
 
 proc removeSignalHandlers*(sig: cint) =
   ## Remove all handlers for the given signal and restore SIG_DFL.
@@ -175,13 +171,7 @@ proc removeSignalHandlers*(sig: cint) =
 
   signalHandlers[sig] = @[]
   oneShotHandlers[sig] = @[]
-
-  # Restore default signal handling
-  var sa: Sigaction
-  sa.sa_handler = SIG_DFL
-  discard sigemptyset(sa.sa_mask)
-  sa.sa_flags = 0
-  discard sigaction(sig, sa, nil)
+  restoreDefault(sig)
 
 # ============================================================
 # Future-based signal waiting
@@ -190,32 +180,26 @@ proc removeSignalHandlers*(sig: cint) =
 proc waitForSignal*(sig: cint): CpsVoidFuture =
   ## Returns a future that completes when the given signal is received.
   ## One-shot: the handler is removed after the signal fires.
+  assert signalInitialized, "Call initSignalHandling() first"
+  assert sig >= 0 and sig < MaxSignals, "Signal number out of range"
+
   let fut = newCpsVoidFuture()
 
-  let isFirst = not hasAnyHandler(sig)
+  ensureTrampoline(sig)
 
   proc handler() {.closure, gcsafe.} =
     {.cast(gcsafe).}:
       if not fut.finished:
         fut.complete()
 
-  # Register only in oneShotHandlers (not signalHandlers) to avoid double-fire
   oneShotHandlers[sig].add(handler)
-
-  # Install the POSIX signal handler if this is the first handler for this signal
-  if isFirst:
-    var sa: Sigaction
-    sa.sa_handler = signalTrampoline
-    sa.sa_flags = SA_RESTART
-    discard sigemptyset(sa.sa_mask)
-    discard sigaction(sig, sa, nil)
-
   result = fut
 
 proc waitForShutdown*(): CpsVoidFuture =
   ## Returns a future that completes when SIGINT or SIGTERM is received.
-  ## Installs handlers for both signals; the future completes on whichever
-  ## fires first.
+  ## One-shot: handlers are removed after the first signal fires.
+  assert signalInitialized, "Call initSignalHandling() first"
+
   let fut = newCpsVoidFuture()
 
   proc handler() {.closure, gcsafe.} =
@@ -223,6 +207,10 @@ proc waitForShutdown*(): CpsVoidFuture =
       if not fut.finished:
         fut.complete()
 
-  onSignal(SIGINT, handler)
-  onSignal(SIGTERM, handler)
+  ensureTrampoline(SIGINT)
+  oneShotHandlers[SIGINT].add(handler)
+
+  ensureTrampoline(SIGTERM)
+  oneShotHandlers[SIGTERM].add(handler)
+
   result = fut

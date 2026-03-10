@@ -4,7 +4,8 @@
 ## rendezvous message to a relay, which forwards connect messages to both
 ## sides, prompting simultaneous uTP connection attempts.
 
-import std/strutils
+import std/[strutils, tables, sets, times, math]
+import utils
 
 const
   UtHolepunchName* = "ut_holepunch"
@@ -115,7 +116,7 @@ proc decodeHolepunchMsg*(data: string): HolepunchMsg =
       let lo = data[offset + i*2 + 1].byte
       let val = (uint16(hi) shl 8) or uint16(lo)
       parts.add(val.int.toHex(4).toLowerAscii())
-    result.ip = parts.join(":")
+    result.ip = canonicalizeIpv6(parts.join(":"))
     offset += 16
 
   # Port
@@ -166,3 +167,172 @@ proc errorName*(code: uint32): string =
   of HpErrNoSupport: "NoSupport"
   of HpErrNoSelf: "NoSelf"
   else: "Unknown(" & $code & ")"
+
+# ---------------------------------------------------------------------------
+# HolepunchState: consolidated holepunch bookkeeping
+# ---------------------------------------------------------------------------
+
+const
+  DefaultRetrySec* = 30.0        ## Initial backoff after a rendezvous attempt
+  DefaultErrorBackoffSec* = 90.0 ## Backoff after receiving an error from relay
+  BackoffMultiplier* = 1.5       ## Exponential growth per consecutive failure
+  MaxBackoffSec* = 600.0         ## Ceiling for exponential backoff (10 min)
+  DefaultExpectedSec* = 30.0     ## Window for expecting an incoming holepunch
+  MaxCandidatesPerCycle* = 3     ## Max rendezvous candidates per loop cycle
+  MaxRelaysPerTarget* = 6        ## Cap relay set size per target
+
+type
+  HolepunchState* = object
+    relayByTarget: Table[string, HashSet[string]]  ## target key -> relay peer keys
+    targetsByRelay: Table[string, HashSet[string]]  ## relay key -> target keys (inverse index)
+    inFlight: HashSet[string]                       ## targets currently being direct-attempted
+    expected: Table[string, float]                  ## key -> incoming-connection expiry epoch
+    backoff: Table[string, float]                   ## key -> retry-after epoch
+    retryCount: Table[string, int]                  ## key -> consecutive failure count
+    attempts*: int
+    successes*: int
+    lastError*: string
+
+proc initHolepunchState*(): HolepunchState =
+  HolepunchState(
+    relayByTarget: initTable[string, HashSet[string]](),
+    targetsByRelay: initTable[string, HashSet[string]](),
+    inFlight: initHashSet[string](),
+    expected: initTable[string, float](),
+    backoff: initTable[string, float](),
+    retryCount: initTable[string, int]()
+  )
+
+proc isBackedOff*(hp: HolepunchState, key: string): bool =
+  if key in hp.backoff:
+    return hp.backoff[key] > epochTime()
+
+proc isBackedOff*(hp: HolepunchState, key: string, nowTs: float): bool =
+  if key in hp.backoff:
+    return hp.backoff[key] > nowTs
+
+proc isInFlight*(hp: HolepunchState, key: string): bool =
+  key in hp.inFlight
+
+proc isExpected*(hp: HolepunchState, key: string): bool =
+  if key in hp.expected:
+    return epochTime() < hp.expected[key]
+
+proc clearInFlight*(hp: var HolepunchState, key: string) =
+  hp.inFlight.excl(key)
+
+proc clearExpected*(hp: var HolepunchState, key: string) =
+  hp.expected.del(key)
+
+proc markInFlight*(hp: var HolepunchState, key: string) =
+  hp.inFlight.incl(key)
+  hp.expected[key] = epochTime() + DefaultExpectedSec
+
+proc recordSuccess*(hp: var HolepunchState, key: string) =
+  ## Record a successful holepunch connection. Resets backoff state.
+  hp.successes += 1
+  hp.backoff.del(key)
+  hp.expected.del(key)
+  hp.inFlight.excl(key)
+  hp.retryCount.del(key)
+
+proc recordError*(hp: var HolepunchState, key: string, errCode: uint32) =
+  ## Record a holepunch error from a relay. Applies exponential backoff.
+  hp.lastError = errorName(errCode)
+  hp.inFlight.excl(key)
+  let count = hp.retryCount.getOrDefault(key, 0) + 1
+  hp.retryCount[key] = count
+  let backoff = min(DefaultErrorBackoffSec * pow(BackoffMultiplier,
+                    float(count - 1)), MaxBackoffSec)
+  hp.backoff[key] = epochTime() + backoff
+
+proc recordAttempt*(hp: var HolepunchState, key: string) =
+  ## Record a rendezvous attempt. Applies exponential backoff per target.
+  hp.attempts += 1
+  let count = hp.retryCount.getOrDefault(key, 0) + 1
+  hp.retryCount[key] = count
+  let backoff = min(DefaultRetrySec * pow(BackoffMultiplier,
+                    float(count - 1)), MaxBackoffSec)
+  hp.backoff[key] = epochTime() + backoff
+  hp.expected[key] = epochTime() + DefaultExpectedSec
+
+proc recordDisconnect*(hp: var HolepunchState, key: string) =
+  ## Clean up all holepunch state for a disconnected peer.
+  ## Uses inverse index for O(targets-for-relay) cleanup instead of O(all-targets).
+  hp.inFlight.excl(key)
+  hp.backoff.del(key)
+  hp.retryCount.del(key)
+  hp.expected.del(key)
+  # Remove this peer as a relay using the inverse index
+  if key in hp.targetsByRelay:
+    let targets = hp.targetsByRelay[key]
+    for target in targets:
+      if target in hp.relayByTarget:
+        hp.relayByTarget[target].excl(key)
+        if hp.relayByTarget[target].len == 0:
+          hp.relayByTarget.del(target)
+    hp.targetsByRelay.del(key)
+
+proc recordRelay*(hp: var HolepunchState, targetKey: string, relayKey: string) =
+  ## Record that `relayKey` can relay for `targetKey`.
+  ## Maintains both forward and inverse indexes. Evicts oldest relay
+  ## when MaxRelaysPerTarget is exceeded.
+  if targetKey notin hp.relayByTarget:
+    hp.relayByTarget[targetKey] = initHashSet[string]()
+  hp.relayByTarget[targetKey].incl(relayKey)
+  # Evict excess relays
+  while hp.relayByTarget[targetKey].len > MaxRelaysPerTarget:
+    var oldest: string
+    for rk in hp.relayByTarget[targetKey]:
+      oldest = rk
+      break
+    hp.relayByTarget[targetKey].excl(oldest)
+    if oldest in hp.targetsByRelay:
+      hp.targetsByRelay[oldest].excl(targetKey)
+      if hp.targetsByRelay[oldest].len == 0:
+        hp.targetsByRelay.del(oldest)
+  # Maintain inverse index
+  if relayKey notin hp.targetsByRelay:
+    hp.targetsByRelay[relayKey] = initHashSet[string]()
+  hp.targetsByRelay[relayKey].incl(targetKey)
+
+proc removeTarget*(hp: var HolepunchState, targetKey: string) =
+  ## Remove all state for a target peer.
+  if targetKey in hp.relayByTarget:
+    let relays = hp.relayByTarget[targetKey]
+    for rk in relays:
+      if rk in hp.targetsByRelay:
+        hp.targetsByRelay[rk].excl(targetKey)
+        if hp.targetsByRelay[rk].len == 0:
+          hp.targetsByRelay.del(rk)
+    hp.relayByTarget.del(targetKey)
+  hp.backoff.del(targetKey)
+  hp.retryCount.del(targetKey)
+  hp.expected.del(targetKey)
+  hp.inFlight.excl(targetKey)
+
+proc cleanupExpired*(hp: var HolepunchState) =
+  ## Remove stale entries to prevent unbounded table growth.
+  ## Call periodically (e.g., every 60s).
+  let now = epochTime()
+  var expiredBackoffs: seq[string]
+  for k, v in hp.backoff:
+    if v <= now:
+      expiredBackoffs.add(k)
+  for k in expiredBackoffs:
+    hp.backoff.del(k)
+    # Also clean retryCount for expired backoffs with no other state
+    if k notin hp.inFlight and k notin hp.expected:
+      hp.retryCount.del(k)
+  var expiredExpected: seq[string]
+  for k, v in hp.expected:
+    if v <= now:
+      expiredExpected.add(k)
+  for k in expiredExpected:
+    hp.expected.del(k)
+
+iterator relaysFor*(hp: HolepunchState, targetKey: string): string =
+  ## Yield all relay peer keys for a given target.
+  if targetKey in hp.relayByTarget:
+    for rk in hp.relayByTarget[targetKey]:
+      yield rk

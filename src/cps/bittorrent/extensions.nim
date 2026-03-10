@@ -9,6 +9,11 @@ import bencode
 
 const
   ExtHandshakeId* = 0'u8  ## Extension handshake message ID
+  MaxExtensionId = 254'u8  ## Max usable ID (0 reserved for handshake, 255 for safety)
+
+  # Well-known extension names
+  ExtUploadOnly* = "upload_only"   ## BEP 21
+  ExtLtDontHave* = "lt_donthave"   ## BEP 54
 
 type
   ExtensionId* = uint8
@@ -18,8 +23,8 @@ type
     localIds: Table[string, ExtensionId]    ## name -> our local ID
     remoteIds: Table[string, ExtensionId]   ## name -> their remote ID
     nextId: ExtensionId
-    reverseLocalIds: Table[ExtensionId, string]  ## local ID -> name (reverse mapping)
-    reverseRemoteIds: Table[ExtensionId, string] ## remote ID -> name (reverse mapping)
+    localNames: array[256, string]   ## local ID -> name (O(1) reverse lookup)
+    remoteNames: array[256, string]  ## remote ID -> name (O(1) reverse lookup)
     clientName*: string
     metadataSize*: int  ## From remote handshake (BEP 9)
     yourip*: string     ## Our external IP (from remote)
@@ -31,19 +36,20 @@ proc newExtensionRegistry*(): ExtensionRegistry =
   ExtensionRegistry(
     localIds: initTable[string, ExtensionId](),
     remoteIds: initTable[string, ExtensionId](),
-    reverseLocalIds: initTable[ExtensionId, string](),
-    reverseRemoteIds: initTable[ExtensionId, string](),
     nextId: 1,  # 0 is reserved for handshake
     reqq: 250   # default
   )
 
 proc registerExtension*(reg: var ExtensionRegistry, name: string): ExtensionId =
   ## Register a local extension. Returns the local ID assigned.
-  if name in reg.localIds:
-    return reg.localIds[name]
+  let existing = reg.localIds.getOrDefault(name, 0)
+  if existing != 0:
+    return existing
+  if reg.nextId > MaxExtensionId:
+    raise newException(ValueError, "extension ID pool exhausted (max 254)")
   let id = reg.nextId
   reg.localIds[name] = id
-  reg.reverseLocalIds[id] = name
+  reg.localNames[id] = name
   reg.nextId += 1
   return id
 
@@ -57,15 +63,16 @@ proc remoteId*(reg: ExtensionRegistry, name: string): ExtensionId =
 
 proc supportsExtension*(reg: ExtensionRegistry, name: string): bool =
   ## Check if the remote peer supports a given extension.
-  name in reg.remoteIds and reg.remoteIds[name] != 0
+  ## ID 0 means the peer explicitly disabled the extension (BEP 10).
+  reg.remoteIds.getOrDefault(name, 0) != 0
 
 proc lookupLocalName*(reg: ExtensionRegistry, id: ExtensionId): string =
   ## Look up the extension name for a local ID. Returns "" if not found.
-  reg.reverseLocalIds.getOrDefault(id, "")
+  reg.localNames[id]
 
 proc lookupRemoteName*(reg: ExtensionRegistry, id: ExtensionId): string =
   ## Look up the extension name for a remote ID. Returns "" if not found.
-  reg.reverseRemoteIds.getOrDefault(id, "")
+  reg.remoteNames[id]
 
 iterator localExtensions*(reg: ExtensionRegistry): tuple[name: string, id: ExtensionId] =
   ## Iterate over locally registered extensions.
@@ -111,40 +118,23 @@ proc decodeExtHandshake*(reg: var ExtensionRegistry, payload: string) =
   let mNode = root.getOrDefault("m")
   if mNode != nil and mNode.kind == bkDict:
     reg.remoteIds.clear()
-    reg.reverseRemoteIds.clear()
+    reg.remoteNames = default(array[256, string])
     for key in mNode.dictKeys:
       let val = mNode.getOrDefault(key)
       if val != nil and val.kind == bkInt:
         let id = val.intVal.uint8
         reg.remoteIds[key] = id
-        reg.reverseRemoteIds[id] = key
+        reg.remoteNames[id] = key
 
-  # Parse metadata_size (BEP 9)
-  let msNode = root.getOrDefault("metadata_size")
-  if msNode != nil and msNode.kind == bkInt:
-    reg.metadataSize = msNode.intVal.int
+  reg.metadataSize = root.optInt("metadata_size").int
+  reg.clientName = root.optStr("v")
+  reg.yourip = root.optStr("yourip")
+  reg.uploadOnly = root.optInt("upload_only") != 0
 
-  # Parse listen port (BEP 10 "p")
-  let pNode = root.getOrDefault("p")
-  if pNode != nil and pNode.kind == bkInt and pNode.intVal > 0 and pNode.intVal <= 65535:
-    reg.remoteListenPort = pNode.intVal.uint16
+  let reqq = root.optInt("reqq").int
+  if reqq > 0:
+    reg.reqq = reqq
 
-  # Parse client name
-  let vNode = root.getOrDefault("v")
-  if vNode != nil and vNode.kind == bkStr:
-    reg.clientName = vNode.strVal
-
-  # Parse yourip
-  let ipNode = root.getOrDefault("yourip")
-  if ipNode != nil and ipNode.kind == bkStr:
-    reg.yourip = ipNode.strVal
-
-  # Parse reqq
-  let rqNode = root.getOrDefault("reqq")
-  if rqNode != nil and rqNode.kind == bkInt:
-    reg.reqq = rqNode.intVal.int
-
-  # Parse upload_only (BEP 21)
-  let uoNode = root.getOrDefault("upload_only")
-  if uoNode != nil and uoNode.kind == bkInt:
-    reg.uploadOnly = uoNode.intVal != 0
+  let port = root.optInt("p")
+  if port > 0 and port <= 65535:
+    reg.remoteListenPort = port.uint16

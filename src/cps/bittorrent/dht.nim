@@ -3,7 +3,7 @@
 ## Implements the Kademlia-based DHT for trackerless peer discovery.
 ## Supports: ping, find_node, get_peers, announce_peer.
 
-import std/[tables, algorithm, times, strutils, hashes]
+import std/[tables, times, strutils, hashes]
 
 import utils
 import bencode
@@ -17,6 +17,7 @@ const
   TokenLifetime* = 600  ## Token validity in seconds (10 min)
   BucketRefreshInterval* = 900  ## Refresh buckets every 15 min
   MaxTokenAge* = 600
+  MaxPeersPerInfoHash = 100  ## Max stored peers per info hash
 
 type
   NodeId* = array[20, byte]
@@ -94,6 +95,12 @@ proc `==`*(a, b: NodeId): bool =
     if a[i] != b[i]: return false
   return true
 
+proc `<=`*(a, b: NodeId): bool =
+  for i in 0 ..< NodeIdLen:
+    if a[i] < b[i]: return true
+    if a[i] > b[i]: return false
+  return true  # Equal
+
 proc hash*(id: NodeId): Hash =
   var h: Hash = 0
   for b in id:
@@ -119,9 +126,17 @@ proc generateNodeId*(): NodeId =
   for i in 0 ..< NodeIdLen:
     result[i] = byte(btRandU32() and 0xFF)
 
-proc isIpv6*(ip: string): bool =
-  ## Quick check: IPv6 addresses contain colons.
-  ':' in ip
+
+proc nodeIdToStr*(id: NodeId): string =
+  ## Convert a NodeId to a 20-byte binary string (for KRPC encoding).
+  result = newStringOfCap(NodeIdLen)
+  for b in id:
+    result.add(char(b))
+
+proc strToNodeId*(s: string): NodeId =
+  ## Convert a 20-byte binary string to a NodeId.
+  assert s.len == NodeIdLen
+  copyMem(addr result[0], unsafeAddr s[0], NodeIdLen)
 
 # BEP 42: DHT Security Extension
 
@@ -223,7 +238,7 @@ proc newRoutingTable*(ownId: NodeId): RoutingTable =
 proc findBucket(rt: RoutingTable, id: NodeId): int =
   ## Find the bucket that should contain this node ID.
   for i in 0 ..< rt.buckets.len:
-    if id < rt.buckets[i].rangeEnd or id == rt.buckets[i].rangeEnd:
+    if id <= rt.buckets[i].rangeEnd:
       return i
   return rt.buckets.len - 1
 
@@ -306,7 +321,7 @@ proc addNodeImpl(rt: var RoutingTable, node: DhtNode, depth: int): bool =
     # Redistribute nodes
     var keep: seq[DhtNode]
     for n in bucket.nodes:
-      if n.id < midPlusOne or n.id == mid:
+      if n.id <= mid:
         keep.add(n)
       else:
         newBucket.nodes.add(n)
@@ -332,23 +347,29 @@ proc addNode*(rt: var RoutingTable, node: DhtNode): bool =
   rt.addNodeImpl(node, 0)
 
 proc findClosest*(rt: RoutingTable, target: NodeId, count: int = K): seq[DhtNode] =
-  ## Find the K closest nodes to a target ID.
-  var allNodes: seq[DhtNode]
+  ## Find the K closest nodes to a target ID using partial selection.
+  ## O(n·K) instead of O(n log n) full sort — K is typically 8.
+  result = newSeqOfCap[DhtNode](count)
+  var resultDists = newSeqOfCap[NodeId](count)
   for bucket in rt.buckets:
     for node in bucket.nodes:
-      allNodes.add(node)
-
-  # Sort by XOR distance to target
-  allNodes.sort(proc(a, b: DhtNode): int =
-    let da = xorDistance(a.id, target)
-    let db = xorDistance(b.id, target)
-    if da < db: -1
-    elif db < da: 1
-    else: 0
-  )
-
-  let n = min(count, allNodes.len)
-  return allNodes[0 ..< n]
+      let dist = xorDistance(node.id, target)
+      if result.len < count:
+        # Insert maintaining sorted order (small K, so linear insert is fine)
+        var pos = result.len
+        while pos > 0 and dist < resultDists[pos - 1]:
+          dec pos
+        result.insert(node, pos)
+        resultDists.insert(dist, pos)
+      elif dist < resultDists[^1]:
+        # Replace the farthest node
+        var pos = result.len - 1
+        while pos > 0 and dist < resultDists[pos - 1]:
+          dec pos
+        result.insert(node, pos)
+        resultDists.insert(dist, pos)
+        result.setLen(count)
+        resultDists.setLen(count)
 
 proc markFailed*(rt: var RoutingTable, id: NodeId) =
   ## Mark a node as having failed a query.
@@ -393,42 +414,35 @@ proc leastRecentlySeenNode*(rt: RoutingTable, bucketIdx: int): DhtNode =
 proc encodeCompactNode*(node: CompactNodeInfo): string =
   ## Encode a node as 26 bytes: 20 byte id + 4 byte IP + 2 byte port (IPv4).
   result = newStringOfCap(26)
-  for b in node.id:
+  result.add(nodeIdToStr(node.id))
+  let ipBytes = parseIpv4(node.ip)
+  for b in ipBytes:
     result.add(char(b))
-  let parts = node.ip.split('.')
-  if parts.len == 4:
-    for p in parts:
-      result.add(char(parseInt(p).byte))
-  else:
-    for i in 0 ..< 4:
-      result.add(char(0))
-  result.add(char((node.port shr 8).byte))
-  result.add(char((node.port and 0xFF).byte))
+  writeUint16BE(result, node.port)
 
 proc encodeCompactNode6*(node: CompactNodeInfo): string =
   ## Encode a node as 38 bytes: 20 byte id + 16 byte IPv6 + 2 byte port (BEP 32).
   result = newStringOfCap(38)
-  for b in node.id:
-    result.add(char(b))
+  result.add(nodeIdToStr(node.id))
   let words = parseIpv6Words(node.ip)
   for w in words:
-    result.add(char((w shr 8) and 0xFF))
-    result.add(char(w and 0xFF))
-  result.add(char((node.port shr 8).byte))
-  result.add(char((node.port and 0xFF).byte))
+    writeUint16BE(result, w)
+  writeUint16BE(result, node.port)
 
 proc decodeCompactNodes*(data: string): seq[CompactNodeInfo] =
   ## Decode compact node info (26 bytes per node, IPv4).
   if data.len mod 26 != 0:
     return @[]
   let count = data.len div 26
+  result = newSeqOfCap[CompactNodeInfo](count)
   for i in 0 ..< count:
     let offset = i * 26
     var node: CompactNodeInfo
-    copyMem(addr node.id[0], unsafeAddr data[offset], 20)
-    node.ip = $data[offset+20].byte & "." & $data[offset+21].byte & "." &
-              $data[offset+22].byte & "." & $data[offset+23].byte
-    node.port = (uint16(data[offset+24].byte) shl 8) or uint16(data[offset+25].byte)
+    copyMem(addr node.id[0], unsafeAddr data[offset], NodeIdLen)
+    var ipBytes: array[4, byte]
+    copyMem(addr ipBytes[0], unsafeAddr data[offset + NodeIdLen], 4)
+    node.ip = ipv4ToString(ipBytes)
+    node.port = readUint16BE(data, offset + 24)
     result.add(node)
 
 proc decodeCompactNodes6*(data: string): seq[CompactNodeInfo] =
@@ -436,19 +450,21 @@ proc decodeCompactNodes6*(data: string): seq[CompactNodeInfo] =
   if data.len mod 38 != 0:
     return @[]
   let count = data.len div 38
+  result = newSeqOfCap[CompactNodeInfo](count)
   for i in 0 ..< count:
     let offset = i * 38
     var node: CompactNodeInfo
-    copyMem(addr node.id[0], unsafeAddr data[offset], 20)
+    copyMem(addr node.id[0], unsafeAddr data[offset], NodeIdLen)
     var words: array[8, uint16]
     for w in 0 ..< 8:
-      words[w] = (uint16(data[offset + 20 + w*2].byte) shl 8) or
-                 uint16(data[offset + 20 + w*2 + 1].byte)
-    var parts: seq[string]
-    for w in words:
-      parts.add(w.int.toHex(4).toLowerAscii())
-    node.ip = canonicalizeIpv6(parts.join(":"))
-    node.port = (uint16(data[offset+36].byte) shl 8) or uint16(data[offset+37].byte)
+      words[w] = readUint16BE(data, offset + NodeIdLen + w * 2)
+    # Build expanded IPv6 directly without seq allocation
+    var expanded = newStringOfCap(39)
+    for w in 0 ..< 8:
+      if w > 0: expanded.add(':')
+      expanded.add(words[w].int.toHex(4).toLowerAscii())
+    node.ip = canonicalizeIpv6(expanded)
+    node.port = readUint16BE(data, offset + 36)
     result.add(node)
 
 proc encodeDhtQuery*(transId: string, queryType: string,
@@ -482,48 +498,27 @@ proc encodeDhtError*(transId: string, code: int, msg: string): string =
 
 proc encodePingQuery*(transId: string, ownId: NodeId): string =
   var args = initTable[string, BencodeValue]()
-  var idStr = newStringOfCap(20)
-  for b in ownId:
-    idStr.add(char(b))
-  args["id"] = bStr(idStr)
+  args["id"] = bStr(nodeIdToStr(ownId))
   return encodeDhtQuery(transId, "ping", args)
 
 proc encodeFindNodeQuery*(transId: string, ownId: NodeId, target: NodeId): string =
   var args = initTable[string, BencodeValue]()
-  var idStr = newStringOfCap(20)
-  for b in ownId:
-    idStr.add(char(b))
-  args["id"] = bStr(idStr)
-  var targetStr = newStringOfCap(20)
-  for b in target:
-    targetStr.add(char(b))
-  args["target"] = bStr(targetStr)
+  args["id"] = bStr(nodeIdToStr(ownId))
+  args["target"] = bStr(nodeIdToStr(target))
   return encodeDhtQuery(transId, "find_node", args)
 
 proc encodeGetPeersQuery*(transId: string, ownId: NodeId, infoHash: NodeId): string =
   var args = initTable[string, BencodeValue]()
-  var idStr = newStringOfCap(20)
-  for b in ownId:
-    idStr.add(char(b))
-  args["id"] = bStr(idStr)
-  var hashStr = newStringOfCap(20)
-  for b in infoHash:
-    hashStr.add(char(b))
-  args["info_hash"] = bStr(hashStr)
+  args["id"] = bStr(nodeIdToStr(ownId))
+  args["info_hash"] = bStr(nodeIdToStr(infoHash))
   return encodeDhtQuery(transId, "get_peers", args)
 
 proc encodeAnnouncePeerQuery*(transId: string, ownId: NodeId,
                                infoHash: NodeId, port: uint16,
                                token: string, impliedPort: bool = false): string =
   var args = initTable[string, BencodeValue]()
-  var idStr = newStringOfCap(20)
-  for b in ownId:
-    idStr.add(char(b))
-  args["id"] = bStr(idStr)
-  var hashStr = newStringOfCap(20)
-  for b in infoHash:
-    hashStr.add(char(b))
-  args["info_hash"] = bStr(hashStr)
+  args["id"] = bStr(nodeIdToStr(ownId))
+  args["info_hash"] = bStr(nodeIdToStr(infoHash))
   args["port"] = bInt(port.int64)
   args["token"] = bStr(token)
   if impliedPort:
@@ -532,22 +527,9 @@ proc encodeAnnouncePeerQuery*(transId: string, ownId: NodeId,
 
 # Response builders
 
-proc encodePingResponse*(transId: string, ownId: NodeId): string =
-  var resp = initTable[string, BencodeValue]()
-  var idStr = newStringOfCap(20)
-  for b in ownId:
-    idStr.add(char(b))
-  resp["id"] = bStr(idStr)
-  return encodeDhtResponse(transId, resp)
-
-proc encodeFindNodeResponse*(transId: string, ownId: NodeId,
-                              nodes: seq[CompactNodeInfo]): string =
-  var resp = initTable[string, BencodeValue]()
-  var idStr = newStringOfCap(20)
-  for b in ownId:
-    idStr.add(char(b))
-  resp["id"] = bStr(idStr)
-  # Split nodes into IPv4 ("nodes") and IPv6 ("nodes6") per BEP 32
+proc addCompactNodeList(resp: var Table[string, BencodeValue],
+                        nodes: seq[CompactNodeInfo]) =
+  ## Encode and add compact nodes split by IP version (BEP 32).
   var nodesStr = ""
   var nodes6Str = ""
   for n in nodes:
@@ -559,6 +541,31 @@ proc encodeFindNodeResponse*(transId: string, ownId: NodeId,
     resp["nodes"] = bStr(nodesStr)
   if nodes6Str.len > 0:
     resp["nodes6"] = bStr(nodes6Str)
+
+proc encodeCompactPeerValue(ip: string, port: uint16): string =
+  ## Encode a single peer as compact binary (6 bytes IPv4 or 18 bytes IPv6).
+  if isIpv6(ip):
+    result = newStringOfCap(18)
+    let words = parseIpv6Words(ip)
+    for w in words:
+      writeUint16BE(result, w)
+  else:
+    result = newStringOfCap(6)
+    let ipBytes = parseIpv4(ip)
+    for b in ipBytes:
+      result.add(char(b))
+  writeUint16BE(result, port)
+
+proc encodePingResponse*(transId: string, ownId: NodeId): string =
+  var resp = initTable[string, BencodeValue]()
+  resp["id"] = bStr(nodeIdToStr(ownId))
+  return encodeDhtResponse(transId, resp)
+
+proc encodeFindNodeResponse*(transId: string, ownId: NodeId,
+                              nodes: seq[CompactNodeInfo]): string =
+  var resp = initTable[string, BencodeValue]()
+  resp["id"] = bStr(nodeIdToStr(ownId))
+  resp.addCompactNodeList(nodes)
   return encodeDhtResponse(transId, resp)
 
 proc encodeGetPeersResponse*(transId: string, ownId: NodeId,
@@ -566,52 +573,24 @@ proc encodeGetPeersResponse*(transId: string, ownId: NodeId,
                               peers: seq[tuple[ip: string, port: uint16]] = @[],
                               nodes: seq[CompactNodeInfo] = @[]): string =
   var resp = initTable[string, BencodeValue]()
-  var idStr = newStringOfCap(20)
-  for b in ownId:
-    idStr.add(char(b))
-  resp["id"] = bStr(idStr)
+  resp["id"] = bStr(nodeIdToStr(ownId))
   resp["token"] = bStr(token)
 
   if peers.len > 0:
-    # Encode IPv4 peers as 6-byte compact values, IPv6 as 18-byte compact values
     var values: seq[BencodeValue]
     var values6: seq[BencodeValue]
     for p in peers:
+      let encoded = encodeCompactPeerValue(p.ip, p.port)
       if isIpv6(p.ip):
-        let words = parseIpv6Words(p.ip)
-        var peerStr = ""
-        for w in words:
-          peerStr.add(char((w shr 8) and 0xFF))
-          peerStr.add(char(w and 0xFF))
-        peerStr.add(char((p.port shr 8).byte))
-        peerStr.add(char((p.port and 0xFF).byte))
-        values6.add(bStr(peerStr))
+        values6.add(bStr(encoded))
       else:
-        var peerStr = ""
-        let parts = p.ip.split('.')
-        if parts.len == 4:
-          for part in parts:
-            peerStr.add(char(parseInt(part).byte))
-          peerStr.add(char((p.port shr 8).byte))
-          peerStr.add(char((p.port and 0xFF).byte))
-          values.add(bStr(peerStr))
+        values.add(bStr(encoded))
     if values.len > 0:
       resp["values"] = BencodeValue(kind: bkList, listVal: values)
     if values6.len > 0:
       resp["values6"] = BencodeValue(kind: bkList, listVal: values6)
   else:
-    # Split nodes into IPv4 ("nodes") and IPv6 ("nodes6") per BEP 32
-    var nodesStr = ""
-    var nodes6Str = ""
-    for n in nodes:
-      if isIpv6(n.ip):
-        nodes6Str.add(encodeCompactNode6(n))
-      else:
-        nodesStr.add(encodeCompactNode(n))
-    if nodesStr.len > 0:
-      resp["nodes"] = bStr(nodesStr)
-    if nodes6Str.len > 0:
-      resp["nodes6"] = bStr(nodes6Str)
+    resp.addCompactNodeList(nodes)
 
   return encodeDhtResponse(transId, resp)
 
@@ -641,14 +620,14 @@ proc decodeDhtMessage*(data: string): DhtMessage =
     let aNode = root.getOrDefault("a")
     if aNode != nil and aNode.kind == bkDict:
       let idNode = aNode.getOrDefault("id")
-      if idNode != nil and idNode.kind == bkStr and idNode.strVal.len == 20:
-        copyMem(addr result.queryerId[0], unsafeAddr idNode.strVal[0], 20)
+      if idNode != nil and idNode.kind == bkStr and idNode.strVal.len == NodeIdLen:
+        result.queryerId = strToNodeId(idNode.strVal)
       let targetNode = aNode.getOrDefault("target")
-      if targetNode != nil and targetNode.kind == bkStr and targetNode.strVal.len == 20:
-        copyMem(addr result.targetId[0], unsafeAddr targetNode.strVal[0], 20)
+      if targetNode != nil and targetNode.kind == bkStr and targetNode.strVal.len == NodeIdLen:
+        result.targetId = strToNodeId(targetNode.strVal)
       let ihNode = aNode.getOrDefault("info_hash")
-      if ihNode != nil and ihNode.kind == bkStr and ihNode.strVal.len == 20:
-        copyMem(addr result.infoHash[0], unsafeAddr ihNode.strVal[0], 20)
+      if ihNode != nil and ihNode.kind == bkStr and ihNode.strVal.len == NodeIdLen:
+        result.infoHash = strToNodeId(ihNode.strVal)
       let portNode = aNode.getOrDefault("port")
       if portNode != nil and portNode.kind == bkInt:
         result.rawAnnouncePort = portNode.intVal
@@ -669,8 +648,8 @@ proc decodeDhtMessage*(data: string): DhtMessage =
     let rNode = root.getOrDefault("r")
     if rNode != nil and rNode.kind == bkDict:
       let idNode = rNode.getOrDefault("id")
-      if idNode != nil and idNode.kind == bkStr and idNode.strVal.len == 20:
-        copyMem(addr result.responderId[0], unsafeAddr idNode.strVal[0], 20)
+      if idNode != nil and idNode.kind == bkStr and idNode.strVal.len == NodeIdLen:
+        result.responderId = strToNodeId(idNode.strVal)
       let nodesNode = rNode.getOrDefault("nodes")
       if nodesNode != nil and nodesNode.kind == bkStr:
         result.nodes = decodeCompactNodes(nodesNode.strVal)
@@ -753,8 +732,7 @@ proc addPeer*(store: var DhtPeerStore, infoHash: NodeId,
     if existing.ip == ip and existing.port == port:
       return
   store.peers[infoHash].add((ip, port, epochTime()))
-  # Limit stored peers per torrent
-  if store.peers[infoHash].len > 100:
+  if store.peers[infoHash].len > MaxPeersPerInfoHash:
     store.peers[infoHash].delete(0)
 
 proc getPeers*(store: DhtPeerStore, infoHash: NodeId): seq[tuple[ip: string, port: uint16]] =
@@ -767,13 +745,14 @@ proc expirePeers*(store: var DhtPeerStore, ttlSec: float) =
   let cutoff = epochTime() - ttlSec
   var emptyHashes: seq[NodeId]
   for hash, peers in store.peers.mpairs:
-    var i = 0
-    while i < peers.len:
-      if peers[i].addedAt < cutoff:
-        peers.delete(i)
-      else:
-        i += 1
-    if peers.len == 0:
+    # Filter-rebuild: O(n) instead of O(n²) from repeated delete
+    var kept = newSeqOfCap[typeof(peers[0])](peers.len)
+    for p in peers:
+      if p.addedAt >= cutoff:
+        kept.add(p)
+    if kept.len == 0:
       emptyHashes.add(hash)
+    else:
+      peers = kept
   for h in emptyHashes:
     store.peers.del(h)

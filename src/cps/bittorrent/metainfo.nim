@@ -2,9 +2,12 @@
 ##
 ## Parses BEP 3 torrent files and computes info hashes.
 
-import std/strutils
 import bencode
 import sha1
+
+const
+  HexLower = "0123456789abcdef"
+  HexUpper = "0123456789ABCDEF"
 
 type
   FileEntry* = object
@@ -27,7 +30,7 @@ type
     comment*: string
     createdBy*: string
     creationDate*: int64
-    rawData*: string             ## Original file data (for info hash)
+    rawInfoDict*: string         ## Raw bencoded info dict (for BEP 9 metadata serving)
     urlList*: seq[string]        ## BEP 19: Web seed URLs
     httpSeeds*: seq[string]      ## BEP 17: HTTP seed URLs
 
@@ -40,7 +43,8 @@ proc pieceCount*(info: TorrentInfo): int =
 proc pieceHash*(info: TorrentInfo, index: int): array[20, byte] =
   ## Get the expected SHA1 hash for a piece.
   let offset = index * 20
-  assert offset + 20 <= info.pieces.len
+  if offset + 20 > info.pieces.len:
+    raise newException(MetainfoError, "piece index out of range: " & $index)
   copyMem(addr result[0], unsafeAddr info.pieces[offset], 20)
 
 proc lastPieceLength*(info: TorrentInfo): int =
@@ -60,150 +64,110 @@ proc infoHashHex*(info: TorrentInfo): string =
   ## Info hash as lowercase hex string.
   result = newStringOfCap(40)
   for b in info.infoHash:
-    result.add(b.int.toHex(2).toLowerAscii())
+    result.add(HexLower[b.int shr 4])
+    result.add(HexLower[b.int and 0x0F])
 
 proc infoHashUrlEncoded*(info: TorrentInfo): string =
   ## Info hash as URL-encoded string for tracker requests.
   result = newStringOfCap(60)
   for b in info.infoHash:
     result.add('%')
-    result.add(b.int.toHex(2).toUpperAscii())
+    result.add(HexUpper[b.int shr 4])
+    result.add(HexUpper[b.int and 0x0F])
+
+proc parseFileEntry(fileNode: BencodeValue): FileEntry =
+  ## Parse a single file entry from a multi-file info dict.
+  if fileNode.kind != bkDict:
+    raise newException(MetainfoError, "invalid file entry")
+  let length = fileNode.requireInt("length", "file entry")
+  let pathNode = fileNode.getOrDefault("path")
+  if pathNode == nil or pathNode.kind != bkList:
+    raise newException(MetainfoError, "missing 'path' in file entry")
+  # Build path directly without intermediate seq
+  var path: string
+  for part in pathNode.listVal:
+    if part.kind == bkStr:
+      if path.len > 0: path.add('/')
+      path.add(part.strVal)
+  FileEntry(path: path, length: length)
 
 proc parseInfoFields(infoNode: BencodeValue, info: var TorrentInfo) =
   ## Parse common info dict fields into TorrentInfo.
-  let nameNode = infoNode.getOrDefault("name")
-  if nameNode == nil or nameNode.kind != bkStr:
-    raise newException(MetainfoError, "missing 'name' in info dict")
-  info.name = nameNode.strVal
+  info.name = infoNode.requireStr("name", "info dict")
+  info.pieceLength = infoNode.requireInt("piece length", "info dict").int
 
-  let pieceLenNode = infoNode.getOrDefault("piece length")
-  if pieceLenNode == nil or pieceLenNode.kind != bkInt:
-    raise newException(MetainfoError, "missing 'piece length' in info dict")
-  info.pieceLength = pieceLenNode.intVal.int
-
-  let piecesNode = infoNode.getOrDefault("pieces")
-  if piecesNode == nil or piecesNode.kind != bkStr:
-    raise newException(MetainfoError, "missing 'pieces' in info dict")
-  if piecesNode.strVal.len mod 20 != 0:
+  let piecesRaw = infoNode.requireStr("pieces", "info dict")
+  if piecesRaw.len mod 20 != 0:
     raise newException(MetainfoError, "pieces length not multiple of 20")
-  info.pieces = piecesNode.strVal
+  info.pieces = piecesRaw
 
-  let privateNode = infoNode.getOrDefault("private")
-  if privateNode != nil and privateNode.kind == bkInt:
-    info.isPrivate = privateNode.intVal == 1
+  info.isPrivate = infoNode.optInt("private") == 1
 
   let filesNode = infoNode.getOrDefault("files")
   if filesNode != nil and filesNode.kind == bkList:
     var totalLen: int64 = 0
     for fileNode in filesNode.listVal:
-      if fileNode.kind != bkDict:
-        raise newException(MetainfoError, "invalid file entry")
-      let lenNode = fileNode.getOrDefault("length")
-      if lenNode == nil or lenNode.kind != bkInt:
-        raise newException(MetainfoError, "missing file length")
-      let pathNode = fileNode.getOrDefault("path")
-      if pathNode == nil or pathNode.kind != bkList:
-        raise newException(MetainfoError, "missing file path")
-      var pathParts: seq[string]
-      for part in pathNode.listVal:
-        if part.kind == bkStr:
-          pathParts.add(part.strVal)
-      let fe = FileEntry(
-        path: pathParts.join("/"),
-        length: lenNode.intVal
-      )
+      let fe = parseFileEntry(fileNode)
       info.files.add(fe)
       totalLen += fe.length
     info.totalLength = totalLen
   else:
-    let lenNode = infoNode.getOrDefault("length")
-    if lenNode == nil or lenNode.kind != bkInt:
-      raise newException(MetainfoError, "missing 'length' in single-file info")
-    info.totalLength = lenNode.intVal
-    info.files = @[FileEntry(
-      path: info.name,
-      length: lenNode.intVal
-    )]
+    let length = infoNode.requireInt("length", "single-file info")
+    info.totalLength = length
+    info.files = @[FileEntry(path: info.name, length: length)]
+
+proc parseAnnounceTiers(root: BencodeValue): seq[seq[string]] =
+  ## Parse BEP 12 announce-list tiers.
+  let node = root.getOrDefault("announce-list")
+  if node == nil or node.kind != bkList: return
+  for tier in node.listVal:
+    if tier.kind == bkList:
+      var urls: seq[string]
+      for url in tier.listVal:
+        if url.kind == bkStr and url.strVal.len > 0:
+          urls.add(url.strVal)
+      if urls.len > 0:
+        result.add(urls)
 
 proc parseTorrent*(data: string): TorrentMetainfo =
   ## Parse a .torrent file from raw bytes.
-  let root = decode(data)
-  if root.kind != bkDict:
-    raise newException(MetainfoError, "torrent root is not a dictionary")
+  try:
+    let root = decode(data)
+    if root.kind != bkDict:
+      raise newException(MetainfoError, "torrent root is not a dictionary")
 
-  result.rawData = data
+    result.announce = root.optStr("announce")
+    result.announceList = parseAnnounceTiers(root)
+    result.comment = root.optStr("comment")
+    result.createdBy = root.optStr("created by")
+    result.creationDate = root.optInt("creation date")
 
-  # Announce
-  let announceNode = root.getOrDefault("announce")
-  if announceNode != nil and announceNode.kind == bkStr:
-    result.announce = announceNode.strVal
+    let infoNode = root.requireDict("info", "torrent")
 
-  # Announce list (BEP 12)
-  let announceListNode = root.getOrDefault("announce-list")
-  if announceListNode != nil and announceListNode.kind == bkList:
-    for tier in announceListNode.listVal:
-      if tier.kind == bkList:
-        var urls: seq[string]
-        for url in tier.listVal:
-          if url.kind == bkStr and url.strVal.len > 0:
-            urls.add(url.strVal)
-        if urls.len > 0:
-          result.announceList.add(urls)
+    # Extract raw info dict once — used for info hash and BEP 9 metadata serving
+    let rawInfo = extractRawValue(data, "info")
+    result.info.infoHash = sha1(rawInfo)
+    result.rawInfoDict = rawInfo
 
-  # Comment
-  let commentNode = root.getOrDefault("comment")
-  if commentNode != nil and commentNode.kind == bkStr:
-    result.comment = commentNode.strVal
+    parseInfoFields(infoNode, result.info)
 
-  # Created by
-  let createdByNode = root.getOrDefault("created by")
-  if createdByNode != nil and createdByNode.kind == bkStr:
-    result.createdBy = createdByNode.strVal
-
-  # Creation date
-  let dateNode = root.getOrDefault("creation date")
-  if dateNode != nil and dateNode.kind == bkInt:
-    result.creationDate = dateNode.intVal
-
-  # Info dict
-  let infoNode = root.getOrDefault("info")
-  if infoNode == nil or infoNode.kind != bkDict:
-    raise newException(MetainfoError, "missing or invalid 'info' dictionary")
-
-  # Compute info hash from raw bencoded info dict
-  let rawInfo = extractRawValue(data, "info")
-  result.info.infoHash = sha1(rawInfo)
-
-  parseInfoFields(infoNode, result.info)
-
-  # BEP 19: url-list (web seeds)
-  let urlListNode = root.getOrDefault("url-list")
-  if urlListNode != nil:
-    if urlListNode.kind == bkStr:
-      result.urlList = @[urlListNode.strVal]
-    elif urlListNode.kind == bkList:
-      for item in urlListNode.listVal:
-        if item.kind == bkStr:
-          result.urlList.add(item.strVal)
-
-  # BEP 17: httpseeds
-  let httpSeedsNode = root.getOrDefault("httpseeds")
-  if httpSeedsNode != nil and httpSeedsNode.kind == bkList:
-    for item in httpSeedsNode.listVal:
-      if item.kind == bkStr:
-        result.httpSeeds.add(item.strVal)
+    result.urlList = root.optStrList("url-list")
+    result.httpSeeds = root.optStrList("httpseeds")
+  except BencodeError as e:
+    raise newException(MetainfoError, e.msg)
 
 proc parseRawInfoDict*(rawInfoDict: string, infoHash: array[20, byte]): TorrentInfo =
   ## Parse a raw bencoded info dict into TorrentInfo.
   ## Used for BEP 9 metadata exchange (magnet links).
-  let infoNode = decode(rawInfoDict)
-  if infoNode.kind != bkDict:
-    raise newException(MetainfoError, "info dict is not a dictionary")
-
-  result.infoHash = infoHash
-  parseInfoFields(infoNode, result)
+  try:
+    let infoNode = decode(rawInfoDict)
+    if infoNode.kind != bkDict:
+      raise newException(MetainfoError, "info dict is not a dictionary")
+    result.infoHash = infoHash
+    parseInfoFields(infoNode, result)
+  except BencodeError as e:
+    raise newException(MetainfoError, e.msg)
 
 proc parseTorrentFile*(path: string): TorrentMetainfo =
-  ## Parse a .torrent file from disk.
-  let data = readFile(path)
-  parseTorrent(data)
+  ## Parse a .torrent file from disk (blocking I/O).
+  parseTorrent(readFile(path))

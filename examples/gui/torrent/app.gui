@@ -17,6 +17,7 @@ app CpsTorrent {
     color.warning = "#FFD60A"
     color.danger = "#FF453A"
     color.downloading = "#5E5CE6"
+    color.optimistic = "#30D5C8"
     color.seeding = "#30D158"
 
     color.textPrimary = "#F5F5F7"

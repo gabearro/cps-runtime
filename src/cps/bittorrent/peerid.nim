@@ -7,7 +7,6 @@
 ## Our client uses Azureus-style: -NC0100-xxxxxxxxxxxx
 ## NC = NimCPS, 01.00 = version 0.1.0
 
-import std/strutils
 import utils
 
 const
@@ -15,33 +14,41 @@ const
   VersionMajor* = 0
   VersionMinor* = 1
   VersionPatch* = 0
+  PeerIdPrefix: array[8, byte] = [
+    byte('-'), byte('N'), byte('C'),
+    byte('0'), byte('1'), byte('0'), byte('0'),
+    byte('-')
+  ]
 
 type
+  PeerIdStyle* = enum
+    pisAzureus = "azureus"
+    pisShadow = "shadow"
+    pisUnknown = "unknown"
+
   PeerIdInfo* = object
     clientName*: string
     version*: string
-    style*: string  ## "azureus" or "shadow" or "unknown"
+    style*: PeerIdStyle
 
 proc generatePeerId*(): array[20, byte] =
   ## Generate an Azureus-style peer ID: -NC0100-<12 random bytes>
-  let prefix = "-" & ClientId &
-               $VersionMajor & $VersionMinor &
-               ($VersionPatch).align(2, '0') & "-"
-  assert prefix.len == 8, "peer ID prefix must be 8 bytes"
-  copyMem(addr result[0], unsafeAddr prefix[0], 8)
+  copyMem(addr result[0], unsafeAddr PeerIdPrefix[0], 8)
   for i in 8 ..< 20:
-    result[i] = byte(btRandU32() and 0xFF)
+    result[i] = byte(btRandU32())
 
 proc parsePeerId*(peerId: array[20, byte]): PeerIdInfo =
   ## Parse a peer ID and try to identify the client.
-  var idStr = newString(20)
-  copyMem(addr idStr[0], unsafeAddr peerId[0], 20)
-
   # Azureus-style: -XX0000-
-  if idStr[0] == '-' and idStr[7] == '-':
-    let clientCode = idStr[1..2]
-    let versionStr = idStr[3..6]
-    result.style = "azureus"
+  if peerId[0] == byte('-') and peerId[7] == byte('-'):
+    var clientCode = newString(2)
+    clientCode[0] = char(peerId[1])
+    clientCode[1] = char(peerId[2])
+    var versionStr = newString(4)
+    for i in 0 ..< 4:
+      versionStr[i] = char(peerId[3 + i])
+
+    result.style = pisAzureus
     result.version = versionStr
 
     case clientCode
@@ -65,27 +72,34 @@ proc parsePeerId*(peerId: array[20, byte]): PeerIdInfo =
     return
 
   # Shadow-style: First byte is client letter, followed by version digits
-  if idStr[0] in {'A'..'Z', 'a'..'z'}:
-    result.style = "shadow"
-    result.clientName = case idStr[0]
+  let firstChar = char(peerId[0])
+  if firstChar in {'A'..'Z', 'a'..'z'}:
+    result.style = pisShadow
+    result.clientName = case firstChar
       of 'A': "ABC"
       of 'M': "Mainline"
       of 'O': "Osprey"
       of 'S': "Shadow"
       of 'T': "BitTornado"
-      else: "Unknown (" & idStr[0] & ")"
-    # Version from bytes 1-3
-    if idStr.len > 3:
-      result.version = idStr[1..3]
+      else: "Unknown (" & firstChar & ")"
+    var versionStr = newString(3)
+    for i in 0 ..< 3:
+      versionStr[i] = char(peerId[1 + i])
+    result.version = versionStr
     return
 
-  result.style = "unknown"
+  result.style = pisUnknown
   result.clientName = "Unknown"
 
 proc peerIdToString*(peerId: array[20, byte]): string =
   ## Convert peer ID to a printable string (hex for non-printable bytes).
+  const HexChars = "0123456789abcdef"
+  result = newStringOfCap(20 * 4)
   for b in peerId:
     if b >= 0x20 and b <= 0x7E:
       result.add(char(b))
     else:
-      result.add("\\x" & b.int.toHex(2).toLowerAscii())
+      result.add('\\')
+      result.add('x')
+      result.add(HexChars[int(b shr 4)])
+      result.add(HexChars[int(b and 0x0F)])

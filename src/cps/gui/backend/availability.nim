@@ -1,7 +1,8 @@
 ## SwiftUI backend availability and typed-coverage catalog.
 
-import std/[strutils, tables]
+import std/strutils
 import ../types
+
 
 type
   GuiApiSymbol* = GuiCoverageSymbol
@@ -266,11 +267,10 @@ proc coverageReportForSwiftUi*(opts: GuiCoverageOptions): GuiCoverageReport =
       inc result.typedModifierCount
 
 proc symbolLookup*(kind: string, name: string): tuple[known: bool, symbol: GuiApiSymbol] =
-  ## Linear search — avoids building a Table per call (the original approach),
-  ## which explodes the Nim VM loop counter when called from a compile-time macro.
-  let kindLower = kind.toLowerAscii()
+  ## Linear search — the Nim VM cannot evaluate mutable module-level Tables at
+  ## compile time, so caching is not possible here (used from compile-time macros).
   for symbol in typedSwiftUiSymbols():
-    if symbol.kind.toLowerAscii() == kindLower and symbol.name == name:
+    if symbol.kind == kind and symbol.name == name:
       return (true, symbol)
   (false, GuiApiSymbol())
 

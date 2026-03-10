@@ -13,6 +13,7 @@ import ../runtime
 import ../transform
 import ../eventloop
 import ../private/platform
+import ../private/xorshift
 import ./streams
 import ./udp
 import ./tcp
@@ -75,25 +76,8 @@ type
     outerMgr*: NatManager
     doubleNat*: bool             ## True if double-NAT was detected
     depth: int                   ## Nesting depth (0=inner, 1=outer; max 1)
-
-# ============================================================
-# XorShift32 PRNG (avoids std/random — OpenSSL conflict on macOS)
-# ============================================================
-
-type XorShift32 = object
-  state: uint32
-
-proc initXorShift32(seed: int): XorShift32 =
-  result.state = uint32(seed)
-  if result.state == 0: result.state = 1
-
-proc next(rng: var XorShift32): uint32 =
-  var x = rng.state
-  x = x xor (x shl 13)
-  x = x xor (x shr 17)
-  x = x xor (x shl 5)
-  rng.state = x
-  result = x
+    # Cached gateway IP as raw bytes for fast packet matching
+    gatewayAddr: Sockaddr_in     ## Parsed gateway address for onRecv comparison
 
 var gNatRng: XorShift32
 var gNatRngInitialized = false
@@ -161,6 +145,18 @@ proc sockaddrToIp(sa: Sockaddr_storage, addrLen: SockLen): string =
     result = $cast[cstring](addr host[0])
   else:
     result = ""
+
+proc parseGatewayAddr(ip: string): Sockaddr_in =
+  ## Parse an IPv4 address string into a Sockaddr_in for fast comparison.
+  zeroMem(addr result, sizeof(result))
+  result.sin_family = AF_INET.TSa_Family
+  discard inet_pton(AF_INET.cint, ip.cstring, addr result.sin_addr)
+
+proc matchesSrcAddr(sa: Sockaddr_storage, expected: Sockaddr_in): bool {.inline.} =
+  ## Fast source-IP check: compare raw sin_addr bytes (no string alloc).
+  let src = cast[ptr Sockaddr_in](unsafeAddr sa)
+  src.sin_family == expected.sin_family and
+    src.sin_addr.s_addr == expected.sin_addr.s_addr
 
 # ============================================================
 # Gateway Detection
@@ -682,9 +678,8 @@ proc ensureNatSocket(mgr: NatManager) =
     if data.len < 2:
       return
 
-    # Validate source: responses must come from the configured gateway.
-    let srcIp = sockaddrToIp(srcAddr, addrLen)
-    if srcIp != mgr.gatewayIp:
+    # Validate source: compare raw IP bytes (no string alloc per packet).
+    if not matchesSrcAddr(srcAddr, mgr.gatewayAddr):
       return
 
     let version = data[0].byte
@@ -770,6 +765,65 @@ proc pcpRequest(mgr: NatManager, request: string,
 # UPnP IGD Operations (SSDP + HTTP + SOAP)
 # ============================================================
 
+proc readHttpBody(reader: BufferedReader, maxSize: int = 65536): CpsFuture[string] {.cps.} =
+  ## Read an HTTP response's status line, headers, and body via a BufferedReader.
+  ## Raises NatError on invalid responses or oversized bodies.
+  let statusLine: string = await reader.readLine("\r\n")
+  if not statusLine.startsWith("HTTP/"):
+    raise newException(NatError, "Invalid HTTP response: " & statusLine)
+
+  var contentLength: int = -1
+  while true:
+    let line: string = await reader.readLine("\r\n")
+    if line.len == 0: break
+    let colonIdx: int = line.find(':')
+    if colonIdx > 0:
+      let name: string = line[0 ..< colonIdx].strip().toLowerAscii()
+      let value: string = line[colonIdx + 1..^1].strip()
+      if name == "content-length":
+        try: contentLength = parseInt(value)
+        except ValueError: discard
+
+  if contentLength > maxSize:
+    raise newException(NatError, "HTTP response body too large: " & $contentLength)
+  if contentLength > 0:
+    return await reader.readExact(contentLength)
+
+  var body: string = ""
+  while body.len < maxSize:
+    let chunk: string = await reader.read(8192)
+    if chunk.len == 0: break
+    body.add(chunk)
+  return body
+
+proc httpGet(host: string, port: int, path: string): CpsFuture[string] {.cps.} =
+  ## Minimal HTTP GET, returns response body. Connection: close.
+  let stream: TcpStream = await withTimeout(tcpConnect(host, port), 5000)
+  defer: stream.close()
+  let req: string = "GET " & path & " HTTP/1.1\r\n" &
+    "Host: " & host & ":" & $port & "\r\n" &
+    "Connection: close\r\n\r\n"
+  await stream.write(req)
+  let reader: BufferedReader = newBufferedReader(stream.AsyncStream, 16384)
+  return await readHttpBody(reader)
+
+proc httpPost(host: string, port: int, path: string,
+              contentType: string, body: string,
+              extraHeaders: string = ""): CpsFuture[string] {.cps.} =
+  ## Minimal HTTP POST, returns response body. Connection: close.
+  let stream: TcpStream = await withTimeout(tcpConnect(host, port), 5000)
+  defer: stream.close()
+  let req: string = "POST " & path & " HTTP/1.1\r\n" &
+    "Host: " & host & ":" & $port & "\r\n" &
+    "Content-Type: " & contentType & "\r\n" &
+    "Content-Length: " & $body.len & "\r\n" &
+    extraHeaders &
+    "Connection: close\r\n\r\n" &
+    body
+  await stream.write(req)
+  let reader: BufferedReader = newBufferedReader(stream.AsyncStream, 16384)
+  return await readHttpBody(reader)
+
 proc ssdpDiscover(mgr: NatManager, timeoutMs: int = 3000): CpsVoidFuture {.cps.} =
   ## Discover UPnP IGD devices via SSDP M-SEARCH multicast.
   let searchTarget = "urn:schemas-upnp-org:device:InternetGatewayDevice:1"
@@ -784,7 +838,6 @@ proc ssdpDiscover(mgr: NatManager, timeoutMs: int = 3000): CpsVoidFuture {.cps.}
 
   discard discoverSock.trySendToAddr(msearch, "239.255.255.250", 1900, AF_INET)
 
-  # Wait for response
   let recvFut: CpsFuture[Datagram] = discoverSock.recvFrom(2048)
   let timedOut: bool = await withTimeoutBool(recvFut, timeoutMs)
   if timedOut:
@@ -800,50 +853,8 @@ proc ssdpDiscover(mgr: NatManager, timeoutMs: int = 3000): CpsVoidFuture {.cps.}
   mgr.upnpHost = urlParts.host
   mgr.upnpPort = urlParts.port
 
-  let stream: TcpStream = await withTimeout(tcpConnect(urlParts.host, urlParts.port), 5000)
-  defer: stream.close()
+  let body: string = await httpGet(urlParts.host, urlParts.port, urlParts.path)
 
-  let httpReq: string = "GET " & urlParts.path & " HTTP/1.1\r\n" &
-    "Host: " & urlParts.host & ":" & $urlParts.port & "\r\n" &
-    "Connection: close\r\n\r\n"
-  await stream.write(httpReq)
-
-  let reader: BufferedReader = newBufferedReader(stream.AsyncStream, 16384)
-
-  # Read status line
-  let statusLine: string = await reader.readLine("\r\n")
-  if not statusLine.startsWith("HTTP/"):
-    raise newException(NatError, "Invalid HTTP response from UPnP device")
-
-  # Read headers
-  var contentLength: int = -1
-  while true:
-    let line: string = await reader.readLine("\r\n")
-    if line.len == 0:
-      break
-    let colonIdx: int = line.find(':')
-    if colonIdx > 0:
-      let name: string = line[0 ..< colonIdx].strip().toLowerAscii()
-      let value: string = line[colonIdx + 1..^1].strip()
-      if name == "content-length":
-        try:
-          contentLength = parseInt(value)
-        except ValueError:
-          discard
-
-  # Read body
-  var body: string = ""
-  if contentLength > 0:
-    if contentLength > 65536:
-      raise newException(NatError, "UPnP device description too large")
-    body = await reader.readExact(contentLength)
-  else:
-    while body.len < 65536:
-      let chunk: string = await reader.read(8192)
-      if chunk.len == 0: break
-      body.add(chunk)
-
-  # Parse control URL
   let upnpResult = parseUpnpControlUrl(body)
   if upnpResult.controlUrl.len == 0:
     raise newException(NatError, "No WANIPConnection service found in UPnP description")
@@ -851,7 +862,6 @@ proc ssdpDiscover(mgr: NatManager, timeoutMs: int = 3000): CpsVoidFuture {.cps.}
   mgr.upnpServiceType = upnpResult.serviceType
   let controlUrl: string = upnpResult.controlUrl
 
-  # Resolve control URL (may be relative or absolute)
   if controlUrl.startsWith("http://") or controlUrl.startsWith("https://"):
     let cu = parseUrlComponents(controlUrl)
     mgr.upnpHost = cu.host
@@ -863,50 +873,9 @@ proc ssdpDiscover(mgr: NatManager, timeoutMs: int = 3000): CpsVoidFuture {.cps.}
 proc upnpSoapRequest(mgr: NatManager, soapAction: string,
                       soapBody: string): CpsFuture[string] {.cps.} =
   ## Send a SOAP request to the UPnP IGD device and return the response body.
-  let stream: TcpStream = await withTimeout(
-    tcpConnect(mgr.upnpHost, mgr.upnpPort), 5000)
-  defer: stream.close()
-
-  let httpReq: string = "POST " & mgr.upnpControlUrl & " HTTP/1.1\r\n" &
-    "Host: " & mgr.upnpHost & ":" & $mgr.upnpPort & "\r\n" &
-    "Content-Type: text/xml; charset=\"utf-8\"\r\n" &
-    "Content-Length: " & $soapBody.len & "\r\n" &
-    "SOAPAction: \"" & mgr.upnpServiceType & "#" & soapAction & "\"\r\n" &
-    "Connection: close\r\n\r\n" &
-    soapBody
-
-  await stream.write(httpReq)
-
-  let reader: BufferedReader = newBufferedReader(stream.AsyncStream, 16384)
-  let statusLine: string = await reader.readLine("\r\n")
-  if not statusLine.startsWith("HTTP/"):
-    raise newException(NatError, "Invalid SOAP response")
-
-  # Read headers
-  var contentLength: int = -1
-  while true:
-    let line: string = await reader.readLine("\r\n")
-    if line.len == 0: break
-    let colonIdx: int = line.find(':')
-    if colonIdx > 0:
-      let name: string = line[0 ..< colonIdx].strip().toLowerAscii()
-      let value: string = line[colonIdx + 1..^1].strip()
-      if name == "content-length":
-        try:
-          contentLength = parseInt(value)
-        except ValueError:
-          discard
-
-  var body: string = ""
-  if contentLength > 0:
-    body = await reader.readExact(min(contentLength, 65536))
-  else:
-    while body.len < 65536:
-      let chunk: string = await reader.read(4096)
-      if chunk.len == 0: break
-      body.add(chunk)
-
-  return body
+  let extraHdr: string = "SOAPAction: \"" & mgr.upnpServiceType & "#" & soapAction & "\"\r\n"
+  return await httpPost(mgr.upnpHost, mgr.upnpPort, mgr.upnpControlUrl,
+                        "text/xml; charset=\"utf-8\"", soapBody, extraHdr)
 
 # ============================================================
 # NatManager - Unified API
@@ -926,6 +895,8 @@ proc newNatManager*(gatewayIp: string = "", maxDepth: int = 0): NatManager =
   )
   if result.gatewayIp.len == 0:
     result.gatewayIp = getDefaultGateway()
+  if result.gatewayIp.len > 0:
+    result.gatewayAddr = parseGatewayAddr(result.gatewayIp)
 
 proc discoverInner(mgr: NatManager): CpsVoidFuture {.cps.} =
   ## Try PCP, then NAT-PMP, then UPnP IGD on the configured gateway.
@@ -935,7 +906,6 @@ proc discoverInner(mgr: NatManager): CpsVoidFuture {.cps.} =
 
   # Try PCP first (version 2)
   var pcpOk: bool = false
-  var pcpError: string = ""
   try:
     let nonce = generateNonce()
     let request: string = pcpBuildMapRequest(mgr.localIp, mpTcp, 0, 0, 0, nonce)
@@ -957,8 +927,8 @@ proc discoverInner(mgr: NatManager): CpsVoidFuture {.cps.} =
     else:
       if key in mgr.pendingPcp:
         mgr.pendingPcp.del(key)
-  except CatchableError as e:
-    pcpError = e.msg
+  except CatchableError:
+    discard
 
   if pcpOk:
     try:
@@ -1045,11 +1015,16 @@ proc discover*(mgr: NatManager): CpsVoidFuture {.cps.} =
     return  # can't reach any outer candidate
 
   # Create a child NatManager targeting the outer gateway.
-  # depth=1 prevents infinite recursion.
-  let outer = newNatManager(outerGw, maxDepth = 1)
-  # The outer manager's "local IP" is the inner router's external IP,
-  # since that's the address visible on the outer LAN segment.
-  outer.localIp = mgr.externalIp
+  # depth=1 prevents infinite recursion. Set localIp directly to the inner
+  # router's external IP (visible on the outer LAN), avoiding a redundant
+  # getLocalIp() that would return the wrong address anyway.
+  let outer = NatManager(
+    protocol: npNone,
+    gatewayIp: outerGw,
+    localIp: mgr.externalIp,
+    depth: 1,
+    gatewayAddr: parseGatewayAddr(outerGw),
+  )
   await discoverInner(outer)
 
   if outer.protocol != npNone:

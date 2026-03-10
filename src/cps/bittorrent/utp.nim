@@ -64,7 +64,6 @@ type
     data*: string          ## Full packet data (header + payload)
     sentAt*: float         ## When it was sent
     retransmits*: int
-    needsResend*: bool
 
   UtpSocket* = ref object
     state*: UtpState
@@ -106,6 +105,10 @@ type
 proc nowMicros(): uint32 =
   ## Current time in microseconds (truncated to uint32).
   uint32((epochTime() * 1_000_000).int64 and 0xFFFFFFFF'i64)
+
+proc seqNrAfter*(a, b: uint16): bool {.inline.} =
+  ## True if sequence number `a` is after `b` (with uint16 wraparound).
+  cast[int16](a - b) > 0
 
 proc newUtpSocket*(connId: uint16): UtpSocket =
   UtpSocket(
@@ -180,20 +183,12 @@ proc encodeHeader*(h: UtpPacketHeader): string =
   # Type + version (4 bits each)
   result.add(char((h.packetType shl 4) or (h.version and 0x0F)))
   result.add(char(h.extension))
-  result.add(char((h.connectionId shr 8).byte))
-  result.add(char((h.connectionId and 0xFF).byte))
-  # Timestamp (4 bytes)
+  result.writeUint16BE(h.connectionId)
   result.writeUint32BE(h.timestamp)
-  # Timestamp diff (4 bytes)
   result.writeUint32BE(h.timestampDiff)
-  # Window size (4 bytes)
   result.writeUint32BE(h.windowSize)
-  # Seq nr (2 bytes)
-  result.add(char((h.seqNr shr 8).byte))
-  result.add(char((h.seqNr and 0xFF).byte))
-  # Ack nr (2 bytes)
-  result.add(char((h.ackNr shr 8).byte))
-  result.add(char((h.ackNr and 0xFF).byte))
+  result.writeUint16BE(h.seqNr)
+  result.writeUint16BE(h.ackNr)
 
 proc decodeHeader*(data: string): UtpPacketHeader =
   ## Decode a uTP header from bytes.
@@ -203,12 +198,12 @@ proc decodeHeader*(data: string): UtpPacketHeader =
   result.packetType = (data[0].byte shr 4) and 0x0F
   result.version = data[0].byte and 0x0F
   result.extension = data[1].byte
-  result.connectionId = (uint16(data[2].byte) shl 8) or uint16(data[3].byte)
+  result.connectionId = readUint16BE(data, 2)
   result.timestamp = readUint32BE(data, 4)
   result.timestampDiff = readUint32BE(data, 8)
   result.windowSize = readUint32BE(data, 12)
-  result.seqNr = (uint16(data[16].byte) shl 8) or uint16(data[17].byte)
-  result.ackNr = (uint16(data[18].byte) shl 8) or uint16(data[19].byte)
+  result.seqNr = readUint16BE(data, 16)
+  result.ackNr = readUint16BE(data, 18)
 
 proc decodePacket*(data: string): UtpPacket =
   ## Decode a complete uTP packet.
@@ -224,9 +219,9 @@ proc decodePacket*(data: string): UtpPacket =
     if offset + 2 > data.len:
       break
     let nextExt = data[offset].byte
-    let extLen = data[offset+1].byte.int
+    let extLen = int(data[offset+1])
     offset += 2
-    if offset + extLen > data.len:
+    if extLen == 0 or offset + extLen > data.len:
       break
     let extData = data[offset ..< offset + extLen]
     result.extensions.add((extType, extData))
@@ -253,48 +248,35 @@ proc encodePacket*(pkt: UtpPacket): string =
 
 # Connection state machine
 
-proc makeSynPacket*(sock: UtpSocket): string =
-  ## Create a SYN packet to initiate connection.
-  let hdr = UtpPacketHeader(
-    packetType: StSyn,
+proc makePacketHeader(sock: UtpSocket, packetType: uint8,
+                      connectionId: uint16,
+                      ackNr: uint16): UtpPacketHeader {.inline.} =
+  ## Build a uTP header with common fields filled from socket state.
+  UtpPacketHeader(
+    packetType: packetType,
     version: UtpVersion,
-    connectionId: sock.connectionId,
+    connectionId: connectionId,
     timestamp: nowMicros(),
     timestampDiff: sock.computeTimestampDiff(),
     windowSize: sock.maxWindow.uint32,
     seqNr: sock.seqNr,
-    ackNr: 0
+    ackNr: ackNr
   )
+
+proc makeSynPacket*(sock: UtpSocket): string =
+  ## Create a SYN packet to initiate connection.
+  let hdr = sock.makePacketHeader(StSyn, sock.connectionId, ackNr = 0)
   sock.seqNr += 1
   sock.state = usSynSent
   return encodeHeader(hdr)
 
 proc makeStatePacket*(sock: UtpSocket): string =
   ## Create a STATE (ACK) packet.
-  let hdr = UtpPacketHeader(
-    packetType: StState,
-    version: UtpVersion,
-    connectionId: sock.sendConnectionId,
-    timestamp: nowMicros(),
-    timestampDiff: sock.computeTimestampDiff(),
-    windowSize: sock.maxWindow.uint32,
-    seqNr: sock.seqNr,
-    ackNr: sock.ackNr
-  )
-  return encodeHeader(hdr)
+  encodeHeader(sock.makePacketHeader(StState, sock.sendConnectionId, sock.ackNr))
 
 proc makeDataPacket*(sock: UtpSocket, payload: string): string =
   ## Create a DATA packet.
-  let hdr = UtpPacketHeader(
-    packetType: StData,
-    version: UtpVersion,
-    connectionId: sock.sendConnectionId,
-    timestamp: nowMicros(),
-    timestampDiff: sock.computeTimestampDiff(),
-    windowSize: sock.maxWindow.uint32,
-    seqNr: sock.seqNr,
-    ackNr: sock.ackNr
-  )
+  let hdr = sock.makePacketHeader(StData, sock.sendConnectionId, sock.ackNr)
   let pkt = UtpPacket(header: hdr, payload: payload)
   let data = encodePacket(pkt)
   sock.outBuffer.addLast(OutstandingPacket(
@@ -308,46 +290,29 @@ proc makeDataPacket*(sock: UtpSocket, payload: string): string =
 
 proc makeFinPacket*(sock: UtpSocket): string =
   ## Create a FIN packet to close connection.
-  let hdr = UtpPacketHeader(
-    packetType: StFin,
-    version: UtpVersion,
-    connectionId: sock.sendConnectionId,
-    timestamp: nowMicros(),
-    timestampDiff: sock.computeTimestampDiff(),
-    windowSize: sock.maxWindow.uint32,
-    seqNr: sock.seqNr,
-    ackNr: sock.ackNr
-  )
+  let hdr = sock.makePacketHeader(StFin, sock.sendConnectionId, sock.ackNr)
   sock.seqNr += 1
   sock.state = usFinSent
   return encodeHeader(hdr)
 
 proc makeResetPacket*(sock: UtpSocket): string =
   ## Create a RESET packet.
-  let hdr = UtpPacketHeader(
-    packetType: StReset,
-    version: UtpVersion,
-    connectionId: sock.sendConnectionId,
-    timestamp: nowMicros(),
-    timestampDiff: sock.computeTimestampDiff(),
-    seqNr: sock.seqNr,
-    ackNr: sock.ackNr
-  )
+  let hdr = sock.makePacketHeader(StReset, sock.sendConnectionId, sock.ackNr)
   sock.state = usReset
   return encodeHeader(hdr)
 
-proc processAck(sock: UtpSocket, ackNr: uint16, timestampDiff: uint32) =
+proc processAck(sock: UtpSocket, ackNr: uint16, timestampDiff: uint32,
+                now: float) =
   ## Process an ACK - remove ack'd packets from outBuffer, update RTT, run LEDBAT.
   var totalBytesAcked = 0
 
   while sock.outBuffer.len > 0:
     let front = sock.outBuffer.peekFirst()
     # Check if this packet is ack'd (handling wraparound)
-    let diff = cast[int16](ackNr - front.seqNr)
-    if diff >= 0:
+    if not seqNrAfter(front.seqNr, ackNr):
       let acked = sock.outBuffer.popFirst()
       let payloadBytes = acked.data.len - UtpHeaderSize
-      let rttSample = int((epochTime() - acked.sentAt) * 1_000_000)
+      let rttSample = int((now - acked.sentAt) * 1_000_000)
       sock.curWindow -= payloadBytes
       sock.bytesAcked += payloadBytes
       totalBytesAcked += payloadBytes
@@ -373,7 +338,10 @@ proc processAck(sock: UtpSocket, ackNr: uint16, timestampDiff: uint32) =
 
     if sock.baseDelayValid > 0:
       let baseDelay = sock.getBaseDelay()
-      let queuingDelay = ourDelay - baseDelay  # uint32 wraps correctly
+      # Clamp to zero: if ourDelay < baseDelay (clock jitter), no queuing delay
+      let queuingDelay =
+        if ourDelay >= baseDelay: ourDelay - baseDelay
+        else: 0'u32
 
       if sock.slowStart:
         # Slow start: exponential growth until congestion signal
@@ -403,7 +371,8 @@ proc processIncoming*(sock: UtpSocket, data: string): tuple[
   let pkt = decodePacket(data)
   let hdr = pkt.header
 
-  sock.lastRecvTime = epochTime()
+  let now = epochTime()
+  sock.lastRecvTime = now
   sock.lastPeerTimestamp = hdr.timestamp
   sock.hasPeerTimestamp = true
   sock.wndSize = hdr.windowSize
@@ -421,14 +390,14 @@ proc processIncoming*(sock: UtpSocket, data: string): tuple[
 
   of usSynSent:
     if hdr.packetType == StState:
-      # SYN-ACK received
+      # SYN-ACK received — STATE doesn't consume a sequence number
       sock.ackNr = hdr.seqNr - 1
       sock.state = usConnected
-      sock.processAck(hdr.ackNr, hdr.timestampDiff)
+      sock.processAck(hdr.ackNr, hdr.timestampDiff, now)
       result.stateChanged = true
     elif hdr.packetType == StSyn:
       # Simultaneous open (BEP 55 holepunch race): both sides sent SYN.
-      # Accept the remote SYN and transition to connected.
+      # SYN consumes a sequence number, so ackNr = seqNr (not seqNr - 1).
       sock.ackNr = hdr.seqNr
       sock.connectionId = hdr.connectionId + 1
       sock.sendConnectionId = hdr.connectionId
@@ -458,7 +427,7 @@ proc processIncoming*(sock: UtpSocket, data: string): tuple[
               deliveredMore = true
             else:
               i += 1
-      elif cast[int16](hdr.seqNr - expectedSeq) > 0:
+      elif seqNrAfter(hdr.seqNr, expectedSeq):
         # Future packet - buffer it
         var found = false
         for buf in sock.inBuffer:
@@ -469,11 +438,11 @@ proc processIncoming*(sock: UtpSocket, data: string): tuple[
           sock.inBuffer.add((hdr.seqNr, pkt.payload))
       # Send ACK
       result.response = sock.makeStatePacket()
-      sock.processAck(hdr.ackNr, hdr.timestampDiff)
+      sock.processAck(hdr.ackNr, hdr.timestampDiff, now)
 
     of StState:
       # ACK only
-      sock.processAck(hdr.ackNr, hdr.timestampDiff)
+      sock.processAck(hdr.ackNr, hdr.timestampDiff, now)
 
     of StFin:
       sock.ackNr = hdr.seqNr
@@ -490,7 +459,7 @@ proc processIncoming*(sock: UtpSocket, data: string): tuple[
 
   of usFinSent:
     if hdr.packetType == StState:
-      sock.processAck(hdr.ackNr, hdr.timestampDiff)
+      sock.processAck(hdr.ackNr, hdr.timestampDiff, now)
       sock.state = usDestroyed
       result.stateChanged = true
     elif hdr.packetType == StFin:
@@ -516,11 +485,8 @@ proc sendWindowAvailable*(sock: UtpSocket): int =
 
 proc checkTimeouts*(sock: UtpSocket): seq[string] =
   ## Check for timed-out packets and return those needing retransmission.
-  ## Uses sentAt to prevent premature re-retransmission: after each retransmit,
-  ## sentAt is updated to now, so the packet must wait another full RTO before
-  ## being eligible again. This allows multiple retransmission attempts until
-  ## MaxRetransmit is reached, unlike the previous needsResend guard which
-  ## permanently blocked re-retransmission after the first attempt.
+  ## sentAt is updated on retransmit so the packet waits another full RTO
+  ## before being eligible again.
   ## Window is halved at most once per loss event (not per timed-out packet).
   let now = epochTime()
   let timeoutSec = sock.rto.float / 1000.0
@@ -539,10 +505,9 @@ proc checkTimeouts*(sock: UtpSocket): seq[string] =
       # Halve the window once per loss event
       if not halvedThisRound:
         # Check if this is a new loss event (packet was sent after last loss)
-        let sinceLastLoss = cast[int16](pkt.seqNr - sock.lastLossSeqNr)
-        if sinceLastLoss > 0 or sock.lastLossTime == 0:
+        if seqNrAfter(pkt.seqNr, sock.lastLossSeqNr) or sock.lastLossTime == 0:
           sock.maxWindow = max(MinCwndBytes, sock.maxWindow div 2)
-          sock.lastLossSeqNr = sock.seqNr - 1  # Highest sent seqNr; future packets are new events
+          sock.lastLossSeqNr = sock.seqNr - 1  # Highest sent seqNr
           sock.lastLossTime = now
           if sock.slowStart:
             sock.ssthresh = sock.maxWindow

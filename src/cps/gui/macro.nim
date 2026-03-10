@@ -9,7 +9,7 @@ import ./ir_v2
 import ../gui
 
 proc sanitizeIdent(text: string): string {.compileTime.} =
-  var normalized = ""
+  var normalized = newStringOfCap(text.len)
   for c in text:
     if c.isAlphaNumeric or c == '_':
       normalized.add c
@@ -20,6 +20,10 @@ proc sanitizeIdent(text: string): string {.compileTime.} =
   if normalized[0].isDigit:
     normalized = "G_" & normalized
   normalized
+
+proc resolveBaseDir(filename: string): string {.compileTime.} =
+  if filename.len > 0: filename.parentDir()
+  else: getCurrentDir()
 
 proc inlineDslFromBody(body: NimNode): string {.compileTime.} =
   case body.kind
@@ -33,30 +37,36 @@ proc inlineDslFromBody(body: NimNode): string {.compileTime.} =
   else:
     body.repr
 
-proc writeInlineDslFile(moduleName: string, body: NimNode, siteFile: string): string {.compileTime.} =
+proc writeInlineDslFile(sanitizedName: string, body: NimNode, siteFile: string): string {.compileTime.} =
   let dsl = inlineDslFromBody(body)
-  let baseDir =
-    if siteFile.len > 0:
-      siteFile.parentDir()
-    else:
-      getCurrentDir()
-  let cacheDir = normalizedPath(baseDir / ".guiinline")
+  let cacheDir = normalizedPath(resolveBaseDir(siteFile) / ".guiinline")
   createDir(cacheDir)
-  result = cacheDir / (sanitizeIdent(moduleName) & ".generated.gui")
-  writeFile(result, dsl.strip() & "\n")
+  result = cacheDir / (sanitizedName & ".generated.gui")
+  let content = dsl.strip() & "\n"
+  # Skip write if content unchanged to avoid timestamp churn
+  var existing = ""
+  try: existing = readFile(result)
+  except: discard
+  if existing != content:
+    writeFile(result, content)
 
-proc emitModuleBindings(moduleName: string, guiPath: string): NimNode {.compileTime.} =
+proc formatDiagnostics(phase: string, path: string, diags: seq[GuiDiagnostic]): string {.compileTime.} =
+  result = "gui macro " & phase & " failed for " & path & ":"
+  for d in diags:
+    if d.isError:
+      result.add "\n  " & d.message
+
+proc emitModuleBindings(moduleBase: string, moduleName: string, guiPath: string): NimNode {.compileTime.} =
   let parsed = parseGuiProgram(guiPath)
   if parsed.diagnostics.hasErrors:
-    error("gui macro parse failed for " & guiPath & ": " & parsed.diagnostics[0].message)
+    error(formatDiagnostics("parse", guiPath, parsed.diagnostics))
 
   let sem = semanticCheck(parsed.program)
   if sem.diagnostics.hasErrors:
-    error("gui macro semantic check failed for " & guiPath & ": " & sem.diagnostics[0].message)
+    error(formatDiagnostics("semantic check", guiPath, sem.diagnostics))
 
   let irProgram = buildIrV2(sem)
 
-  let moduleBase = sanitizeIdent(moduleName)
   let actionEnumName = ident(moduleBase & "GuiAction")
   let checkProcName = ident("check" & moduleBase & "Gui")
   let generateProcName = ident("generate" & moduleBase & "Gui")
@@ -112,32 +122,26 @@ proc emitModuleBindings(moduleName: string, guiPath: string): NimNode {.compileT
 
 macro guiFile*(moduleName: untyped, path: static[string]): untyped =
   let modName = moduleName.repr
+  let moduleBase = sanitizeIdent(modName)
   var resolved = path
-  let site = moduleName.lineInfoObj
   if not resolved.isAbsolute:
-    let baseDir =
-      if site.filename.len > 0:
-        site.filename.parentDir()
-      else:
-        getCurrentDir()
-    resolved = normalizedPath(baseDir / resolved)
-  emitModuleBindings(modName, resolved)
+    resolved = normalizedPath(resolveBaseDir(moduleName.lineInfoObj.filename) / resolved)
+  emitModuleBindings(moduleBase, modName, resolved)
+
+proc inlineGuiImpl(moduleName, body: NimNode): NimNode {.compileTime.} =
+  let modName = moduleName.repr
+  let moduleBase = sanitizeIdent(modName)
+  let outPath = writeInlineDslFile(moduleBase, body, moduleName.lineInfoObj.filename)
+  emitModuleBindings(moduleBase, modName, outPath)
 
 macro guiBlock*(moduleName: untyped, body: untyped): untyped =
-  let modName = moduleName.repr
-  let site = moduleName.lineInfoObj
-  let outPath = writeInlineDslFile(modName, body, site.filename)
-  emitModuleBindings(modName, outPath)
+  inlineGuiImpl(moduleName, body)
 
 macro guiBuild*(moduleName: untyped, body: untyped): untyped =
-  let modName = moduleName.repr
-  let site = moduleName.lineInfoObj
-  let outPath = writeInlineDslFile(modName, body, site.filename)
-  emitModuleBindings(modName, outPath)
+  inlineGuiImpl(moduleName, body)
 
 macro guiInline*(moduleName: untyped, body: untyped): untyped =
-  result = quote do:
-    guiBlock(`moduleName`, `body`)
+  inlineGuiImpl(moduleName, body)
 
 macro guiBridge*(moduleName: untyped, body: untyped): untyped =
   let modName = sanitizeIdent(moduleName.repr)
@@ -146,6 +150,7 @@ macro guiBridge*(moduleName: untyped, body: untyped): untyped =
   let registerProc = ident("register" & modName & "BridgeHandler")
   let dispatchProc = ident("dispatch" & modName & "BridgeAction")
   let initTableSym = bindSym"initTable"
+  let getOrDefaultSym = bindSym"getOrDefault"
   let scaffoldConst = ident(modName & "BridgeScaffold")
 
   let bodyText = newLit(body.repr)
@@ -158,8 +163,9 @@ macro guiBridge*(moduleName: untyped, body: untyped): untyped =
       `tableName`[actionName] = handler
 
     proc `dispatchProc`*(actionName: string, payload: seq[byte]): seq[byte] =
-      if actionName in `tableName`:
-        return `tableName`[actionName](payload)
+      let handler = `getOrDefaultSym`(`tableName`, actionName)
+      if not handler.isNil:
+        return handler(payload)
       @[]
 
     const `scaffoldConst`* = `bodyText`

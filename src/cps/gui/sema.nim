@@ -6,9 +6,9 @@ import ./ast
 import ./backend/availability
 
 const
-  builtinTypes = ["Int", "Double", "String", "Bool", "Color", "Any", "Void", "Array", "Dictionary", "Tuple", "Set", "Result", "Range"]
+  builtinTypesArray = ["Int", "Double", "String", "Bool", "Color", "Any", "Void", "Array", "Dictionary", "Tuple", "Set", "Result", "Range"]
 
-  coreModifierAllowlist = [
+  coreModifierAllowlistArray = [
     # Layout
     "padding", "frame", "fixedSize", "aspectRatio", "layoutPriority", "zIndex",
     "offset", "scaleEffect", "rotationEffect", "ignoresSafeArea",
@@ -163,11 +163,25 @@ proc defaultSemaOptions*(): GuiSemaOptions =
     unsupportedPolicy: defaults.unsupportedPolicy
   )
 
-proc containsStr(items: openArray[string], value: string): bool {.inline.} =
-  for item in items:
-    if item == value:
-      return true
-  false
+type
+  SemaContext = object
+    tokenTypes: Table[string, string]
+    componentNames: HashSet[string]
+    stateTypes: Table[string, string]
+    actionNames: HashSet[string]
+    semaOpts: GuiSemaOptions
+
+proc checkDuplicate(
+  diagnostics: var seq[GuiDiagnostic],
+  seen: var HashSet[string],
+  name: string,
+  range: GuiSourceRange,
+  what: string,
+  code: string
+) {.inline.} =
+  if name in seen:
+    diagnostics.add mkDiagnostic(range, gsError, "duplicate " & what & " '" & name & "'", code)
+  seen.incl name
 
 proc collectExprTokenRefs(e: GuiExpr, outRefs: var seq[(string, GuiSourceRange)])
 
@@ -213,6 +227,17 @@ proc collectExprTokenRefs(e: GuiExpr, outRefs: var seq[(string, GuiSourceRange)]
     discard
   else:
     discard
+
+proc validateExprTokenRefs(
+  diagnostics: var seq[GuiDiagnostic],
+  expr: GuiExpr,
+  tokenTypes: Table[string, string]
+) =
+  var refs: seq[(string, GuiSourceRange)]
+  collectExprTokenRefs(expr, refs)
+  for r in refs:
+    if r[0] notin tokenTypes:
+      diagnostics.add mkDiagnostic(r[1], gsError, "unknown token reference '" & r[0] & "'", "GUI_SEMA_TOKEN_REF")
 
 proc inferLiteralType(expr: GuiExpr): string =
   if expr.isNil:
@@ -449,9 +474,7 @@ proc validateModifierDecl(
   diagnostics: var seq[GuiDiagnostic],
   modDecl: GuiModifierDecl,
   localTypes: Table[string, string],
-  stateTypes: Table[string, string],
-  tokenTypes: Table[string, string],
-  actionNames: HashSet[string]
+  ctx: SemaContext
 ) =
   var seenNamed: HashSet[string]
   for arg in modDecl.namedArgs:
@@ -465,7 +488,7 @@ proc validateModifierDecl(
     seenNamed.incl arg.name
 
   template argType(expr: GuiExpr): string =
-    inferExprType(expr, localTypes, stateTypes, tokenTypes, actionNames)
+    inferExprType(expr, localTypes, ctx.stateTypes, ctx.tokenTypes, ctx.actionNames)
 
   case modDecl.name
   of "frame":
@@ -483,7 +506,7 @@ proc validateModifierDecl(
       "alignment"
     ]
     for arg in modDecl.namedArgs:
-      if not containsStr(allowed, arg.name):
+      if arg.name notin allowed:
         diagnostics.add mkDiagnostic(
           arg.range,
           gsError,
@@ -517,7 +540,7 @@ proc validateModifierDecl(
       )
     let allowed = ["top", "bottom", "leading", "trailing", "horizontal", "vertical", "all"]
     for arg in modDecl.namedArgs:
-      if not containsStr(allowed, arg.name):
+      if arg.name notin allowed:
         diagnostics.add mkDiagnostic(
           arg.range,
           gsError,
@@ -631,7 +654,7 @@ proc validateModifierDecl(
       )
     let allowed = ["color", "radius", "x", "y"]
     for arg in modDecl.namedArgs:
-      if not containsStr(allowed, arg.name):
+      if arg.name notin allowed:
         diagnostics.add mkDiagnostic(
           arg.range,
           gsError,
@@ -704,7 +727,7 @@ proc validateEmitCommand(
   stmt: GuiReducerStmt,
   actionNames: HashSet[string]
 ) =
-  if not containsStr(effectCommands, stmt.commandName):
+  if stmt.commandName notin effectCommands:
     diagnostics.add mkDiagnostic(
       stmt.range,
       gsError,
@@ -788,51 +811,31 @@ proc validateEmitCommand(
 proc collectUiTokensAndValidate(
   diagnostics: var seq[GuiDiagnostic],
   node: GuiUiNode,
-  tokenTypes: Table[string, string],
-  componentNames: HashSet[string],
   localTypes: Table[string, string],
-  stateTypes: Table[string, string],
-  actionNames: HashSet[string],
-  semaOpts: GuiSemaOptions
+  ctx: SemaContext
 ) =
   if node.isNil:
     return
 
-  # Handle conditional nodes (if/else if/else) by recursively validating children
+  template recurse(n: GuiUiNode) =
+    collectUiTokensAndValidate(diagnostics, n, localTypes, ctx)
+
   if node.isConditional:
-    # Validate the condition expression for token refs
-    var condRefs: seq[(string, GuiSourceRange)] = @[]
-    collectExprTokenRefs(node.condition, condRefs)
-    for r in condRefs:
-      if r[0] notin tokenTypes:
-        diagnostics.add mkDiagnostic(r[1], gsError, "unknown token reference '" & r[0] & "'", "GUI_SEMA_TOKEN_REF")
-
-    for child in node.children:
-      collectUiTokensAndValidate(diagnostics, child, tokenTypes, componentNames, localTypes, stateTypes, actionNames, semaOpts)
-    for elifNode in node.elseIfBranches:
-      collectUiTokensAndValidate(diagnostics, elifNode, tokenTypes, componentNames, localTypes, stateTypes, actionNames, semaOpts)
-    for elseChild in node.elseChildren:
-      collectUiTokensAndValidate(diagnostics, elseChild, tokenTypes, componentNames, localTypes, stateTypes, actionNames, semaOpts)
+    validateExprTokenRefs(diagnostics, node.condition, ctx.tokenTypes)
+    for child in node.children: recurse(child)
+    for elifNode in node.elseIfBranches: recurse(elifNode)
+    for elseChild in node.elseChildren: recurse(elseChild)
     return
 
-  # Handle platform conditional nodes (#if os(iOS) { } #else { })
   if node.isPlatformConditional:
-    for child in node.children:
-      collectUiTokensAndValidate(diagnostics, child, tokenTypes, componentNames, localTypes, stateTypes, actionNames, semaOpts)
-    for child in node.platformElseChildren:
-      collectUiTokensAndValidate(diagnostics, child, tokenTypes, componentNames, localTypes, stateTypes, actionNames, semaOpts)
+    for child in node.children: recurse(child)
+    for child in node.platformElseChildren: recurse(child)
     return
 
-  # Handle switch/case nodes by recursively validating children in each case
   if node.isSwitch:
-    var switchRefs: seq[(string, GuiSourceRange)] = @[]
-    collectExprTokenRefs(node.switchExpr, switchRefs)
-    for r in switchRefs:
-      if r[0] notin tokenTypes:
-        diagnostics.add mkDiagnostic(r[1], gsError, "unknown token reference '" & r[0] & "'", "GUI_SEMA_TOKEN_REF")
+    validateExprTokenRefs(diagnostics, node.switchExpr, ctx.tokenTypes)
     for c in node.cases:
-      for child in c.body:
-        collectUiTokensAndValidate(diagnostics, child, tokenTypes, componentNames, localTypes, stateTypes, actionNames, semaOpts)
+      for child in c.body: recurse(child)
     return
 
   let nodeLeaf =
@@ -843,9 +846,9 @@ proc collectUiTokensAndValidate(
 
   let knownView = symbolLookup("view", nodeLeaf)
   let allowPassthroughView =
-    semaOpts.unsupportedPolicy == gupWarnPassthrough and node.name.startsWith("SwiftUI.")
+    ctx.semaOpts.unsupportedPolicy == gupWarnPassthrough and node.name.startsWith("SwiftUI.")
 
-  if nodeLeaf notin componentNames and not knownView.known:
+  if nodeLeaf notin ctx.componentNames and not knownView.known:
     if allowPassthroughView:
       diagnostics.add mkDiagnostic(
         node.range,
@@ -861,7 +864,7 @@ proc collectUiTokensAndValidate(
         "GUI_SEMA_COMPONENT_REF"
       )
   elif knownView.known:
-    validateAvailability(diagnostics, node.range, "view", nodeLeaf, semaOpts)
+    validateAvailability(diagnostics, node.range, "view", nodeLeaf, ctx.semaOpts)
 
   if nodeLeaf == "ForEach":
     var hasItems = node.args.len > 0
@@ -893,19 +896,15 @@ proc collectUiTokensAndValidate(
         "GUI_SEMA_SPLIT_VIEW_ARITY"
       )
 
-  var refs: seq[(string, GuiSourceRange)] = @[]
   for arg in node.args:
-    collectExprTokenRefs(arg, refs)
+    validateExprTokenRefs(diagnostics, arg, ctx.tokenTypes)
   for arg in node.namedArgs:
-    collectExprTokenRefs(arg.value, refs)
-  for r in refs:
-    if r[0] notin tokenTypes:
-      diagnostics.add mkDiagnostic(r[1], gsError, "unknown token reference '" & r[0] & "'", "GUI_SEMA_TOKEN_REF")
+    validateExprTokenRefs(diagnostics, arg.value, ctx.tokenTypes)
 
   for modDecl in node.modifiers:
     let knownMod = symbolLookup("modifier", modDecl.name)
     if not knownMod.known:
-      if semaOpts.unsupportedPolicy == gupWarnPassthrough:
+      if ctx.semaOpts.unsupportedPolicy == gupWarnPassthrough:
         diagnostics.add mkDiagnostic(
           modDecl.range,
           gsWarning,
@@ -920,53 +919,20 @@ proc collectUiTokensAndValidate(
           "GUI_SEMA_MODIFIER"
         )
     else:
-      validateAvailability(diagnostics, modDecl.range, "modifier", modDecl.name, semaOpts)
-      if containsStr(coreModifierAllowlist, modDecl.name):
-        validateModifierDecl(
-          diagnostics,
-          modDecl,
-          localTypes,
-          stateTypes,
-          tokenTypes,
-          actionNames
-        )
+      validateAvailability(diagnostics, modDecl.range, "modifier", modDecl.name, ctx.semaOpts)
+      if modDecl.name in coreModifierAllowlistArray:
+        validateModifierDecl(diagnostics, modDecl, localTypes, ctx)
 
     for arg in modDecl.args:
-      refs.setLen(0)
-      collectExprTokenRefs(arg, refs)
-      for r in refs:
-        if r[0] notin tokenTypes:
-          diagnostics.add mkDiagnostic(r[1], gsError, "unknown token reference '" & r[0] & "'", "GUI_SEMA_TOKEN_REF")
+      validateExprTokenRefs(diagnostics, arg, ctx.tokenTypes)
     for arg in modDecl.namedArgs:
-      refs.setLen(0)
-      collectExprTokenRefs(arg.value, refs)
-      for r in refs:
-        if r[0] notin tokenTypes:
-          diagnostics.add mkDiagnostic(r[1], gsError, "unknown token reference '" & r[0] & "'", "GUI_SEMA_TOKEN_REF")
+      validateExprTokenRefs(diagnostics, arg.value, ctx.tokenTypes)
 
     for modChild in modDecl.children:
-      collectUiTokensAndValidate(
-        diagnostics,
-        modChild,
-        tokenTypes,
-        componentNames,
-        localTypes,
-        stateTypes,
-        actionNames,
-        semaOpts
-      )
+      recurse(modChild)
 
   for child in node.children:
-    collectUiTokensAndValidate(
-      diagnostics,
-      child,
-      tokenTypes,
-      componentNames,
-      localTypes,
-      stateTypes,
-      actionNames,
-      semaOpts
-    )
+    recurse(child)
 
 proc semanticCheck*(
   program: GuiProgram,
@@ -986,9 +952,7 @@ proc semanticCheck*(
 
   var componentNames: HashSet[string]
   for component in program.components:
-    if component.name in componentNames:
-      result.diagnostics.add mkDiagnostic(component.range, gsError, "duplicate component '" & component.name & "'", "GUI_SEMA_COMPONENT_DUP")
-    componentNames.incl component.name
+    checkDuplicate(result.diagnostics, componentNames, component.name, component.range, "component", "GUI_SEMA_COMPONENT_DUP")
   # Include view names extracted from escape Swift files
   for viewName in program.escapeViewNames:
     componentNames.incl viewName
@@ -997,10 +961,8 @@ proc semanticCheck*(
   var actionNames: HashSet[string]
   var requiresBridge = false
   for action in program.actions:
-    if action.name in actionByName:
-      result.diagnostics.add mkDiagnostic(action.range, gsError, "duplicate action '" & action.name & "'", "GUI_SEMA_ACTION_DUP")
+    checkDuplicate(result.diagnostics, actionNames, action.name, action.range, "action", "GUI_SEMA_ACTION_DUP")
     actionByName[action.name] = action
-    actionNames.incl action.name
     if action.owner in {gaoNim, gaoBoth}:
       requiresBridge = true
 
@@ -1023,26 +985,22 @@ proc semanticCheck*(
     )
 
   var stateTypeByName: Table[string, string]
+  var stateNameSet: HashSet[string]
   for field in program.stateFields:
-    if field.name in stateTypeByName:
-      result.diagnostics.add mkDiagnostic(field.range, gsError, "duplicate state field '" & field.name & "'", "GUI_SEMA_STATE_DUP")
+    checkDuplicate(result.diagnostics, stateNameSet, field.name, field.range, "state field", "GUI_SEMA_STATE_DUP")
     stateTypeByName[field.name] = field.typ
 
   var modelNames: HashSet[string]
   for model in program.models:
-    if model.name in modelNames:
-      result.diagnostics.add mkDiagnostic(model.range, gsError, "duplicate model '" & model.name & "'", "GUI_SEMA_MODEL_DUP")
-    modelNames.incl model.name
+    checkDuplicate(result.diagnostics, modelNames, model.name, model.range, "model", "GUI_SEMA_MODEL_DUP")
 
   var enumNames: HashSet[string]
   for enumDecl in program.enums:
-    if enumDecl.name in enumNames:
-      result.diagnostics.add mkDiagnostic(enumDecl.range, gsError, "duplicate enum '" & enumDecl.name & "'", "GUI_SEMA_ENUM_DUP")
-    enumNames.incl enumDecl.name
+    checkDuplicate(result.diagnostics, enumNames, enumDecl.name, enumDecl.range, "enum", "GUI_SEMA_ENUM_DUP")
 
   for field in program.stateFields:
     let baseType = baseTypeName(field.typ)
-    if baseType notin builtinTypes and baseType notin modelNames and baseType notin enumNames:
+    if baseType notin builtinTypesArray and baseType notin modelNames and baseType notin enumNames:
       result.diagnostics.add mkDiagnostic(
         field.range,
         gsError,
@@ -1053,18 +1011,11 @@ proc semanticCheck*(
   var tokenKeySet: HashSet[string]
   for tokenDecl in program.tokens:
     let key = tokenDecl.tokenKey
-    if key in tokenKeySet:
-      result.diagnostics.add mkDiagnostic(tokenDecl.range, gsError, "duplicate token '" & key & "'", "GUI_SEMA_TOKEN_DUP")
-    tokenKeySet.incl key
+    checkDuplicate(result.diagnostics, tokenKeySet, key, tokenDecl.range, "token", "GUI_SEMA_TOKEN_DUP")
     result.tokenTypeByKey[key] = inferTokenType(tokenDecl.group, tokenDecl.value)
 
-  # Validate token refs in state defaults.
   for field in program.stateFields:
-    var refs: seq[(string, GuiSourceRange)] = @[]
-    collectExprTokenRefs(field.defaultValue, refs)
-    for r in refs:
-      if r[0] notin result.tokenTypeByKey:
-        result.diagnostics.add mkDiagnostic(r[1], gsError, "unknown token reference '" & r[0] & "'", "GUI_SEMA_TOKEN_REF")
+    validateExprTokenRefs(result.diagnostics, field.defaultValue, result.tokenTypeByKey)
 
   # Reducer checks.
   for reducerCase in program.reducerCases:
@@ -1117,33 +1068,21 @@ proc semanticCheck*(
                   "GUI_SEMA_SET_TYPE"
                 )
 
-          var refs: seq[(string, GuiSourceRange)] = @[]
-          collectExprTokenRefs(stmt.valueExpr, refs)
-          for r in refs:
-            if r[0] notin result.tokenTypeByKey:
-              result.diagnostics.add mkDiagnostic(r[1], gsError, "unknown token reference '" & r[0] & "'", "GUI_SEMA_TOKEN_REF")
+          validateExprTokenRefs(result.diagnostics, stmt.valueExpr, result.tokenTypeByKey)
 
       of grsEmit:
         validateEmitCommand(result.diagnostics, stmt, actionNames)
         for arg in stmt.commandArgs:
-          var refs: seq[(string, GuiSourceRange)] = @[]
-          collectExprTokenRefs(arg.value, refs)
-          for r in refs:
-            if r[0] notin result.tokenTypeByKey:
-              result.diagnostics.add mkDiagnostic(r[1], gsError, "unknown token reference '" & r[0] & "'", "GUI_SEMA_TOKEN_REF")
+          validateExprTokenRefs(result.diagnostics, arg.value, result.tokenTypeByKey)
 
   # Navigation checks.
   var stackNames: HashSet[string]
   for stackDecl in program.stacks:
-    if stackDecl.name in stackNames:
-      result.diagnostics.add mkDiagnostic(stackDecl.range, gsError, "duplicate stack '" & stackDecl.name & "'", "GUI_SEMA_STACK_DUP")
-    stackNames.incl stackDecl.name
+    checkDuplicate(result.diagnostics, stackNames, stackDecl.name, stackDecl.range, "stack", "GUI_SEMA_STACK_DUP")
 
     var routeIds: HashSet[string]
     for route in stackDecl.routes:
-      if route.id in routeIds:
-        result.diagnostics.add mkDiagnostic(route.range, gsError, "duplicate route id '" & route.id & "'", "GUI_SEMA_ROUTE_DUP")
-      routeIds.incl route.id
+      checkDuplicate(result.diagnostics, routeIds, route.id, route.range, "route id", "GUI_SEMA_ROUTE_DUP")
       if route.component notin componentNames:
         result.diagnostics.add mkDiagnostic(route.range, gsError, "route references unknown component '" & route.component & "'", "GUI_SEMA_ROUTE_COMPONENT")
 
@@ -1157,6 +1096,13 @@ proc semanticCheck*(
       result.diagnostics.add mkDiagnostic(tabDecl.range, gsError, "tab references unknown stack '" & tabDecl.stack & "'", "GUI_SEMA_TAB_STACK")
 
   # Component bodies.
+  let ctx = SemaContext(
+    tokenTypes: result.tokenTypeByKey,
+    componentNames: componentNames,
+    stateTypes: stateTypeByName,
+    actionNames: actionNames,
+    semaOpts: opts
+  )
   for component in program.components:
     var componentLocalTypes: Table[string, string]
     for param in component.params:
@@ -1169,16 +1115,7 @@ proc semanticCheck*(
       componentLocalTypes[lb.name] = if lb.typ.len > 0: lb.typ else: "Any"
 
     for node in component.body:
-      collectUiTokensAndValidate(
-        result.diagnostics,
-        node,
-        result.tokenTypeByKey,
-        componentNames,
-        componentLocalTypes,
-        stateTypeByName,
-        actionNames,
-        opts
-      )
+      collectUiTokensAndValidate(result.diagnostics, node, componentLocalTypes, ctx)
 
   # Escape declarations are relative-path strings; only shape checks here.
   for esc in program.escapes:
@@ -1187,87 +1124,26 @@ proc semanticCheck*(
 
   # Window config checks.
   let win = program.window
-  if win.hasWidth and win.width <= 0:
-    result.diagnostics.add mkDiagnostic(
-      win.range,
-      gsError,
-      "window.width must be > 0",
-      "GUI_SEMA_WINDOW_DIM"
-    )
-  if win.hasHeight and win.height <= 0:
-    result.diagnostics.add mkDiagnostic(
-      win.range,
-      gsError,
-      "window.height must be > 0",
-      "GUI_SEMA_WINDOW_DIM"
-    )
-  if win.hasMinWidth and win.minWidth <= 0:
-    result.diagnostics.add mkDiagnostic(
-      win.range,
-      gsError,
-      "window.minWidth must be > 0",
-      "GUI_SEMA_WINDOW_DIM"
-    )
-  if win.hasMinHeight and win.minHeight <= 0:
-    result.diagnostics.add mkDiagnostic(
-      win.range,
-      gsError,
-      "window.minHeight must be > 0",
-      "GUI_SEMA_WINDOW_DIM"
-    )
-  if win.hasMaxWidth and win.maxWidth <= 0:
-    result.diagnostics.add mkDiagnostic(
-      win.range,
-      gsError,
-      "window.maxWidth must be > 0",
-      "GUI_SEMA_WINDOW_DIM"
-    )
-  if win.hasMaxHeight and win.maxHeight <= 0:
-    result.diagnostics.add mkDiagnostic(
-      win.range,
-      gsError,
-      "window.maxHeight must be > 0",
-      "GUI_SEMA_WINDOW_DIM"
-    )
-  if win.hasMinWidth and win.hasMaxWidth and win.minWidth > win.maxWidth:
-    result.diagnostics.add mkDiagnostic(
-      win.range,
-      gsError,
-      "window.minWidth cannot be greater than window.maxWidth",
-      "GUI_SEMA_WINDOW_RANGE"
-    )
-  if win.hasMinHeight and win.hasMaxHeight and win.minHeight > win.maxHeight:
-    result.diagnostics.add mkDiagnostic(
-      win.range,
-      gsError,
-      "window.minHeight cannot be greater than window.maxHeight",
-      "GUI_SEMA_WINDOW_RANGE"
-    )
-  if win.hasWidth and win.hasMinWidth and win.width < win.minWidth:
-    result.diagnostics.add mkDiagnostic(
-      win.range,
-      gsError,
-      "window.width cannot be smaller than window.minWidth",
-      "GUI_SEMA_WINDOW_RANGE"
-    )
-  if win.hasHeight and win.hasMinHeight and win.height < win.minHeight:
-    result.diagnostics.add mkDiagnostic(
-      win.range,
-      gsError,
-      "window.height cannot be smaller than window.minHeight",
-      "GUI_SEMA_WINDOW_RANGE"
-    )
-  if win.hasWidth and win.hasMaxWidth and win.width > win.maxWidth:
-    result.diagnostics.add mkDiagnostic(
-      win.range,
-      gsError,
-      "window.width cannot be greater than window.maxWidth",
-      "GUI_SEMA_WINDOW_RANGE"
-    )
-  if win.hasHeight and win.hasMaxHeight and win.height > win.maxHeight:
-    result.diagnostics.add mkDiagnostic(
-      win.range,
-      gsError,
-      "window.height cannot be greater than window.maxHeight",
-      "GUI_SEMA_WINDOW_RANGE"
-    )
+
+  template winDimCheck(hasField: bool, value: float64, name: string) =
+    if hasField and value <= 0:
+      result.diagnostics.add mkDiagnostic(win.range, gsError, "window." & name & " must be > 0", "GUI_SEMA_WINDOW_DIM")
+
+  template winRangeCheck(hasA, hasB: bool, valA, valB: float64, nameA, nameB, relation: string) =
+    if hasA and hasB and valA > valB:
+      result.diagnostics.add mkDiagnostic(win.range, gsError,
+        "window." & nameA & " cannot be " & relation & " window." & nameB, "GUI_SEMA_WINDOW_RANGE")
+
+  winDimCheck(win.hasWidth, win.width, "width")
+  winDimCheck(win.hasHeight, win.height, "height")
+  winDimCheck(win.hasMinWidth, win.minWidth, "minWidth")
+  winDimCheck(win.hasMinHeight, win.minHeight, "minHeight")
+  winDimCheck(win.hasMaxWidth, win.maxWidth, "maxWidth")
+  winDimCheck(win.hasMaxHeight, win.maxHeight, "maxHeight")
+
+  winRangeCheck(win.hasMinWidth, win.hasMaxWidth, win.minWidth, win.maxWidth, "minWidth", "maxWidth", "greater than")
+  winRangeCheck(win.hasMinHeight, win.hasMaxHeight, win.minHeight, win.maxHeight, "minHeight", "maxHeight", "greater than")
+  winRangeCheck(win.hasWidth, win.hasMinWidth, win.minWidth, win.width, "width", "minWidth", "smaller than")
+  winRangeCheck(win.hasHeight, win.hasMinHeight, win.minHeight, win.height, "height", "minHeight", "smaller than")
+  winRangeCheck(win.hasWidth, win.hasMaxWidth, win.width, win.maxWidth, "width", "maxWidth", "greater than")
+  winRangeCheck(win.hasHeight, win.hasMaxHeight, win.height, win.maxHeight, "height", "maxHeight", "greater than")

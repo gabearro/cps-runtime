@@ -2,7 +2,7 @@
 ##
 ## Announces to trackers and returns peer lists.
 
-import std/[strutils, sets, uri, times, net, nativesockets]
+import std/[strutils, sets, uri, net, nativesockets]
 import ../runtime
 import ../transform
 import ../eventloop
@@ -19,6 +19,10 @@ import utils
 
 const
   MaxBodySize = 1_048_576  ## Max tracker response body size (1 MiB)
+
+# ============================================================
+# Types
+# ============================================================
 
 type
   TrackerPeer* = object
@@ -53,12 +57,33 @@ type
     compact*: bool
     numWant*: int
 
+  ScrapeInfo* = object
+    complete*: int       ## Number of seeders
+    incomplete*: int     ## Number of leechers
+    downloaded*: int     ## Number of completed downloads
+
   TrackerError* = object of CatchableError
   TrackerRedirect* = object of CatchableError  ## HTTP→HTTPS redirect; msg = new URL
-  HttpResponseHead = object
+
+  HttpGetResult = object
     statusCode: int
-    contentLength: int
     location: string
+    body: string
+
+# ============================================================
+# UDP protocol constants (BEP 15)
+# ============================================================
+
+const
+  UdpConnectAction = 0'u32
+  UdpAnnounceAction = 1'u32
+  UdpScrapeAction = 2'u32
+  UdpErrorAction = 3'u32
+  UdpProtocolId = 0x41727101980'u64  # magic constant
+
+# ============================================================
+# Pure helpers
+# ============================================================
 
 proc defaultAnnounceParams*(info: TorrentInfo, peerId: array[20, byte],
                             listenPort: uint16): AnnounceParams =
@@ -74,7 +99,18 @@ proc defaultAnnounceParams*(info: TorrentInfo, peerId: array[20, byte],
     numWant: 200
   )
 
-# HTTP tracker helpers
+proc parseTrackerUrl(url: string, defaultPort: int): tuple[host: string, port: int, requestTarget: string] =
+  ## Extract host, port, and HTTP request target from a tracker URL.
+  let parsed = parseUri(url)
+  result.host = parsed.hostname
+  result.port = if parsed.port.len > 0: parseInt(parsed.port) else: defaultPort
+  let path = if parsed.path.len > 0: parsed.path else: "/"
+  result.requestTarget = if parsed.query.len > 0: path & "?" & parsed.query else: path
+
+proc buildHttpGetRequest(requestTarget, host: string): string =
+  "GET " & requestTarget & " HTTP/1.1\r\nHost: " & host &
+    "\r\nConnection: close\r\n\r\n"
+
 proc buildAnnounceUrl*(baseUrl: string, params: AnnounceParams): string =
   var url = baseUrl
   if '?' in url: url.add('&')
@@ -83,20 +119,47 @@ proc buildAnnounceUrl*(baseUrl: string, params: AnnounceParams): string =
   url.add("info_hash=")
   url.add(infoHashUrlEncoded(TorrentInfo(infoHash: params.infoHash)))
   url.add("&peer_id=")
+  const hexUp = "0123456789ABCDEF"
   for b in params.peerId:
     url.add('%')
-    url.add(b.int.toHex(2).toUpperAscii())
-  url.add("&port=" & $params.port)
-  url.add("&uploaded=" & $params.uploaded)
-  url.add("&downloaded=" & $params.downloaded)
-  url.add("&left=" & $params.left)
+    url.add(hexUp[b.int shr 4])
+    url.add(hexUp[b.int and 0x0F])
+  url.add("&port=")
+  url.add($params.port)
+  url.add("&uploaded=")
+  url.add($params.uploaded)
+  url.add("&downloaded=")
+  url.add($params.downloaded)
+  url.add("&left=")
+  url.add($params.left)
   if params.compact:
     url.add("&compact=1")
   if params.numWant > 0:
-    url.add("&numwant=" & $params.numWant)
+    url.add("&numwant=")
+    url.add($params.numWant)
   if params.event != teNone:
-    url.add("&event=" & $params.event)
+    url.add("&event=")
+    url.add($params.event)
   url
+
+proc announceToScrapeUrl*(announceUrl: string): string =
+  ## Derive scrape URL from announce URL by replacing last "announce" with "scrape".
+  let idx = announceUrl.rfind("announce")
+  if idx < 0:
+    raise newException(TrackerError, "cannot derive scrape URL: no 'announce' in " & announceUrl)
+  announceUrl[0 ..< idx] & "scrape" & announceUrl[idx + 8 .. ^1]
+
+proc buildScrapeUrl(announceUrl: string, infoHash: array[20, byte]): string =
+  ## Build the full scrape URL with info_hash query parameter.
+  result = announceToScrapeUrl(announceUrl)
+  if '?' in result: result.add('&')
+  else: result.add('?')
+  result.add("info_hash=")
+  result.add(infoHashUrlEncoded(TorrentInfo(infoHash: infoHash)))
+
+# ============================================================
+# Peer parsing
+# ============================================================
 
 proc parseCompactPeers*(data: string): seq[TrackerPeer] =
   ## Parse compact peer format (6 bytes per peer: 4 IP + 2 port).
@@ -106,8 +169,8 @@ proc parseCompactPeers*(data: string): seq[TrackerPeer] =
   result = newSeq[TrackerPeer](count)
   for i in 0 ..< count:
     let offset = i * 6
-    let ip = $data[offset].byte & "." & $data[offset+1].byte & "." &
-             $data[offset+2].byte & "." & $data[offset+3].byte
+    let ip = ipv4ToString([data[offset].byte, data[offset+1].byte,
+                           data[offset+2].byte, data[offset+3].byte])
     let port = (uint16(data[offset+4].byte) shl 8) or uint16(data[offset+5].byte)
     result[i] = TrackerPeer(ip: ip, port: port)
 
@@ -117,17 +180,23 @@ proc parseCompactPeers6*(data: string): seq[TrackerPeer] =
     raise newException(TrackerError, "compact peers6 not multiple of 18")
   let count = data.len div 18
   result = newSeq[TrackerPeer](count)
+  const hexLo = "0123456789abcdef"
   for i in 0 ..< count:
     let offset = i * 18
-    var parts: seq[string]
+    # Build expanded IPv6 hex directly (avoids seq[string] + join allocation)
+    var expanded = newStringOfCap(39)
     for w in 0 ..< 8:
-      let hi = data[offset + w*2].byte
-      let lo = data[offset + w*2 + 1].byte
-      let word = (uint16(hi) shl 8) or uint16(lo)
-      parts.add(word.toHex(4).toLowerAscii())
-    let ip = canonicalizeIpv6(parts.join(":"))
-    let port = (uint16(data[offset+16].byte) shl 8) or uint16(data[offset+17].byte)
-    result[i] = TrackerPeer(ip: ip, port: port)
+      if w > 0: expanded.add(':')
+      let word = (uint16(data[offset + w*2].byte) shl 8) or
+                 uint16(data[offset + w*2 + 1].byte)
+      expanded.add(hexLo[int(word shr 12) and 0xF])
+      expanded.add(hexLo[int(word shr 8) and 0xF])
+      expanded.add(hexLo[int(word shr 4) and 0xF])
+      expanded.add(hexLo[int(word) and 0xF])
+    result[i] = TrackerPeer(
+      ip: canonicalizeIpv6(expanded),
+      port: (uint16(data[offset+16].byte) shl 8) or uint16(data[offset+17].byte)
+    )
 
 proc parseDictPeers*(list: BencodeValue): seq[TrackerPeer] =
   ## Parse dictionary peer format.
@@ -144,6 +213,10 @@ proc parseDictPeers*(list: BencodeValue): seq[TrackerPeer] =
     if idNode != nil and idNode.kind == bkStr and idNode.strVal.len == 20:
       copyMem(addr peer.peerId[0], unsafeAddr idNode.strVal[0], 20)
     result.add(peer)
+
+# ============================================================
+# Response parsing
+# ============================================================
 
 proc parseTrackerResponse*(data: string): TrackerResponse =
   let root = decode(data)
@@ -191,300 +264,224 @@ proc parseTrackerResponse*(data: string): TrackerResponse =
   if peers6 != nil and peers6.kind == bkStr and peers6.strVal.len > 0:
     result.peers.add(parseCompactPeers6(peers6.strVal))
 
-proc parseHttpResponseHead(headBlock: string): HttpResponseHead =
-  ## Parse HTTP status line and headers from a block without trailing CRLFCRLF.
-  if headBlock.len == 0:
-    raise newException(TrackerError, "empty HTTP response headers")
+proc parseScrapeResponse*(data: string, infoHash: array[20, byte]): ScrapeInfo =
+  let root = decode(data)
+  if root.kind != bkDict:
+    raise newException(TrackerError, "scrape response not a dictionary")
+  let failure = root.getOrDefault("failure reason")
+  if failure != nil and failure.kind == bkStr:
+    raise newException(TrackerError, "scrape failed: " & failure.strVal)
+  let files = root.getOrDefault("files")
+  if files == nil or files.kind != bkDict:
+    raise newException(TrackerError, "scrape response missing 'files' dict")
+  let hashStr = newString(20)
+  copyMem(addr hashStr[0], unsafeAddr infoHash[0], 20)
+  let entry = files.getOrDefault(hashStr)
+  if entry == nil or entry.kind != bkDict:
+    raise newException(TrackerError, "scrape: info_hash not found in response")
+  let c = entry.getOrDefault("complete")
+  if c != nil and c.kind == bkInt: result.complete = c.intVal.int
+  let i = entry.getOrDefault("incomplete")
+  if i != nil and i.kind == bkInt: result.incomplete = i.intVal.int
+  let d = entry.getOrDefault("downloaded")
+  if d != nil and d.kind == bkInt: result.downloaded = d.intVal.int
 
-  let lines = headBlock.split("\r\n")
-  if lines.len == 0:
-    raise newException(TrackerError, "missing HTTP status line")
-
-  let statusLine = lines[0]
-  if not statusLine.startsWith("HTTP/"):
-    raise newException(TrackerError, "invalid HTTP response: " & statusLine)
-
-  let parts = statusLine.split(' ', 2)
-  if parts.len < 2:
-    raise newException(TrackerError, "malformed status line")
-  let statusPart = parts[1]
-  try:
-    result.statusCode = parseInt(statusPart)
-  except ValueError:
-    raise newException(TrackerError, "malformed status code: " & statusPart)
-
-  result.contentLength = -1
-  result.location = ""
-  var i = 1
-  while i < lines.len:
-    let line = lines[i]
-    inc i
-    let colonIdx = line.find(':')
-    if colonIdx <= 0:
-      continue
-    let name = line[0 ..< colonIdx].strip().toLowerAscii()
-    let value = line[colonIdx+1 .. ^1].strip()
-    if name == "content-length":
-      try:
-        result.contentLength = parseInt(value)
-      except ValueError:
-        discard
-    elif name == "location":
-      result.location = value
+# ============================================================
+# CPS building blocks
+# ============================================================
 
 # Keep tracker CPS flows on copy semantics: large async environments carrying
 # request/response strings across await points can alias under ARC sink moves.
-# HTTP Tracker announce (using raw TCP, not httpclient to avoid circular deps)
-proc httpAnnounce*(announceUrl: string, params: AnnounceParams): CpsFuture[TrackerResponse] {.cps, nosinks.} =
-  let fullUrl: string = buildAnnounceUrl(announceUrl, params)
-  let parsed: Uri = parseUri(fullUrl)
 
-  let host: string = parsed.hostname
-  let port: int = if parsed.port.len > 0: parseInt(parsed.port) else: 80
-  let path: string = if parsed.path.len > 0: parsed.path else: "/"
-  let query: string = if parsed.query.len > 0: path & "?" & parsed.query else: path
+proc readHttpResponse(reader: BufferedReader): CpsFuture[HttpGetResult] {.cps, nosinks.} =
+  ## Read a complete HTTP/1.1 response (status line + headers + body).
+  var statusCode: int = 0
+  var location: string = ""
+  var body: string = ""
 
-  # Try IPv4 first, fall back to IPv6 for dual-stack tracker support
-  var stream: TcpStream
-  var connectError: string = ""
-  try:
-    stream = await withTimeout(tcpConnect(host, port, AF_INET), 15000)
-  except CatchableError as e:
-    connectError = e.msg
-  if connectError.len > 0:
-    stream = await withTimeout(tcpConnect(host, port, AF_INET6), 15000)
-
-  let httpReq: string = "GET " & query & " HTTP/1.1\r\nHost: " & host &
-                "\r\nConnection: close\r\n\r\n"
-  await stream.write(httpReq)
-
-  let reader: BufferedReader = newBufferedReader(stream.AsyncStream, 16384)
-
-  # Read status line
   let statusLine: string = await reader.readLine("\r\n")
   if not statusLine.startsWith("HTTP/"):
     raise newException(TrackerError, "invalid HTTP response: " & statusLine)
-
   let parts: seq[string] = statusLine.split(' ', 2)
   if parts.len < 2:
     raise newException(TrackerError, "malformed status line")
-  let statusPart: string = parts[1]
-  var statusCode: int = 0
   try:
-    statusCode = parseInt(statusPart)
+    statusCode = parseInt(parts[1])
   except ValueError:
-    stream.close()
-    raise newException(TrackerError, "malformed status code: " & statusPart)
-
-  # Read headers
+    raise newException(TrackerError, "malformed status code: " & parts[1])
+  # Headers
   var contentLength: int = -1
-  var location: string = ""
   while true:
     let line: string = await reader.readLine("\r\n")
-    if line.len == 0:
-      break
+    if line.len == 0: break
     let colonIdx: int = line.find(':')
     if colonIdx > 0:
       let name: string = line[0 ..< colonIdx].strip().toLowerAscii()
       let value: string = line[colonIdx+1..^1].strip()
       if name == "content-length":
-        try:
-          contentLength = parseInt(value)
-        except ValueError:
-          discard
+        try: contentLength = parseInt(value)
+        except ValueError: discard
       elif name == "location":
         location = value
-
-  # Handle redirects (HTTP → HTTP only; HTTP → HTTPS handled by announce())
-  if statusCode in [301, 302, 303, 307] and location.len > 0:
-    stream.close()
-    let redirectParsed: Uri = parseUri(location)
-    if redirectParsed.scheme == "https":
-      raise newException(TrackerRedirect, location)
-    else:
-      let resp: TrackerResponse = await httpAnnounce(location, params)
-      return resp
-
-  # Read body (max 1 MiB to prevent memory exhaustion)
-  var body: string = ""
+  # Body (max 1 MiB to prevent memory exhaustion)
   if contentLength > 0:
     if contentLength > MaxBodySize:
-      stream.close()
-      raise newException(TrackerError, "tracker response too large: " & $contentLength)
+      raise newException(TrackerError, "response too large: " & $contentLength)
     body = await reader.readExact(contentLength)
   else:
     while not reader.atEof and body.len < MaxBodySize:
       let chunk: string = await reader.read(8192)
       if chunk.len == 0: break
       body.add(chunk)
+  return HttpGetResult(statusCode: statusCode, location: location, body: body)
 
+proc dualStackTcpConnect(host: string, port: int): CpsFuture[TcpStream] {.cps, nosinks.} =
+  ## TCP connect trying IPv4 first, falling back to IPv6.
+  var v4Error: string = ""
+  try:
+    let stream: TcpStream = await withTimeout(tcpConnect(host, port, AF_INET), 15000)
+    return stream
+  except CatchableError as e:
+    v4Error = e.msg
+  if v4Error.len > 0:
+    let stream: TcpStream = await withTimeout(tcpConnect(host, port, AF_INET6), 15000)
+    return stream
+  raise newException(TrackerError, "TCP connect failed to " & host)
+
+proc resolveAndBindUdp(host: string): CpsFuture[tuple[sock: UdpSocket, ip: string]] {.cps, nosinks.} =
+  ## Resolve hostname (IPv4-first, IPv6 fallback) and create a matching UDP socket.
+  var ips: seq[string] = await asyncResolve(host, Port(0), AF_INET)
+  if ips.len == 0:
+    ips = await asyncResolve(host, Port(0), AF_INET6)
+  if ips.len == 0:
+    raise newException(TrackerError, "DNS resolution failed for " & host)
+  let isIpv6: bool = ':' in ips[0]
+  let domain: Domain = if isIpv6: AF_INET6 else: AF_INET
+  let sock: UdpSocket = newUdpSocket(domain)
+  if isIpv6:
+    sock.bindAddr("::", 0)
+  else:
+    sock.bindAddr("0.0.0.0", 0)
+  return (sock, ips[0])
+
+proc udpTrackerConnect(sock: UdpSocket, ip: string, port: int,
+                       transId: uint32): CpsFuture[uint64] {.cps, nosinks.} =
+  ## BEP 15 UDP tracker connect handshake. Returns the connection ID.
+  var connectReq: string = newStringOfCap(16)
+  connectReq.writeUint64BE(UdpProtocolId)
+  connectReq.writeUint32BE(UdpConnectAction)
+  connectReq.writeUint32BE(transId)
+  await sock.sendToAddr(connectReq, ip, port)
+  let connResp = await withTimeout(sock.recvFrom(65535), 15000)
+  if connResp.data.len < 16:
+    raise newException(TrackerError, "UDP connect response too short")
+  let respAction: uint32 = readUint32BE(connResp.data, 0)
+  let respTransId: uint32 = readUint32BE(connResp.data, 4)
+  if respAction != UdpConnectAction or respTransId != transId:
+    raise newException(TrackerError, "UDP connect response mismatch")
+  return readUint64BE(connResp.data, 8)
+
+# ============================================================
+# HTTP/HTTPS announce
+# ============================================================
+
+proc httpAnnounce*(announceUrl: string, params: AnnounceParams): CpsFuture[TrackerResponse] {.cps, nosinks.} =
+  let fullUrl: string = buildAnnounceUrl(announceUrl, params)
+  let urlParts = parseTrackerUrl(fullUrl, 80)
+  let host: string = urlParts.host
+  let port: int = urlParts.port
+  let requestTarget: string = urlParts.requestTarget
+  let stream: TcpStream = await dualStackTcpConnect(host, port)
+
+  var error: string = ""
+  var resp: HttpGetResult
+  try:
+    await stream.write(buildHttpGetRequest(requestTarget, host))
+    let reader: BufferedReader = newBufferedReader(stream.AsyncStream, 16384)
+    resp = await readHttpResponse(reader)
+  except CatchableError as e:
+    error = e.msg
   stream.close()
+  if error.len > 0:
+    raise newException(TrackerError, error)
 
-  if statusCode != 200:
-    raise newException(TrackerError, "tracker HTTP " & $statusCode & ": " & body)
+  # Handle redirects (HTTP → HTTP only; HTTP → HTTPS via TrackerRedirect)
+  if resp.statusCode in [301, 302, 303, 307] and resp.location.len > 0:
+    let redirectParsed: Uri = parseUri(resp.location)
+    if redirectParsed.scheme == "https":
+      raise newException(TrackerRedirect, resp.location)
+    else:
+      let r: TrackerResponse = await httpAnnounce(resp.location, params)
+      return r
 
-  return parseTrackerResponse(body)
+  if resp.statusCode != 200:
+    raise newException(TrackerError, "tracker HTTP " & $resp.statusCode & ": " & resp.body)
+  return parseTrackerResponse(resp.body)
 
-# HTTPS Tracker announce
 proc httpsAnnounce*(announceUrl: string, params: AnnounceParams): CpsFuture[TrackerResponse] {.cps, nosinks.} =
   let fullUrl: string = buildAnnounceUrl(announceUrl, params)
-  let parsed: Uri = parseUri(fullUrl)
-
-  let host: string = parsed.hostname
-  let port: int = if parsed.port.len > 0: parseInt(parsed.port) else: 443
-  let path: string = if parsed.path.len > 0: parsed.path else: "/"
-  let query: string = if parsed.query.len > 0: path & "?" & parsed.query else: path
-
-  # Try IPv4 first, fall back to IPv6 for dual-stack tracker support
-  var tcpStream: TcpStream
-  var tcpConnectError: string = ""
-  try:
-    tcpStream = await withTimeout(tcpConnect(host, port, AF_INET), 15000)
-  except CatchableError as e:
-    tcpConnectError = e.msg
-  if tcpConnectError.len > 0:
-    tcpStream = await withTimeout(tcpConnect(host, port, AF_INET6), 15000)
+  let urlParts = parseTrackerUrl(fullUrl, 443)
+  let host: string = urlParts.host
+  let port: int = urlParts.port
+  let requestTarget: string = urlParts.requestTarget
+  let tcpStream: TcpStream = await dualStackTcpConnect(host, port)
 
   let tlsStream: TlsStream = newTlsStream(tcpStream, host, @["http/1.1"])
-  var tlsConnectError: string = ""
+  var tlsError: string = ""
   try:
     await withTimeout(tlsConnect(tlsStream), 15000)
   except CatchableError as e:
-    tlsConnectError = e.msg
-  if tlsConnectError.len > 0:
+    tlsError = e.msg
+  if tlsError.len > 0:
     tcpStream.close()
-    raise newException(TrackerError, "TLS connect failed: " & tlsConnectError)
+    raise newException(TrackerError, "TLS connect failed: " & tlsError)
 
-  let httpReq: string = "GET " & query & " HTTP/1.1\r\nHost: " & host &
-                "\r\nConnection: close\r\n\r\n"
-  await tlsStream.write(httpReq)
-
-  let reader: BufferedReader = newBufferedReader(tlsStream.AsyncStream, 16384)
-
-  # Read status line
-  let statusLine: string = await reader.readLine("\r\n")
-  if not statusLine.startsWith("HTTP/"):
-    raise newException(TrackerError, "invalid HTTP response: " & statusLine)
-
-  let parts: seq[string] = statusLine.split(' ', 2)
-  if parts.len < 2:
-    raise newException(TrackerError, "malformed status line")
-  let statusPart: string = parts[1]
-  var statusCode: int = 0
+  var error: string = ""
+  var resp: HttpGetResult
   try:
-    statusCode = parseInt(statusPart)
-  except ValueError:
-    tlsStream.close()
-    raise newException(TrackerError, "malformed status code: " & statusPart)
-
-  # Read headers
-  var contentLength: int = -1
-  var location: string = ""
-  while true:
-    let line: string = await reader.readLine("\r\n")
-    if line.len == 0:
-      break
-    let colonIdx: int = line.find(':')
-    if colonIdx > 0:
-      let name: string = line[0 ..< colonIdx].strip().toLowerAscii()
-      let value: string = line[colonIdx+1..^1].strip()
-      if name == "content-length":
-        try:
-          contentLength = parseInt(value)
-        except ValueError:
-          discard
-      elif name == "location":
-        location = value
+    await tlsStream.write(buildHttpGetRequest(requestTarget, host))
+    let reader: BufferedReader = newBufferedReader(tlsStream.AsyncStream, 16384)
+    resp = await readHttpResponse(reader)
+  except CatchableError as e:
+    error = e.msg
+  tlsStream.close()
+  if error.len > 0:
+    raise newException(TrackerError, error)
 
   # Handle redirects
-  if statusCode in [301, 302, 303, 307] and location.len > 0:
-    tlsStream.close()
-    # Follow redirect (recursive, one level)
-    let redirectParsed: Uri = parseUri(location)
+  if resp.statusCode in [301, 302, 303, 307] and resp.location.len > 0:
+    let redirectParsed: Uri = parseUri(resp.location)
     if redirectParsed.scheme == "https":
-      let resp: TrackerResponse = await httpsAnnounce(location, params)
-      return resp
+      let r: TrackerResponse = await httpsAnnounce(resp.location, params)
+      return r
     else:
-      let resp: TrackerResponse = await httpAnnounce(location, params)
-      return resp
+      let r: TrackerResponse = await httpAnnounce(resp.location, params)
+      return r
 
-  # Read body (max 1 MiB to prevent memory exhaustion)
-  var body: string = ""
-  if contentLength > 0:
-    if contentLength > MaxBodySize:
-      tlsStream.close()
-      raise newException(TrackerError, "tracker response too large: " & $contentLength)
-    body = await reader.readExact(contentLength)
-  else:
-    while not reader.atEof and body.len < MaxBodySize:
-      let chunk: string = await reader.read(8192)
-      if chunk.len == 0: break
-      body.add(chunk)
+  if resp.statusCode != 200:
+    raise newException(TrackerError, "tracker HTTPS " & $resp.statusCode & ": " & resp.body)
+  return parseTrackerResponse(resp.body)
 
-  tlsStream.close()
-
-  if statusCode != 200:
-    raise newException(TrackerError, "tracker HTTPS " & $statusCode & ": " & body)
-
-  return parseTrackerResponse(body)
-
-# UDP Tracker protocol (BEP 15)
-const
-  UdpConnectAction = 0'u32
-  UdpAnnounceAction = 1'u32
-  UdpScrapeAction = 2'u32
-  UdpErrorAction = 3'u32
-  UdpProtocolId = 0x41727101980'u64  # magic constant
+# ============================================================
+# UDP announce (BEP 15)
+# ============================================================
 
 proc udpAnnounce*(announceUrl: string, params: AnnounceParams): CpsFuture[TrackerResponse] {.cps, nosinks.} =
   let parsed: Uri = parseUri(announceUrl)
   let host: string = parsed.hostname
   let port: uint16 = if parsed.port.len > 0: parseInt(parsed.port).uint16 else: 6969'u16
 
-  # Resolve hostname — try IPv4 first, fall back to IPv6
-  var ips: seq[string] = await asyncResolve(host, Port(0), AF_INET)
-  if ips.len == 0:
-    ips = await asyncResolve(host, Port(0), AF_INET6)
-  if ips.len == 0:
-    raise newException(TrackerError, "DNS resolution failed for " & host)
+  let resolved = await resolveAndBindUdp(host)
+  let sock: UdpSocket = resolved.sock
+  let ip: string = resolved.ip
 
-  # Detect address family from resolved IP and create matching socket
-  let trackerIsIpv6: bool = ':' in ips[0]
-  let sockDomain: Domain = if trackerIsIpv6: AF_INET6 else: AF_INET
-  let sock: UdpSocket = newUdpSocket(sockDomain)
-  if trackerIsIpv6:
-    sock.bindAddr("::", 0)
-  else:
-    sock.bindAddr("0.0.0.0", 0)
-
-  # Use try/except + close + re-raise to ensure socket cleanup (CPS can't return inside try/finally)
   var udpError: string = ""
   var annRespData: string = ""
-  var transId: uint32 = uint32(epochTime().int64 and 0xFFFFFFFF)
+  var transId: uint32 = btRandU32()
   try:
+    let connectionId: uint64 = await udpTrackerConnect(sock, ip, port.int, transId)
 
-    # Step 1: Connect request
-    var connectReq = newStringOfCap(16)
-    connectReq.writeUint64BE(UdpProtocolId)
-    connectReq.writeUint32BE(UdpConnectAction)
-    connectReq.writeUint32BE(transId)
-
-    await sock.sendToAddr(connectReq, ips[0], port.int)
-
-    # Wait for connect response with timeout
-    let connResp = await withTimeout(sock.recvFrom(65535), 10000)
-
-    if connResp.data.len < 16:
-      raise newException(TrackerError, "UDP connect response too short")
-
-    let respAction = readUint32BE(connResp.data, 0)
-    let respTransId = readUint32BE(connResp.data, 4)
-    if respAction != UdpConnectAction or respTransId != transId:
-      raise newException(TrackerError, "UDP connect response mismatch")
-
-    let connectionId = readUint64BE(connResp.data, 8)
-
-    # Step 2: Announce request
+    # Announce request
     transId = transId + 1
     var announceReq = newStringOfCap(98)
     announceReq.writeUint64BE(connectionId)
@@ -506,21 +503,20 @@ proc udpAnnounce*(announceUrl: string, params: AnnounceParams): CpsFuture[Tracke
     let eventCode: uint32 = case params.event
       of teNone: 0
       of teCompleted: 1
-      of teStopped: 3
       of teStarted: 2
+      of teStopped: 3
     announceReq.writeUint32BE(eventCode)
     # ip address (4 bytes, 0 = default)
     announceReq.writeUint32BE(0)
     # key (4 bytes, random)
-    announceReq.writeUint32BE(uint32(epochTime().int64 and 0xFFFFFFFF) xor 0xDEADBEEF'u32)
+    announceReq.writeUint32BE(btRandU32())
     # num_want (4 bytes)
     announceReq.writeInt32BE(int32(params.numWant))
     # port (2 bytes)
     announceReq.add(char((params.port shr 8).byte))
     announceReq.add(char((params.port and 0xFF).byte))
 
-    await sock.sendToAddr(announceReq, ips[0], port.int)
-
+    await sock.sendToAddr(announceReq, ip, port.int)
     let annResp = await withTimeout(sock.recvFrom(65535), 10000)
     annRespData = annResp.data
   except CatchableError as e:
@@ -546,184 +542,80 @@ proc udpAnnounce*(announceUrl: string, params: AnnounceParams): CpsFuture[Tracke
   resp.interval = readInt32BE(annRespData, 8).int
   resp.incomplete = readInt32BE(annRespData, 12).int  # leechers
   resp.complete = readInt32BE(annRespData, 16).int     # seeders
-
-  # Parse compact peers from remaining data
-  let peersData: string = annRespData[20..^1]
-  resp.peers = parseCompactPeers(peersData)
+  resp.peers = parseCompactPeers(annRespData[20..^1])
   return resp
 
 # ============================================================
-# Scrape (BEP 48)
+# HTTP/HTTPS/UDP scrape (BEP 48)
 # ============================================================
 
-type
-  ScrapeInfo* = object
-    complete*: int       ## Number of seeders
-    incomplete*: int     ## Number of leechers
-    downloaded*: int     ## Number of completed downloads
-
-proc announceToScrapeUrl*(announceUrl: string): string =
-  ## Derive scrape URL from announce URL by replacing last "announce" with "scrape".
-  let idx = announceUrl.rfind("announce")
-  if idx < 0:
-    raise newException(TrackerError, "cannot derive scrape URL: no 'announce' in " & announceUrl)
-  result = announceUrl[0 ..< idx] & "scrape" & announceUrl[idx + 8 .. ^1]
-
-proc parseScrapeResponse*(data: string, infoHash: array[20, byte]): ScrapeInfo =
-  let root = decode(data)
-  if root.kind != bkDict:
-    raise newException(TrackerError, "scrape response not a dictionary")
-  let failure = root.getOrDefault("failure reason")
-  if failure != nil and failure.kind == bkStr:
-    raise newException(TrackerError, "scrape failed: " & failure.strVal)
-  let files = root.getOrDefault("files")
-  if files == nil or files.kind != bkDict:
-    raise newException(TrackerError, "scrape response missing 'files' dict")
-  let hashStr = newString(20)
-  copyMem(addr hashStr[0], unsafeAddr infoHash[0], 20)
-  let entry = files.getOrDefault(hashStr)
-  if entry == nil or entry.kind != bkDict:
-    raise newException(TrackerError, "scrape: info_hash not found in response")
-  let c = entry.getOrDefault("complete")
-  if c != nil and c.kind == bkInt: result.complete = c.intVal.int
-  let i = entry.getOrDefault("incomplete")
-  if i != nil and i.kind == bkInt: result.incomplete = i.intVal.int
-  let d = entry.getOrDefault("downloaded")
-  if d != nil and d.kind == bkInt: result.downloaded = d.intVal.int
-
 proc httpScrape*(announceUrl: string, infoHash: array[20, byte]): CpsFuture[ScrapeInfo] {.cps, nosinks.} =
-  let scrapeBase: string = announceToScrapeUrl(announceUrl)
-  var url: string = scrapeBase
-  if '?' in url: url.add('&')
-  else: url.add('?')
-  url.add("info_hash=")
-  url.add(infoHashUrlEncoded(TorrentInfo(infoHash: infoHash)))
-
-  let parsed: Uri = parseUri(url)
-  let host: string = parsed.hostname
-  let port: int = if parsed.port.len > 0: parseInt(parsed.port) else: 80
-  let path: string = if parsed.path.len > 0: parsed.path else: "/"
-  let query: string = if parsed.query.len > 0: path & "?" & parsed.query else: path
-
+  let url: string = buildScrapeUrl(announceUrl, infoHash)
+  let urlParts = parseTrackerUrl(url, 80)
+  let host: string = urlParts.host
+  let port: int = urlParts.port
+  let requestTarget: string = urlParts.requestTarget
   let stream: TcpStream = await withTimeout(tcpConnect(host, port), 15000)
-  let httpReq: string = "GET " & query & " HTTP/1.1\r\nHost: " & host &
-                "\r\nConnection: close\r\n\r\n"
-  await stream.write(httpReq)
-  let reader: BufferedReader = newBufferedReader(stream.AsyncStream, 16384)
 
-  let statusLine: string = await reader.readLine("\r\n")
-  if not statusLine.startsWith("HTTP/"):
-    raise newException(TrackerError, "invalid HTTP response: " & statusLine)
-  let statusParts: seq[string] = statusLine.split(' ', 2)
-  if statusParts.len < 2:
-    raise newException(TrackerError, "malformed status line")
-  let statusCode: int = parseInt(statusParts[1])
-
-  var contentLength: int = -1
-  while true:
-    let line: string = await reader.readLine("\r\n")
-    if line.len == 0: break
-    let colonIdx: int = line.find(':')
-    if colonIdx > 0:
-      let name: string = line[0 ..< colonIdx].strip().toLowerAscii()
-      let value: string = line[colonIdx+1..^1].strip()
-      if name == "content-length":
-        try: contentLength = parseInt(value)
-        except ValueError: discard
-
-  var body: string = ""
-  if contentLength > 0:
-    if contentLength > MaxBodySize:
-      stream.close()
-      raise newException(TrackerError, "scrape response too large")
-    body = await reader.readExact(contentLength)
-  else:
-    while not reader.atEof and body.len < MaxBodySize:
-      let chunk: string = await reader.read(8192)
-      if chunk.len == 0: break
-      body.add(chunk)
+  var error: string = ""
+  var resp: HttpGetResult
+  try:
+    await stream.write(buildHttpGetRequest(requestTarget, host))
+    let reader: BufferedReader = newBufferedReader(stream.AsyncStream, 16384)
+    resp = await readHttpResponse(reader)
+  except CatchableError as e:
+    error = e.msg
   stream.close()
+  if error.len > 0:
+    raise newException(TrackerError, error)
 
-  if statusCode != 200:
-    raise newException(TrackerError, "scrape HTTP " & $statusCode)
-  return parseScrapeResponse(body, infoHash)
+  if resp.statusCode != 200:
+    raise newException(TrackerError, "scrape HTTP " & $resp.statusCode)
+  return parseScrapeResponse(resp.body, infoHash)
 
 proc httpsScrape*(announceUrl: string, infoHash: array[20, byte]): CpsFuture[ScrapeInfo] {.cps, nosinks.} =
-  let scrapeBase: string = announceToScrapeUrl(announceUrl)
-  var url: string = scrapeBase
-  if '?' in url: url.add('&')
-  else: url.add('?')
-  url.add("info_hash=")
-  url.add(infoHashUrlEncoded(TorrentInfo(infoHash: infoHash)))
-
-  let parsed: Uri = parseUri(url)
-  let host: string = parsed.hostname
-  let port: int = if parsed.port.len > 0: parseInt(parsed.port) else: 443
-  let path: string = if parsed.path.len > 0: parsed.path else: "/"
-  let query: string = if parsed.query.len > 0: path & "?" & parsed.query else: path
-
+  let url: string = buildScrapeUrl(announceUrl, infoHash)
+  let urlParts = parseTrackerUrl(url, 443)
+  let host: string = urlParts.host
+  let port: int = urlParts.port
+  let requestTarget: string = urlParts.requestTarget
   let tcpStream: TcpStream = await withTimeout(tcpConnect(host, port), 15000)
+
   let tlsStream: TlsStream = newTlsStream(tcpStream, host, @["http/1.1"])
+  var tlsError: string = ""
   try:
     await withTimeout(tlsConnect(tlsStream), 15000)
   except CatchableError as e:
+    tlsError = e.msg
+  if tlsError.len > 0:
     tcpStream.close()
-    raise newException(TrackerError, "TLS connect failed: " & e.msg)
+    raise newException(TrackerError, "TLS connect failed: " & tlsError)
 
-  let httpReq: string = "GET " & query & " HTTP/1.1\r\nHost: " & host &
-                "\r\nConnection: close\r\n\r\n"
-  await tlsStream.write(httpReq)
-  let reader: BufferedReader = newBufferedReader(tlsStream.AsyncStream, 16384)
-
-  let statusLine: string = await reader.readLine("\r\n")
-  if not statusLine.startsWith("HTTP/"):
-    raise newException(TrackerError, "invalid HTTP response: " & statusLine)
-  let statusParts: seq[string] = statusLine.split(' ', 2)
-  if statusParts.len < 2:
-    raise newException(TrackerError, "malformed status line")
-  let statusCode: int = parseInt(statusParts[1])
-
-  var contentLength: int = -1
-  var location: string = ""
-  while true:
-    let line: string = await reader.readLine("\r\n")
-    if line.len == 0: break
-    let colonIdx: int = line.find(':')
-    if colonIdx > 0:
-      let name: string = line[0 ..< colonIdx].strip().toLowerAscii()
-      let value: string = line[colonIdx+1..^1].strip()
-      if name == "content-length":
-        try: contentLength = parseInt(value)
-        except ValueError: discard
-      elif name == "location":
-        location = value
-
-  if statusCode in [301, 302, 303, 307] and location.len > 0:
-    tlsStream.close()
-    let redirectParsed: Uri = parseUri(location)
-    if redirectParsed.scheme == "https":
-      let resp: ScrapeInfo = await httpsScrape(location, infoHash)
-      return resp
-    else:
-      let resp: ScrapeInfo = await httpScrape(location, infoHash)
-      return resp
-
-  var body: string = ""
-  if contentLength > 0:
-    if contentLength > MaxBodySize:
-      tlsStream.close()
-      raise newException(TrackerError, "scrape response too large")
-    body = await reader.readExact(contentLength)
-  else:
-    while not reader.atEof and body.len < MaxBodySize:
-      let chunk: string = await reader.read(8192)
-      if chunk.len == 0: break
-      body.add(chunk)
+  var error: string = ""
+  var resp: HttpGetResult
+  try:
+    await tlsStream.write(buildHttpGetRequest(requestTarget, host))
+    let reader: BufferedReader = newBufferedReader(tlsStream.AsyncStream, 16384)
+    resp = await readHttpResponse(reader)
+  except CatchableError as e:
+    error = e.msg
   tlsStream.close()
+  if error.len > 0:
+    raise newException(TrackerError, error)
 
-  if statusCode != 200:
-    raise newException(TrackerError, "scrape HTTPS " & $statusCode)
-  return parseScrapeResponse(body, infoHash)
+  # Handle redirects
+  if resp.statusCode in [301, 302, 303, 307] and resp.location.len > 0:
+    let redirectParsed: Uri = parseUri(resp.location)
+    if redirectParsed.scheme == "https":
+      let r: ScrapeInfo = await httpsScrape(resp.location, infoHash)
+      return r
+    else:
+      let r: ScrapeInfo = await httpScrape(resp.location, infoHash)
+      return r
+
+  if resp.statusCode != 200:
+    raise newException(TrackerError, "scrape HTTPS " & $resp.statusCode)
+  return parseScrapeResponse(resp.body, infoHash)
 
 proc udpScrape*(announceUrl: string, infoHash: array[20, byte]): CpsFuture[ScrapeInfo] {.cps, nosinks.} =
   ## UDP tracker scrape (BEP 15).
@@ -731,32 +623,16 @@ proc udpScrape*(announceUrl: string, infoHash: array[20, byte]): CpsFuture[Scrap
   let host: string = parsed.hostname
   let port: uint16 = if parsed.port.len > 0: parseInt(parsed.port).uint16 else: 6969'u16
 
-  let ips: seq[string] = await asyncResolve(host)
-  if ips.len == 0:
-    raise newException(TrackerError, "DNS resolution failed for " & host)
+  let resolved = await resolveAndBindUdp(host)
+  let sock: UdpSocket = resolved.sock
+  let ip: string = resolved.ip
 
-  let sock: UdpSocket = newUdpSocket(AF_INET)
-  sock.bindAddr("0.0.0.0", 0)
-
-  var transId: uint32 = uint32(epochTime().int64 and 0xFFFFFFFF)
+  var transId: uint32 = btRandU32()
   var udpError: string = ""
   var scrapeRespData: string = ""
 
   try:
-    # Connect
-    var connectReq = newStringOfCap(16)
-    connectReq.writeUint64BE(UdpProtocolId)
-    connectReq.writeUint32BE(UdpConnectAction)
-    connectReq.writeUint32BE(transId)
-    await sock.sendToAddr(connectReq, ips[0], port.int)
-    let connResp: Datagram = await withTimeout(sock.recvFrom(65535), 15000)
-    if connResp.data.len < 16:
-      raise newException(TrackerError, "UDP connect response too short")
-    let respAction: uint32 = readUint32BE(connResp.data, 0)
-    let respTransId: uint32 = readUint32BE(connResp.data, 4)
-    if respAction != UdpConnectAction or respTransId != transId:
-      raise newException(TrackerError, "UDP connect response mismatch")
-    let connectionId: uint64 = readUint64BE(connResp.data, 8)
+    let connectionId: uint64 = await udpTrackerConnect(sock, ip, port.int, transId)
 
     # Scrape request: connection_id(8) + action(4) + transaction_id(4) + info_hash(20)
     transId = transId + 1
@@ -767,8 +643,8 @@ proc udpScrape*(announceUrl: string, infoHash: array[20, byte]): CpsFuture[Scrap
     var ihStr = newString(20)
     copyMem(addr ihStr[0], unsafeAddr infoHash[0], 20)
     scrapeReq.add(ihStr)
-    await sock.sendToAddr(scrapeReq, ips[0], port.int)
-    let scrapeResp: Datagram = await withTimeout(sock.recvFrom(65535), 15000)
+    await sock.sendToAddr(scrapeReq, ip, port.int)
+    let scrapeResp = await withTimeout(sock.recvFrom(65535), 15000)
     scrapeRespData = scrapeResp.data
   except CatchableError as e:
     udpError = e.msg
@@ -791,6 +667,10 @@ proc udpScrape*(announceUrl: string, infoHash: array[20, byte]): CpsFuture[Scrap
     downloaded: readUint32BE(scrapeRespData, 12).int,
     incomplete: readUint32BE(scrapeRespData, 16).int
   )
+
+# ============================================================
+# Unified dispatch
+# ============================================================
 
 proc scrape*(announceUrl: string, infoHash: array[20, byte]): CpsFuture[ScrapeInfo] {.cps, nosinks.} =
   ## Scrape a tracker (auto-detects HTTP, HTTPS, or UDP).

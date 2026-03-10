@@ -105,6 +105,9 @@ type
     idx: int
     line: int
     col: int
+    markLine: int   # token start position
+    markCol: int
+    markIdx: int
     diagnostics: seq[GuiDiagnostic]
     tokens: seq[GuiToken]
 
@@ -113,12 +116,9 @@ proc atEnd(s: LexerState): bool {.inline.} =
 
 proc peek(s: LexerState, offset = 0): char {.inline.} =
   let pos = s.idx + offset
-  if pos < 0 or pos >= s.input.len:
-    '\0'
-  else:
-    s.input[pos]
+  if pos >= s.input.len: '\0' else: s.input[pos]
 
-proc advance(s: var LexerState): char =
+proc advance(s: var LexerState): char {.inline.} =
   if s.atEnd:
     return '\0'
   result = s.input[s.idx]
@@ -129,35 +129,33 @@ proc advance(s: var LexerState): char =
   else:
     inc s.col
 
-proc addToken(
-  s: var LexerState,
-  kind: GuiTokenKind,
-  text: string,
-  startLine: int,
-  startCol: int,
-  endLine: int,
-  endCol: int
-) =
+proc mark(s: var LexerState) {.inline.} =
+  s.markLine = s.line
+  s.markCol = s.col
+  s.markIdx = s.idx
+
+proc addToken(s: var LexerState, kind: GuiTokenKind, text: string) {.inline.} =
   s.tokens.add GuiToken(
     kind: kind,
     lexeme: text,
-    range: sourceRange(s.file, startLine, startCol, endLine, endCol)
+    range: sourceRange(s.file, s.markLine, s.markCol, s.line, s.col)
   )
 
-proc addDiag(
+proc addTokenAt(
   s: var LexerState,
-  startLine: int,
-  startCol: int,
-  msg: string,
-  code: string
-) =
+  kind: GuiTokenKind,
+  text: string,
+  startLine, startCol: int
+) {.inline.} =
+  s.tokens.add GuiToken(
+    kind: kind,
+    lexeme: text,
+    range: sourceRange(s.file, startLine, startCol, s.line, s.col)
+  )
+
+proc addDiag(s: var LexerState, msg: string, code: string) {.inline.} =
   s.diagnostics.add mkDiagnostic(
-    s.file,
-    startLine,
-    startCol,
-    gsError,
-    msg,
-    code
+    s.file, s.markLine, s.markCol, gsError, msg, code
   )
 
 proc isIdentStart(c: char): bool {.inline.} =
@@ -166,15 +164,16 @@ proc isIdentStart(c: char): bool {.inline.} =
 proc isIdentBody(c: char): bool {.inline.} =
   c == '_' or c.isAlphaNumeric
 
-# Forward declarations for mutual recursion (lexString calls lexIdentifier/lexNumber)
-proc lexIdentifier(s: var LexerState, startLine: int, startCol: int)
-proc lexNumber(s: var LexerState, startLine: int, startCol: int)
+# Forward declarations
+proc lexIdentifier(s: var LexerState)
+proc lexNumber(s: var LexerState)
+proc lexString(s: var LexerState)
 
 proc skipLineComment(s: var LexerState) =
   while not s.atEnd and s.peek() != '\n':
     discard s.advance()
 
-proc skipBlockComment(s: var LexerState, startLine: int, startCol: int) =
+proc skipBlockComment(s: var LexerState) =
   discard s.advance()
   discard s.advance()
   while not s.atEnd:
@@ -183,11 +182,140 @@ proc skipBlockComment(s: var LexerState, startLine: int, startCol: int) =
       discard s.advance()
       return
     discard s.advance()
-  s.addDiag(startLine, startCol, "unterminated block comment", "GUI_LEX_BLOCK_COMMENT")
+  s.addDiag("unterminated block comment", "GUI_LEX_BLOCK_COMMENT")
 
-proc lexString(s: var LexerState, startLine: int, startCol: int) =
+proc matchesWord(s: LexerState, offset: int, word: string): bool {.inline.} =
+  ## Check if input at idx+offset matches `word` followed by a non-identifier char.
+  for i in 0 ..< word.len:
+    if s.peek(offset + i) != word[i]:
+      return false
+  not s.peek(offset + word.len).isIdentBody
+
+proc lexOperatorOrPunct(s: var LexerState, errCode: string): bool =
+  ## Lex operators shared between top-level and interpolation contexts.
+  ## Caller must have called mark() before this. Returns true if consumed.
+  let c = s.peek()
+  case c
+  of '+':
+    discard s.advance()
+    s.addToken(gtkPlus, "+")
+  of '*':
+    discard s.advance()
+    s.addToken(gtkStar, "*")
+  of '/':
+    discard s.advance()
+    s.addToken(gtkSlash, "/")
+  of ',':
+    discard s.advance()
+    s.addToken(gtkComma, ",")
+  of ':':
+    discard s.advance()
+    s.addToken(gtkColon, ":")
+  of '[':
+    discard s.advance()
+    s.addToken(gtkLBracket, "[")
+  of ']':
+    discard s.advance()
+    s.addToken(gtkRBracket, "]")
+  of '.':
+    discard s.advance()
+    s.addToken(gtkDot, ".")
+  of '-':
+    discard s.advance()
+    s.addToken(gtkMinus, "-")
+  of '?':
+    discard s.advance()
+    if s.peek() == '?':
+      discard s.advance()
+      s.addToken(gtkQuestionQuestion, "??")
+    else:
+      s.addToken(gtkQuestion, "?")
+  of '=':
+    discard s.advance()
+    if s.peek() == '=':
+      discard s.advance()
+      s.addToken(gtkEqualEqual, "==")
+    else:
+      s.addToken(gtkEqual, "=")
+  of '!':
+    discard s.advance()
+    if s.peek() == '=':
+      discard s.advance()
+      s.addToken(gtkBangEqual, "!=")
+    else:
+      s.addToken(gtkBang, "!")
+  of '<':
+    discard s.advance()
+    if s.peek() == '=':
+      discard s.advance()
+      s.addToken(gtkLessEqual, "<=")
+    else:
+      s.addToken(gtkLess, "<")
+  of '>':
+    discard s.advance()
+    if s.peek() == '=':
+      discard s.advance()
+      s.addToken(gtkGreaterEqual, ">=")
+    else:
+      s.addToken(gtkGreater, ">")
+  of '&':
+    if s.peek(1) == '&':
+      discard s.advance()
+      discard s.advance()
+      s.addToken(gtkAndAnd, "&&")
+    else:
+      discard s.advance()
+      s.addDiag("unexpected character '&'", errCode)
+  of '|':
+    if s.peek(1) == '|':
+      discard s.advance()
+      discard s.advance()
+      s.addToken(gtkOrOr, "||")
+    else:
+      discard s.advance()
+      s.addDiag("unexpected character '|'", errCode)
+  else:
+    return false
+  return true
+
+proc lexInterpExpr(s: var LexerState) =
+  ## Lex tokens inside a string interpolation \(...) expression.
+  var depth = 1
+  while not s.atEnd and depth > 0:
+    let ic = s.peek()
+    if ic == ' ' or ic == '\t' or ic == '\r' or ic == '\n':
+      discard s.advance()
+      continue
+    s.mark()
+    if ic == '(':
+      discard s.advance()
+      s.addToken(gtkLParen, "(")
+      inc depth
+    elif ic == ')':
+      discard s.advance()
+      dec depth
+      if depth == 0:
+        break
+      s.addToken(gtkRParen, ")")
+    elif isIdentStart(ic):
+      s.lexIdentifier()
+    elif ic.isDigit:
+      s.lexNumber()
+    elif ic == '"':
+      s.lexString()
+    elif not s.lexOperatorOrPunct("GUI_LEX_INTERP_CHAR"):
+      discard s.advance()
+      s.addDiag("unexpected character '" & $ic & "' in string interpolation",
+        "GUI_LEX_INTERP_CHAR")
+  if depth > 0:
+    s.addDiag("unterminated interpolation expression in string",
+      "GUI_LEX_INTERP_UNTERM")
+
+proc lexString(s: var LexerState) =
+  let strStartLine = s.markLine
+  let strStartCol = s.markCol
   discard s.advance() # opening quote
-  var text = ""
+  var text = newStringOfCap(32)
   var terminated = false
   var hasInterp = false
   while not s.atEnd:
@@ -204,114 +332,12 @@ proc lexString(s: var LexerState, startLine: int, startCol: int) =
         # String interpolation: \(expr)
         discard s.advance()
         if not hasInterp:
-          # First interpolation — emit opening part
           hasInterp = true
-          s.addToken(gtkStringInterpStart, text, startLine, startCol, s.line, s.col)
+          s.addTokenAt(gtkStringInterpStart, text, strStartLine, strStartCol)
         else:
-          # Middle interpolation — emit mid part
-          s.addToken(gtkStringInterpMid, text, startLine, startCol, s.line, s.col)
-        text = ""
-        # Now lex tokens until matching ')' for the expression
-        var depth = 1
-        while not s.atEnd and depth > 0:
-          let innerStart = s.line
-          let innerCol = s.col
-          let ic = s.peek()
-          if ic in {' ', '\t', '\r', '\n'}:
-            discard s.advance()
-            continue
-          if ic == '(':
-            discard s.advance()
-            s.addToken(gtkLParen, "(", innerStart, innerCol, s.line, s.col)
-            inc depth
-          elif ic == ')':
-            discard s.advance()
-            dec depth
-            if depth == 0:
-              break
-            s.addToken(gtkRParen, ")", innerStart, innerCol, s.line, s.col)
-          elif isIdentStart(ic):
-            s.lexIdentifier(innerStart, innerCol)
-          elif ic.isDigit:
-            s.lexNumber(innerStart, innerCol)
-          elif ic == '"':
-            s.lexString(innerStart, innerCol)
-          elif ic == '.':
-            discard s.advance()
-            s.addToken(gtkDot, ".", innerStart, innerCol, s.line, s.col)
-          elif ic == '+':
-            discard s.advance()
-            s.addToken(gtkPlus, "+", innerStart, innerCol, s.line, s.col)
-          elif ic == '-':
-            discard s.advance()
-            s.addToken(gtkMinus, "-", innerStart, innerCol, s.line, s.col)
-          elif ic == '*':
-            discard s.advance()
-            s.addToken(gtkStar, "*", innerStart, innerCol, s.line, s.col)
-          elif ic == '/':
-            discard s.advance()
-            s.addToken(gtkSlash, "/", innerStart, innerCol, s.line, s.col)
-          elif ic == ',':
-            discard s.advance()
-            s.addToken(gtkComma, ",", innerStart, innerCol, s.line, s.col)
-          elif ic == ':':
-            discard s.advance()
-            s.addToken(gtkColon, ":", innerStart, innerCol, s.line, s.col)
-          elif ic == '[':
-            discard s.advance()
-            s.addToken(gtkLBracket, "[", innerStart, innerCol, s.line, s.col)
-          elif ic == ']':
-            discard s.advance()
-            s.addToken(gtkRBracket, "]", innerStart, innerCol, s.line, s.col)
-          elif ic == '?' and s.peek(1) == '?':
-            discard s.advance()
-            discard s.advance()
-            s.addToken(gtkQuestionQuestion, "??", innerStart, innerCol, s.line, s.col)
-          elif ic == '?':
-            discard s.advance()
-            s.addToken(gtkQuestion, "?", innerStart, innerCol, s.line, s.col)
-          elif ic == '=' and s.peek(1) == '=':
-            discard s.advance()
-            discard s.advance()
-            s.addToken(gtkEqualEqual, "==", innerStart, innerCol, s.line, s.col)
-          elif ic == '!' and s.peek(1) == '=':
-            discard s.advance()
-            discard s.advance()
-            s.addToken(gtkBangEqual, "!=", innerStart, innerCol, s.line, s.col)
-          elif ic == '!':
-            discard s.advance()
-            s.addToken(gtkBang, "!", innerStart, innerCol, s.line, s.col)
-          elif ic == '<' and s.peek(1) == '=':
-            discard s.advance()
-            discard s.advance()
-            s.addToken(gtkLessEqual, "<=", innerStart, innerCol, s.line, s.col)
-          elif ic == '<':
-            discard s.advance()
-            s.addToken(gtkLess, "<", innerStart, innerCol, s.line, s.col)
-          elif ic == '>' and s.peek(1) == '=':
-            discard s.advance()
-            discard s.advance()
-            s.addToken(gtkGreaterEqual, ">=", innerStart, innerCol, s.line, s.col)
-          elif ic == '>':
-            discard s.advance()
-            s.addToken(gtkGreater, ">", innerStart, innerCol, s.line, s.col)
-          elif ic == '&' and s.peek(1) == '&':
-            discard s.advance()
-            discard s.advance()
-            s.addToken(gtkAndAnd, "&&", innerStart, innerCol, s.line, s.col)
-          elif ic == '|' and s.peek(1) == '|':
-            discard s.advance()
-            discard s.advance()
-            s.addToken(gtkOrOr, "||", innerStart, innerCol, s.line, s.col)
-          else:
-            discard s.advance()
-            s.addDiag(innerStart, innerCol,
-              "unexpected character '" & $ic & "' in string interpolation",
-              "GUI_LEX_INTERP_CHAR")
-        if depth > 0:
-          s.addDiag(startLine, startCol,
-            "unterminated interpolation expression in string",
-            "GUI_LEX_INTERP_UNTERM")
+          s.addTokenAt(gtkStringInterpMid, text, strStartLine, strStartCol)
+        text = newStringOfCap(32)
+        s.lexInterpExpr()
         continue
       else:
         discard s.advance()
@@ -322,63 +348,64 @@ proc lexString(s: var LexerState, startLine: int, startCol: int) =
         of '"': text.add '"'
         of '\\': text.add '\\'
         of '0': text.add '\0'
-        else:
-          text.add esc
+        else: text.add esc
     else:
       text.add s.advance()
   if not terminated:
-    s.addDiag(startLine, startCol, "unterminated string literal", "GUI_LEX_STRING")
+    s.markLine = strStartLine
+    s.markCol = strStartCol
+    s.addDiag("unterminated string literal", "GUI_LEX_STRING")
     return
   if hasInterp:
-    s.addToken(gtkStringInterpEnd, text, startLine, startCol, s.line, s.col)
+    s.addTokenAt(gtkStringInterpEnd, text, strStartLine, strStartCol)
   else:
-    s.addToken(gtkString, text, startLine, startCol, s.line, s.col)
+    s.addTokenAt(gtkString, text, strStartLine, strStartCol)
 
-proc lexNumber(s: var LexerState, startLine: int, startCol: int) =
-  var text = ""
+proc lexNumber(s: var LexerState) =
+  let startIdx = s.markIdx
   var seenDot = false
   while true:
     let c = s.peek()
     if c.isDigit:
-      text.add s.advance()
-      continue
-    if c == '.' and not seenDot and s.peek(1).isDigit:
+      discard s.advance()
+    elif c == '.' and not seenDot and s.peek(1).isDigit:
       seenDot = true
-      text.add s.advance()
-      continue
-    break
+      discard s.advance()
+    else:
+      break
+  let text = s.input[startIdx ..< s.idx]
   if seenDot:
-    s.addToken(gtkFloat, text, startLine, startCol, s.line, s.col)
+    s.addToken(gtkFloat, text)
   else:
-    s.addToken(gtkInt, text, startLine, startCol, s.line, s.col)
+    s.addToken(gtkInt, text)
 
-proc lexIdentifier(s: var LexerState, startLine: int, startCol: int) =
-  var text = ""
-  text.add s.advance()
+proc lexIdentifier(s: var LexerState) =
+  let startIdx = s.markIdx
+  discard s.advance()
   while isIdentBody(s.peek()):
-    text.add s.advance()
+    discard s.advance()
+  let text = s.input[startIdx ..< s.idx]
   if text == "true" or text == "false":
-    s.addToken(gtkBool, text, startLine, startCol, s.line, s.col)
+    s.addToken(gtkBool, text)
   else:
-    s.addToken(gtkIdentifier, text, startLine, startCol, s.line, s.col)
+    s.addToken(gtkIdentifier, text)
 
 proc lexGui*(file: string, input: string): tuple[tokens: seq[GuiToken], diagnostics: seq[GuiDiagnostic]] =
   var s = LexerState(file: file, input: input, idx: 0, line: 1, col: 1)
 
   while not s.atEnd:
-    let startLine = s.line
-    let startCol = s.col
     let c = s.peek()
 
-    if c in {' ', '\t', '\r', '\n'}:
+    if c == ' ' or c == '\t' or c == '\r' or c == '\n':
       discard s.advance()
       continue
 
+    s.mark()
+
     if c == '#':
-      # #if / #else are platform conditional directives, not comments
-      if s.peek(1) in {'i', 'e'}:  # #if, #else
+      if s.matchesWord(1, "if") or s.matchesWord(1, "else") or s.matchesWord(1, "endif"):
         discard s.advance()
-        s.addToken(gtkHash, "#", startLine, startCol, s.line, s.col)
+        s.addToken(gtkHash, "#")
       else:
         s.skipLineComment()
       continue
@@ -388,145 +415,71 @@ proc lexGui*(file: string, input: string): tuple[tokens: seq[GuiToken], diagnost
       continue
 
     if c == '/' and s.peek(1) == '*':
-      s.skipBlockComment(startLine, startCol)
+      s.skipBlockComment()
       continue
 
     if isIdentStart(c):
-      s.lexIdentifier(startLine, startCol)
+      s.lexIdentifier()
       continue
 
     if c.isDigit:
-      s.lexNumber(startLine, startCol)
+      s.lexNumber()
       continue
 
     case c
     of '"':
-      s.lexString(startLine, startCol)
+      s.lexString()
     of '{':
       discard s.advance()
-      s.addToken(gtkLBrace, "{", startLine, startCol, s.line, s.col)
+      s.addToken(gtkLBrace, "{")
     of '}':
       discard s.advance()
-      s.addToken(gtkRBrace, "}", startLine, startCol, s.line, s.col)
+      s.addToken(gtkRBrace, "}")
     of '(':
       discard s.advance()
-      s.addToken(gtkLParen, "(", startLine, startCol, s.line, s.col)
+      s.addToken(gtkLParen, "(")
     of ')':
       discard s.advance()
-      s.addToken(gtkRParen, ")", startLine, startCol, s.line, s.col)
-    of '[':
-      discard s.advance()
-      s.addToken(gtkLBracket, "[", startLine, startCol, s.line, s.col)
-    of ']':
-      discard s.advance()
-      s.addToken(gtkRBracket, "]", startLine, startCol, s.line, s.col)
-    of ',':
-      discard s.advance()
-      s.addToken(gtkComma, ",", startLine, startCol, s.line, s.col)
-    of ':':
-      discard s.advance()
-      s.addToken(gtkColon, ":", startLine, startCol, s.line, s.col)
+      s.addToken(gtkRParen, ")")
     of '.':
       if s.peek(1) == '.' and s.peek(2) == '.':
         discard s.advance()
         discard s.advance()
         discard s.advance()
-        s.addToken(gtkDotDotDot, "...", startLine, startCol, s.line, s.col)
+        s.addToken(gtkDotDotDot, "...")
       elif s.peek(1) == '.' and s.peek(2) == '<':
         discard s.advance()
         discard s.advance()
         discard s.advance()
-        s.addToken(gtkDotDotLess, "..<", startLine, startCol, s.line, s.col)
+        s.addToken(gtkDotDotLess, "..<")
       else:
         discard s.advance()
-        s.addToken(gtkDot, ".", startLine, startCol, s.line, s.col)
-    of '=':
-      discard s.advance()
-      if s.peek() == '=':
-        discard s.advance()
-        s.addToken(gtkEqualEqual, "==", startLine, startCol, s.line, s.col)
-      else:
-        s.addToken(gtkEqual, "=", startLine, startCol, s.line, s.col)
-    of '!':
-      discard s.advance()
-      if s.peek() == '=':
-        discard s.advance()
-        s.addToken(gtkBangEqual, "!=", startLine, startCol, s.line, s.col)
-      else:
-        s.addToken(gtkBang, "!", startLine, startCol, s.line, s.col)
-    of '+':
-      discard s.advance()
-      s.addToken(gtkPlus, "+", startLine, startCol, s.line, s.col)
+        s.addToken(gtkDot, ".")
     of '-':
       if s.peek(1) == '>':
         discard s.advance()
         discard s.advance()
-        s.addToken(gtkArrow, "->", startLine, startCol, s.line, s.col)
+        s.addToken(gtkArrow, "->")
       else:
         discard s.advance()
-        s.addToken(gtkMinus, "-", startLine, startCol, s.line, s.col)
-    of '*':
-      discard s.advance()
-      s.addToken(gtkStar, "*", startLine, startCol, s.line, s.col)
-    of '/':
-      discard s.advance()
-      s.addToken(gtkSlash, "/", startLine, startCol, s.line, s.col)
-    of '?':
-      discard s.advance()
-      if s.peek() == '?':
-        discard s.advance()
-        s.addToken(gtkQuestionQuestion, "??", startLine, startCol, s.line, s.col)
-      else:
-        s.addToken(gtkQuestion, "?", startLine, startCol, s.line, s.col)
-    of '<':
-      discard s.advance()
-      if s.peek() == '=':
-        discard s.advance()
-        s.addToken(gtkLessEqual, "<=", startLine, startCol, s.line, s.col)
-      else:
-        s.addToken(gtkLess, "<", startLine, startCol, s.line, s.col)
-    of '>':
-      discard s.advance()
-      if s.peek() == '=':
-        discard s.advance()
-        s.addToken(gtkGreaterEqual, ">=", startLine, startCol, s.line, s.col)
-      else:
-        s.addToken(gtkGreater, ">", startLine, startCol, s.line, s.col)
-    of '&':
-      if s.peek(1) == '&':
-        discard s.advance()
-        discard s.advance()
-        s.addToken(gtkAndAnd, "&&", startLine, startCol, s.line, s.col)
-      else:
-        let bad = s.advance()
-        s.addDiag(startLine, startCol, "unexpected character '" & $bad & "'", "GUI_LEX_CHAR")
-    of '|':
-      if s.peek(1) == '|':
-        discard s.advance()
-        discard s.advance()
-        s.addToken(gtkOrOr, "||", startLine, startCol, s.line, s.col)
-      else:
-        let bad = s.advance()
-        s.addDiag(startLine, startCol, "unexpected character '" & $bad & "'", "GUI_LEX_CHAR")
+        s.addToken(gtkMinus, "-")
     of ';':
       discard s.advance()
-      s.addToken(gtkSemicolon, ";", startLine, startCol, s.line, s.col)
+      s.addToken(gtkSemicolon, ";")
     of '@':
       discard s.advance()
-      s.addToken(gtkAt, "@", startLine, startCol, s.line, s.col)
+      s.addToken(gtkAt, "@")
     of '\\':
-      # Backslash outside of string context → key path prefix
       discard s.advance()
-      s.addToken(gtkBackslash, "\\", startLine, startCol, s.line, s.col)
+      s.addToken(gtkBackslash, "\\")
     of '$':
       discard s.advance()
-      s.addToken(gtkDollar, "$", startLine, startCol, s.line, s.col)
-    of '#':
-      discard s.advance()
-      s.addToken(gtkHash, "#", startLine, startCol, s.line, s.col)
+      s.addToken(gtkDollar, "$")
     else:
-      let bad = s.advance()
-      s.addDiag(startLine, startCol, "unexpected character '" & $bad & "'", "GUI_LEX_CHAR")
+      if not s.lexOperatorOrPunct("GUI_LEX_CHAR"):
+        let bad = s.advance()
+        s.addDiag("unexpected character '" & $bad & "'", "GUI_LEX_CHAR")
 
-  s.addToken(gtkEof, "", s.line, s.col, s.line, s.col)
-  (s.tokens, s.diagnostics)
+  s.mark()
+  s.addToken(gtkEof, "")
+  (move s.tokens, move s.diagnostics)

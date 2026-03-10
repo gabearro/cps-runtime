@@ -42,6 +42,7 @@ import cps/io/nat
 import cps/io/streams
 import cps/io/timeouts
 import cps/bittorrent/utp_stream
+import cps/bittorrent/utils
 
 import std/[json, os, strutils, times, atomics, posix, uri, tables, sets, math]
 
@@ -117,27 +118,31 @@ proc send[T](mb: var Mailbox[T], item: sink T): bool =
 
 proc drainAll[T](mb: var Mailbox[T]): seq[T] =
   ## Consumer: atomically take all pending items in FIFO order.
-  ## Wait-free (single atomic exchange).
+  ## Wait-free (single atomic exchange) + single-pass in-place reversal.
   let head = cast[ptr MailboxNode[T]](mb.head.exchange(nil, moAcquireRelease))
   if head == nil:
     return @[]
-  # Count nodes
-  var n = 0
+  # Reverse the LIFO linked list in-place to get FIFO order (single pass)
+  var prev: ptr MailboxNode[T] = nil
   var node = head
+  var n = 0
   while node != nil:
+    let next = node.next
+    node.next = prev
+    prev = node
+    node = next
     inc n
-    node = node.next
-  # Extract values in reverse (Treiber stack is LIFO, we want FIFO)
+  # Extract values from reversed list (now in FIFO order)
   result = newSeq[T](n)
-  node = head
-  var i = n - 1
+  node = prev  # prev is now the head of the reversed list
+  var i = 0
   while node != nil:
     let next = node.next
     copyMem(addr result[i], addr node.value, sizeof(T))
     zeroMem(addr node.value, sizeof(T))
     deallocShared(node)
     node = next
-    dec i
+    inc i
   discard mb.count.fetchSub(n, moRelaxed)
 
 # ============================================================
@@ -165,6 +170,50 @@ proc logBridge(msg: string) {.inline.} =
   when enableBridgeLog:
     let line = "[" & $epochTime() & "] " & msg
     discard gLogBuffer.send(line)
+
+# ============================================================
+# Crash signal handler (SIGSEGV / SIGABRT / SIGBUS)
+# ============================================================
+#
+# On fatal signals, flush the log buffer and write a crash marker to the log
+# file so we get diagnostics even when the process dies from a segfault.
+# This runs in signal context, so only async-signal-safe operations are used
+# (write(), _exit()). The lock-free log buffer drain is safe in signal
+# context because drainAll uses a single atomic exchange (wait-free).
+
+var gCrashHandlerInstalled: bool = false
+
+proc crashSignalHandler(sig: cint) {.noconv.} =
+  # Async-signal-safe crash handler: only uses write() syscall and sigaction().
+  # No heap allocation, no Nim File I/O, no string conversion.
+  var msg: cstring
+  if sig == SIGSEGV: msg = cstring"[CRASH] SIGSEGV (segmentation fault)\n"
+  elif sig == SIGBUS: msg = cstring"[CRASH] SIGBUS (bus error)\n"
+  elif sig == SIGABRT: msg = cstring"[CRASH] SIGABRT (abort)\n"
+  else: msg = cstring"[CRASH] Unknown signal\n"
+  # Write to stderr (fd 2) — always available, no allocation
+  discard posix.write(2, msg, msg.len)
+  # Also write to log file fd if open (async-signal-safe)
+  if gLogReady:
+    let fd = getFileHandle(gLogFile)
+    discard posix.write(fd, msg, msg.len)
+  # Re-raise the signal with default handler to get proper exit code
+  var act: Sigaction
+  act.sa_handler = SIG_DFL
+  discard sigaction(sig, act, nil)
+  discard posix.raise(sig)
+
+proc installCrashHandler() =
+  if gCrashHandlerInstalled:
+    return
+  gCrashHandlerInstalled = true
+  var act: Sigaction
+  act.sa_handler = crashSignalHandler
+  discard sigemptyset(act.sa_mask)
+  act.sa_flags = SA_RESETHAND.cint  # One-shot: reset to default after first delivery
+  discard sigaction(SIGSEGV, act, nil)
+  discard sigaction(SIGBUS, act, nil)
+  discard sigaction(SIGABRT, act, nil)
 
 # ============================================================
 # Action tags (must match action declaration order in app.gui)
@@ -307,7 +356,8 @@ type
     uiTorrentPaused,    # Client stopped for pause
     uiTorrentRemoved,   # Client stopped for removal
     uiRechecking,       # Piece states reset
-    uiNatStatus         # NAT port forwarding status update
+    uiNatStatus,        # NAT port forwarding status update
+    uiPieceStateChanged # Piece state update (optimistic→verified/failed), no counter change
 
   UiEvent = object
     kind: UiEventKind
@@ -335,26 +385,30 @@ type
     announceUrls: seq[string]    # all tracker URLs (announce + announceList)
     downloadDir: string          # client config download dir
     # Protocol/runtime telemetry snapshot (uiProgress)
-    protocolPrivate: bool
-    protocolDhtEnabled: bool
-    protocolPexEnabled: bool
-    protocolLsdEnabled: bool
-    protocolUtpEnabled: bool
-    protocolWebSeedEnabled: bool
-    protocolScrapeEnabled: bool
-    protocolHolepunchEnabled: bool
-    protocolEncryptionMode: string
-    protocolUtpPeers: int
-    protocolTcpPeers: int
-    protocolLsdAnnounces: int
-    protocolLsdPeers: int
-    protocolLsdLastError: string
-    protocolWebSeedBytes: int64
-    protocolWebSeedFailures: int
-    protocolWebSeedActiveUrl: string
-    protocolHolepunchAttempts: int
-    protocolHolepunchSuccesses: int
-    protocolHolepunchLastError: string
+    protocol: ProtocolSnapshot
+
+  ProtocolSnapshot = object
+    ## Protocol/runtime telemetry — shared between UiEvent and TorrentState.
+    isPrivate: bool
+    dhtEnabled: bool
+    pexEnabled: bool
+    lsdEnabled: bool
+    utpEnabled: bool
+    webSeedEnabled: bool
+    scrapeEnabled: bool
+    holepunchEnabled: bool
+    encryptionMode: string
+    utpPeers: int
+    tcpPeers: int
+    lsdAnnounces: int
+    lsdPeers: int
+    lsdLastError: string
+    webSeedBytes: int64
+    webSeedFailures: int
+    webSeedActiveUrl: string
+    holepunchAttempts: int
+    holepunchSuccesses: int
+    holepunchLastError: string
 
   PeerSnapshotEntry = object
     address: string       # "ip:port"
@@ -411,26 +465,7 @@ type
     trackerStates: seq[TrackerState]  # announce/scrape runtime per tracker
     downloadDir: string          # download directory
     clientActive: bool           # whether client is active (not stopped)
-    protocolPrivate: bool
-    protocolDhtEnabled: bool
-    protocolPexEnabled: bool
-    protocolLsdEnabled: bool
-    protocolUtpEnabled: bool
-    protocolWebSeedEnabled: bool
-    protocolScrapeEnabled: bool
-    protocolHolepunchEnabled: bool
-    protocolEncryptionMode: string
-    protocolUtpPeers: int
-    protocolTcpPeers: int
-    protocolLsdAnnounces: int
-    protocolLsdPeers: int
-    protocolLsdLastError: string
-    protocolWebSeedBytes: float
-    protocolWebSeedFailures: int
-    protocolWebSeedActiveUrl: string
-    protocolHolepunchAttempts: int
-    protocolHolepunchSuccesses: int
-    protocolHolepunchLastError: string
+    protocol: ProtocolSnapshot
 
   TrackerState = object
     url: string
@@ -718,8 +753,27 @@ proc parseEncryptionMode(modeStr: string): EncryptionMode
 proc encryptionModeLabel(mode: EncryptionMode): string
 proc enqueueCommand(cmd: sink BridgeCommand)
 
+proc natProtocolLabel(proto: NatProtocol): string =
+  case proto
+  of npNatPmp: "NAT-PMP"
+  of npPcp: "PCP"
+  of npUpnpIgd: "UPnP IGD"
+  of npNone: "Not available"
+
 proc markDirty(mask: uint32) {.inline.} =
   gDirtyMask = gDirtyMask or mask
+
+proc deletePeerRatesForPrefix(prefix: string,
+    keepKeys: HashSet[string] = initHashSet[string]()) =
+  ## Remove rate-tracking entries for peers matching the given torrent prefix.
+  ## Keys in `keepKeys` are preserved (for cleaning disconnected peers only).
+  var staleKeys: seq[string]
+  for key in gPeerSmoothedRates.keys:
+    if key.startsWith(prefix) and key notin keepKeys:
+      staleKeys.add(key)
+  for key in staleKeys:
+    gPeerSmoothedRates.del(key)
+    gPeerPrevBytes.del(key)
 
 # ============================================================
 # JSON helpers
@@ -823,8 +877,115 @@ proc flushSessionSave() =
   if pending.len > 0:
     writeSessionToDisk(pending[^1])
 
+proc restoreSettings(s: JsonNode) =
+  ## Restore settings fields from a JSON object. Shared by session loading.
+  gDownloadDir = jStr(s, "downloadDir", gDownloadDir)
+  gListenPort = jStr(s, "listenPort", gListenPort)
+  gDownloadBandwidth = jStr(s, "downloadBandwidth", gDownloadBandwidth)
+  gUploadBandwidth = jStr(s, "uploadBandwidth", gUploadBandwidth)
+  gDownloadBandwidthUnit = jStr(s, "downloadBandwidthUnit", gDownloadBandwidthUnit)
+  gUploadBandwidthUnit = jStr(s, "uploadBandwidthUnit", gUploadBandwidthUnit)
+  gBandwidthPercent = jStr(s, "bandwidthPercent", gBandwidthPercent)
+  gMaxPeers = jStr(s, "maxPeers", gMaxPeers)
+  gDhtEnabled = jBool(s, "dhtEnabled", gDhtEnabled)
+  gPexEnabled = jBool(s, "pexEnabled", gPexEnabled)
+  gLsdEnabled = jBool(s, "lsdEnabled", gLsdEnabled)
+  gUtpEnabled = jBool(s, "utpEnabled", gUtpEnabled)
+  gWebSeedEnabled = jBool(s, "webSeedEnabled", gWebSeedEnabled)
+  gTrackerScrapeEnabled = jBool(s, "trackerScrapeEnabled", gTrackerScrapeEnabled)
+  gHolepunchEnabled = jBool(s, "holepunchEnabled", gHolepunchEnabled)
+  gEncryptionMode = jStr(s, "encryptionMode", gEncryptionMode)
+
+proc findExistingTorrentIdx(torrentPath, magnetUri: string): int =
+  ## Find index of an existing torrent by path or magnet URI. Returns -1 if not found.
+  if torrentPath.len > 0:
+    for i in 0 ..< gTorrents.len:
+      if gTorrents[i].torrentFilePath == torrentPath:
+        return i
+  elif magnetUri.len > 0:
+    for i in 0 ..< gTorrents.len:
+      if gTorrents[i].magnetUri == magnetUri:
+        return i
+  return -1
+
+proc addRestoredTorrent(name, addedDate: string, wasPaused: bool,
+                       torrentPath = "", magnetUri = ""): int =
+  ## Common logic for restoring a torrent from session. Returns the new torrent ID.
+  let torrentId = gNextTorrentId
+  inc gNextTorrentId
+  let finalDate = if addedDate.len > 0: addedDate
+                  else: fromUnixFloat(epochTime()).local.format("yyyy-MM-dd HH:mm")
+  gTorrents.add(TorrentState(
+    id: torrentId,
+    name: name,
+    status: if wasPaused: tsPaused else: tsDownloading,
+    addedDate: finalDate,
+    torrentFilePath: torrentPath,
+    magnetUri: magnetUri,
+    paused: wasPaused,
+  ))
+  if not wasPaused:
+    let cmdKind = if torrentPath.len > 0: cmdAddTorrentFile else: cmdAddTorrentMagnet
+    let cmdText = if torrentPath.len > 0: torrentPath else: magnetUri
+    enqueueCommand(BridgeCommand(kind: cmdKind, text: cmdText, intParam: torrentId))
+    gTorrents[^1].clientActive = true
+  torrentId
+
+proc restoreTorrentEntry(entry: JsonNode): bool =
+  ## Restore a single torrent from a session JSON entry. Returns true if restored.
+  let torrentPath = jStr(entry, "path", "")
+  let magnetUri = jStr(entry, "magnetUri", "")
+  let wasPaused = jBool(entry, "paused", false)
+
+  let existingIdx = findExistingTorrentIdx(torrentPath, magnetUri)
+  if existingIdx >= 0:
+    if not wasPaused and not gTorrents[existingIdx].clientActive:
+      if torrentPath.len > 0 and fileExists(torrentPath):
+        enqueueCommand(BridgeCommand(kind: cmdAddTorrentFile,
+          text: torrentPath, intParam: gTorrents[existingIdx].id))
+      elif magnetUri.len > 0 and magnetUri.startsWith("magnet:"):
+        enqueueCommand(BridgeCommand(kind: cmdAddTorrentMagnet,
+          text: magnetUri, intParam: gTorrents[existingIdx].id))
+    return false  # Not a new restore
+
+  if torrentPath.len > 0 and fileExists(torrentPath):
+    let name = jStr(entry, "name", extractFilename(torrentPath))
+    discard addRestoredTorrent(name, jStr(entry, "addedDate", ""), wasPaused,
+                               torrentPath = torrentPath)
+    logBridge "[SESSION] Restored torrent: " & extractFilename(torrentPath) &
+      (if wasPaused: " (paused)" else: "")
+    return true
+
+  if magnetUri.len > 0 and magnetUri.startsWith("magnet:"):
+    let name = jStr(entry, "name", "Loading metadata...")
+    discard addRestoredTorrent(name, jStr(entry, "addedDate", ""), wasPaused,
+                               magnetUri = magnetUri)
+    logBridge "[SESSION] Restored magnet: " & name &
+      (if wasPaused: " (paused)" else: "")
+    return true
+
+  logBridge "[SESSION] Skipped missing file: " & torrentPath
+  false
+
+proc restoreSessionFromJson(data: JsonNode) =
+  ## Restore settings and torrents from parsed session JSON. No I/O.
+  ## Shared by both sync and async session loading.
+  if data.hasKey("settings"):
+    restoreSettings(data["settings"])
+  markDirty(dmSettings)
+
+  var restoredCount = 0
+  if data.hasKey("torrents"):
+    for entry in data["torrents"]:
+      if restoreTorrentEntry(entry):
+        inc restoredCount
+
+  gDirty.store(true, moRelease)
+  logBridge "[SESSION] Loaded session with " & $restoredCount & " restored torrents (" &
+    $gTorrents.len & " total in state)"
+
 proc loadSession() =
-  ## Load saved session and re-add torrents.
+  ## Load saved session synchronously (called on main thread at startup).
   if gSessionLoaded:
     logBridge "[SESSION] Load skipped (already loaded)"
     return
@@ -836,111 +997,7 @@ proc loadSession() =
     return
 
   try:
-    let data = parseJson(readFile(path))
-    var restoredCount = 0
-
-    # Restore settings
-    if data.hasKey("settings"):
-      let s = data["settings"]
-      gDownloadDir = jStr(s, "downloadDir", gDownloadDir)
-      gListenPort = jStr(s, "listenPort", gListenPort)
-      gDownloadBandwidth = jStr(s, "downloadBandwidth", gDownloadBandwidth)
-      gUploadBandwidth = jStr(s, "uploadBandwidth", gUploadBandwidth)
-      gDownloadBandwidthUnit = jStr(s, "downloadBandwidthUnit", gDownloadBandwidthUnit)
-      gUploadBandwidthUnit = jStr(s, "uploadBandwidthUnit", gUploadBandwidthUnit)
-      gBandwidthPercent = jStr(s, "bandwidthPercent", gBandwidthPercent)
-      gMaxPeers = jStr(s, "maxPeers", gMaxPeers)
-      gDhtEnabled = jBool(s, "dhtEnabled", gDhtEnabled)
-      gPexEnabled = jBool(s, "pexEnabled", gPexEnabled)
-      gLsdEnabled = jBool(s, "lsdEnabled", gLsdEnabled)
-      gUtpEnabled = jBool(s, "utpEnabled", gUtpEnabled)
-      gWebSeedEnabled = jBool(s, "webSeedEnabled", gWebSeedEnabled)
-      gTrackerScrapeEnabled = jBool(s, "trackerScrapeEnabled", gTrackerScrapeEnabled)
-      gHolepunchEnabled = jBool(s, "holepunchEnabled", gHolepunchEnabled)
-      gEncryptionMode = jStr(s, "encryptionMode", gEncryptionMode)
-
-    # Restore torrents
-    if data.hasKey("torrents"):
-      for entry in data["torrents"]:
-        let torrentPath = jStr(entry, "path", "")
-        let magnetUri = jStr(entry, "magnetUri", "")
-        let wasPaused = jBool(entry, "paused", false)
-        var existingIdx = -1
-        if torrentPath.len > 0:
-          for i in 0 ..< gTorrents.len:
-            if gTorrents[i].torrentFilePath == torrentPath:
-              existingIdx = i
-              break
-        elif magnetUri.len > 0:
-          for i in 0 ..< gTorrents.len:
-            if gTorrents[i].magnetUri == magnetUri:
-              existingIdx = i
-              break
-
-        if existingIdx >= 0:
-          if not wasPaused and not gTorrents[existingIdx].clientActive:
-            if torrentPath.len > 0 and fileExists(torrentPath):
-              enqueueCommand(BridgeCommand(kind: cmdAddTorrentFile,
-                text: torrentPath, intParam: gTorrents[existingIdx].id))
-            elif magnetUri.len > 0 and magnetUri.startsWith("magnet:"):
-              enqueueCommand(BridgeCommand(kind: cmdAddTorrentMagnet,
-                text: magnetUri, intParam: gTorrents[existingIdx].id))
-          continue
-
-        if torrentPath.len > 0 and fileExists(torrentPath):
-          # Restore from .torrent file
-          let torrentId = gNextTorrentId
-          inc gNextTorrentId
-          let savedName = jStr(entry, "name", extractFilename(torrentPath))
-          let savedDate = jStr(entry, "addedDate", "")
-          let addedDate = if savedDate.len > 0: savedDate
-                          else: fromUnixFloat(epochTime()).local.format("yyyy-MM-dd HH:mm")
-          gTorrents.add(TorrentState(
-            id: torrentId,
-            name: savedName,
-            status: if wasPaused: tsPaused else: tsDownloading,
-            addedDate: addedDate,
-            torrentFilePath: torrentPath,
-            paused: wasPaused,
-          ))
-          if not wasPaused:
-            enqueueCommand(BridgeCommand(kind: cmdAddTorrentFile,
-              text: torrentPath, intParam: torrentId))
-            gTorrents[^1].clientActive = true
-          inc restoredCount
-          logBridge "[SESSION] Restored torrent: " & extractFilename(torrentPath) &
-            (if wasPaused: " (paused)" else: "")
-
-        elif magnetUri.len > 0 and magnetUri.startsWith("magnet:"):
-          # Restore from magnet link
-          let torrentId = gNextTorrentId
-          inc gNextTorrentId
-          let savedName = jStr(entry, "name", "Loading metadata...")
-          let savedDate = jStr(entry, "addedDate", "")
-          let addedDate = if savedDate.len > 0: savedDate
-                          else: fromUnixFloat(epochTime()).local.format("yyyy-MM-dd HH:mm")
-          gTorrents.add(TorrentState(
-            id: torrentId,
-            name: savedName,
-            status: if wasPaused: tsPaused else: tsDownloading,
-            addedDate: addedDate,
-            magnetUri: magnetUri,
-            paused: wasPaused,
-          ))
-          if not wasPaused:
-            enqueueCommand(BridgeCommand(kind: cmdAddTorrentMagnet,
-              text: magnetUri, intParam: torrentId))
-            gTorrents[^1].clientActive = true
-          inc restoredCount
-          logBridge "[SESSION] Restored magnet: " & savedName &
-            (if wasPaused: " (paused)" else: "")
-
-        else:
-          logBridge "[SESSION] Skipped missing file: " & torrentPath
-
-    gDirty.store(true, moRelease)
-    logBridge "[SESSION] Loaded session with " & $restoredCount & " restored torrents (" &
-      $gTorrents.len & " total in state)"
+    restoreSessionFromJson(parseJson(readFile(path)))
   except CatchableError as e:
     logBridge "[SESSION] Load error: " & e.msg
 
@@ -948,114 +1005,44 @@ proc loadSession() =
 # Notify pipe
 # ============================================================
 
-proc notifySwift() =
-  ## Coalesced pipe write to wake Swift's DispatchSource.
-  if gNotifyPipeWrite < 0: return
-  if gNotifyPending.exchange(true, moAcquireRelease): return
+proc notifyPipe(pipeFd: cint, pending: var Atomic[bool]) {.inline.} =
+  ## Coalesced pipe write: atomically set pending flag (skip if already pending),
+  ## then write a single byte to wake the reader. EINTR-safe.
+  if pipeFd < 0: return
+  if pending.exchange(true, moAcquireRelease): return
   var buf: array[1, byte] = [1'u8]
   while true:
-    let n = posix.write(gNotifyPipeWrite, addr buf[0], 1)
+    let n = posix.write(pipeFd, addr buf[0], 1)
     if n == 1: return
     if osLastError().int == EINTR: continue
     return
 
-proc notifyEventLoop() =
-  ## Coalesced pipe write to wake the event loop when commands are enqueued.
-  ## Called from the main thread (Swift dispatch).
-  ## Command processing waits on this pipe from the MT runtime reactor.
-  if gCmdPipeWrite < 0: return
-  if gCmdNotifyPending.exchange(true, moAcquireRelease): return
-  var buf: array[1, byte] = [1'u8]
-  while true:
-    let n = posix.write(gCmdPipeWrite, addr buf[0], 1)
-    if n == 1: return
-    if osLastError().int == EINTR: continue
-    return
+proc notifySwift() {.inline.} =
+  notifyPipe(gNotifyPipeWrite, gNotifyPending)
+
+proc notifyEventLoop() {.inline.} =
+  notifyPipe(gCmdPipeWrite, gCmdNotifyPending)
 
 # ============================================================
-# Event queue helpers — deep clone for cross-thread isolation
+# Event queue helpers
 # ============================================================
 #
-# Even though --mm:atomicArc makes refcount ops atomic, we deep-clone
-# payloads before enqueueing to avoid sharing ARC-managed references
-# across threads.  This sidesteps subtle lifetime issues when a
-# TorrentClient field is mutated or freed while the main thread still
-# holds a refcounted alias via an in-flight UiEvent.
-
-proc cloneStringIsolated(s: string): string =
-  if s.len == 0:
-    return ""
-  result = newString(s.len)
-  copyMem(addr result[0], unsafeAddr s[0], s.len)
-
-proc cloneStringSeqIsolated(src: seq[string]): seq[string] =
-  if src.len == 0: return @[]
-  result = newSeq[string](src.len)
-  for i in 0 ..< src.len:
-    result[i] = cloneStringIsolated(src[i])
-
-proc clonePeerSnapshotSeqIsolated(src: seq[PeerSnapshotEntry]): seq[PeerSnapshotEntry] =
-  if src.len == 0: return @[]
-  result = newSeq[PeerSnapshotEntry](src.len)
-  for i in 0 ..< src.len:
-    let e = src[i]
-    result[i] = PeerSnapshotEntry(
-      address: cloneStringIsolated(e.address),
-      clientName: cloneStringIsolated(e.clientName),
-      bytesDownloaded: e.bytesDownloaded,
-      bytesUploaded: e.bytesUploaded,
-      progress: e.progress,
-      flags: cloneStringIsolated(e.flags),
-      flagsTooltip: cloneStringIsolated(e.flagsTooltip),
-      source: cloneStringIsolated(e.source),
-      transport: cloneStringIsolated(e.transport)
-    )
-
-proc cloneTrackerSnapshotSeqIsolated(src: seq[TrackerState]): seq[TrackerState] =
-  if src.len == 0: return @[]
-  result = newSeq[TrackerState](src.len)
-  for i in 0 ..< src.len:
-    let t = src[i]
-    result[i] = TrackerState(
-      url: cloneStringIsolated(t.url),
-      status: cloneStringIsolated(t.status),
-      seeders: t.seeders,
-      leechers: t.leechers,
-      completed: t.completed,
-      lastAnnounce: cloneStringIsolated(t.lastAnnounce),
-      nextAnnounce: cloneStringIsolated(t.nextAnnounce),
-      lastScrape: cloneStringIsolated(t.lastScrape),
-      nextScrape: cloneStringIsolated(t.nextScrape),
-      errorText: cloneStringIsolated(t.errorText)
-    )
-
-proc cloneFileInfoSeqIsolated(src: seq[tuple[path: string, length: int64]]):
-    seq[tuple[path: string, length: int64]] =
-  if src.len == 0: return @[]
-  result = newSeq[tuple[path: string, length: int64]](src.len)
-  for i in 0 ..< src.len:
-    result[i] = (path: cloneStringIsolated(src[i].path), length: src[i].length)
-
-proc cloneUiEventIsolated(evt: sink UiEvent): UiEvent =
-  ## Under --mm:atomicArc, string/seq refcount ops are atomic, so cross-thread
-  ## sharing is safe. Move the event directly instead of deep-cloning every
-  ## string field. This eliminates ~500 allocShared+copyMem calls per progress
-  ## event when 100 peers are connected.
-  result = move evt
-
-proc cloneBridgeCommandIsolated(cmd: sink BridgeCommand): BridgeCommand =
-  result = move cmd
+# Under --mm:atomicArc, string/seq refcount ops are atomic, so cross-thread
+# sharing is safe. Values are moved directly via sink parameters — no
+# deep-cloning needed. The previous deep-clone helpers have been removed.
 
 proc enqueueCommand(cmd: sink BridgeCommand) =
-  ## Main-thread -> event-loop queue transfer with isolated payload.
-  if not gCommandQueue.send(cloneBridgeCommandIsolated(cmd)):
+  ## Main-thread -> event-loop queue transfer.
+  ## Under --mm:atomicArc, string/seq refcount ops are atomic, so cross-thread
+  ## sharing is safe. The sink parameter moves the value directly — no deep-clone needed.
+  if not gCommandQueue.send(cmd):
     discard gDroppedCommandCount.fetchAdd(1'u64, moRelaxed)
     return
   notifyEventLoop()
 
 proc pushEvent(evt: sink UiEvent) =
   ## Push a UI event and mark state dirty.
-  if not gEventQueue.send(cloneUiEventIsolated(evt)):
+  if not gEventQueue.send(evt):
     discard gDroppedEventCount.fetchAdd(1'u64, moRelaxed)
     return
   gDirty.store(true, moRelease)
@@ -1133,6 +1120,15 @@ proc findTorrentById(id: int): ptr TorrentState =
 # Piece map encoding
 # ============================================================
 
+proc pieceStateToChar(state: PieceState): char =
+  case state
+  of psEmpty: '0'
+  of psPartial: '1'
+  of psComplete: '2'
+  of psVerified: '3'
+  of psFailed: '4'
+  of psOptimistic: '5'
+
 proc buildPieceMapData(ts: TorrentState): string =
   ## Return the piece map data snapshot (built on event loop thread).
   ts.pieceMapData
@@ -1159,10 +1155,13 @@ proc buildPeerInfoFromSnapshot(torrentId: int) =
   let snapshot = gPeerSnapshots[torrentId]
   let now = epochTime()
 
+  # Pre-compute the torrent ID prefix once (avoids N string concats per peer)
+  let idPrefix = $torrentId & ":"
+
   # Detect if any peer has new byte data since last rate computation
   var hasNewData = false
   for entry in snapshot:
-    let key = $torrentId & ":" & entry.address
+    let key = idPrefix & entry.address
     if not gPeerPrevBytes.hasKey(key):
       hasNewData = true
       break
@@ -1183,7 +1182,7 @@ proc buildPeerInfoFromSnapshot(torrentId: int) =
   var activePeerKeys: HashSet[string]
 
   for entry in snapshot:
-    let key = $torrentId & ":" & entry.address
+    let key = idPrefix & entry.address
     activePeerKeys.incl(key)
 
     var downRate, upRate: float
@@ -1237,14 +1236,9 @@ proc buildPeerInfoFromSnapshot(torrentId: int) =
   if hasNewData:
     gLastPeerPollTimes[torrentId] = now
 
-  # Clean up stale rate entries for peers that disconnected
-  var staleKeys: seq[string]
-  for key in gPeerSmoothedRates.keys:
-    if key notin activePeerKeys:
-      staleKeys.add(key)
-  for key in staleKeys:
-    gPeerSmoothedRates.del(key)
-    gPeerPrevBytes.del(key)
+  # Clean up stale rate entries for peers of THIS torrent that disconnected.
+  # Only scan keys with our torrent's prefix (not all global keys).
+  deletePeerRatesForPrefix(idPrefix, activePeerKeys)
 
 # ============================================================
 # Build file info for selected torrent
@@ -1304,30 +1298,6 @@ proc buildTrackerInfo(ts: TorrentState) =
 # ============================================================
 # Peer snapshot builder (called on event loop thread)
 # ============================================================
-
-const PopCountTable = block:
-  var t: array[256, uint8]
-  for i in 0 .. 255:
-    var n = i
-    var count: uint8 = 0
-    while n != 0:
-      count += uint8(n and 1)
-      n = n shr 1
-    t[i] = count
-  t
-
-proc bitfieldPopcount(bitfield: openArray[byte], totalPieces: int): int =
-  ## Count set bits in a bitfield using byte-level popcount lookup table.
-  let fullBytes = totalPieces div 8
-  for i in 0 ..< min(fullBytes, bitfield.len):
-    result += PopCountTable[bitfield[i].int].int
-  # Handle trailing bits in the last partial byte
-  let remaining = totalPieces mod 8
-  if remaining > 0 and fullBytes < bitfield.len:
-    let lastByte = bitfield[fullBytes].int
-    for bit in 0 ..< remaining:
-      if (lastByte and (1 shl (7 - bit))) != 0:
-        inc result
 
 # Lightweight raw peer data for fast copy under lock.
 # All formatting (parsePeerId, bitfieldPopcount, flag building) happens OUTSIDE the lock.
@@ -1425,7 +1395,7 @@ proc buildPeerSnapshotFromRaw(raw: RawPeerData, totalPieces: int): PeerSnapshotE
   if raw.isSuperSeeder:
     peerProgress = 1.0
   elif raw.peerBitfield.len > 0 and totalPieces > 0:
-    let have = bitfieldPopcount(raw.peerBitfield, totalPieces)
+    let have = countBitsSet(raw.peerBitfield, totalPieces)
     peerProgress = have.float / totalPieces.float
 
   let sourceStr = case raw.source
@@ -1475,7 +1445,12 @@ proc drainClientEvents(torrentId: int, client: TorrentClient): CpsVoidFuture {.c
       pushEvent(UiEvent(kind: uiTorrentStarted, torrentId: torrentId))
     of cekPieceVerified:
       pushEvent(UiEvent(kind: uiPieceVerified, torrentId: torrentId,
-                        intParam: evt.pieceIndex))
+                        intParam: evt.pieceIndex,
+                        intParam2: evt.pieceState.int))
+    of cekPieceStateChanged:
+      pushEvent(UiEvent(kind: uiPieceStateChanged, torrentId: torrentId,
+                        intParam: evt.changedPieceIndex,
+                        intParam2: evt.changedPieceState.int))
     of cekProgress:
       progressCount += 1
       # ---- Raw data containers (populated under lock) ----
@@ -1530,7 +1505,7 @@ proc drainClientEvents(torrentId: int, client: TorrentClient): CpsVoidFuture {.c
       if client.pieceMgr != nil:
         downloaded = client.pieceMgr.downloaded.float
         uploaded = client.pieceMgr.uploaded.float
-        verifiedCount = client.pieceMgr.verifiedCount
+        verifiedCount = client.pieceMgr.verifiedCount + client.pieceMgr.optimisticCount
         progress = client.pieceMgr.progress
         totalPieces = client.pieceMgr.totalPieces
         totalSize = client.metainfo.info.totalLength.float
@@ -1550,9 +1525,9 @@ proc drainClientEvents(torrentId: int, client: TorrentClient): CpsVoidFuture {.c
       snapWebSeedBytes = client.webSeedBytes
       snapWebSeedFailures = client.webSeedFailures
       snapWebSeedActiveUrl = client.webSeedActiveUrl
-      snapHolepunchAttempts = client.holepunchAttempts
-      snapHolepunchSuccesses = client.holepunchSuccesses
-      snapHolepunchLastError = client.holepunchLastError
+      snapHolepunchAttempts = client.hp.attempts
+      snapHolepunchSuccesses = client.hp.successes
+      snapHolepunchLastError = client.hp.lastError
       snapClientStopped = client.state == csStopped
 
       # Copy file info (immutable metainfo, no lock needed)
@@ -1583,12 +1558,7 @@ proc drainClientEvents(torrentId: int, client: TorrentClient): CpsVoidFuture {.c
           pmData = newString(client.pieceMgr.totalPieces)
           var pi = 0
           while pi < client.pieceMgr.totalPieces:
-            case client.pieceMgr.pieces[pi].state
-            of psEmpty: pmData[pi] = '0'
-            of psPartial: pmData[pi] = '1'
-            of psComplete: pmData[pi] = '2'
-            of psVerified: pmData[pi] = '3'
-            of psFailed: pmData[pi] = '4'
+            pmData[pi] = pieceStateToChar(client.pieceMgr.pieces[pi].state)
             pi += 1
       finally:
         unlock(client.mtx)
@@ -1688,26 +1658,27 @@ proc drainClientEvents(torrentId: int, client: TorrentClient): CpsVoidFuture {.c
                         fileInfo: move fInfoSnap,
                         filePriorities: move fPrioSnap,
                         trackerSnapshot: move trackerSnap,
-                        protocolPrivate: snapIsPrivate,
-                        protocolDhtEnabled: snapDhtEnabled,
-                        protocolPexEnabled: snapEnablePex and not snapIsPrivate,
-                        protocolLsdEnabled: snapEnableLsd and not snapIsPrivate,
-                        protocolUtpEnabled: snapEnableUtp,
-                        protocolWebSeedEnabled: snapEnableWebSeed,
-                        protocolScrapeEnabled: snapEnableTrackerScrape,
-                        protocolHolepunchEnabled: snapEnableHolepunch and not snapIsPrivate,
-                        protocolEncryptionMode: encryptionModeLabel(snapEncryptionMode),
-                        protocolUtpPeers: utpPeers,
-                        protocolTcpPeers: tcpPeers,
-                        protocolLsdAnnounces: snapLsdAnnounces,
-                        protocolLsdPeers: snapLsdPeers,
-                        protocolLsdLastError: snapLsdLastError,
-                        protocolWebSeedBytes: snapWebSeedBytes,
-                        protocolWebSeedFailures: snapWebSeedFailures,
-                        protocolWebSeedActiveUrl: snapWebSeedActiveUrl,
-                        protocolHolepunchAttempts: snapHolepunchAttempts,
-                        protocolHolepunchSuccesses: snapHolepunchSuccesses,
-                        protocolHolepunchLastError: snapHolepunchLastError))
+                        protocol: ProtocolSnapshot(
+                          isPrivate: snapIsPrivate,
+                          dhtEnabled: snapDhtEnabled,
+                          pexEnabled: snapEnablePex and not snapIsPrivate,
+                          lsdEnabled: snapEnableLsd and not snapIsPrivate,
+                          utpEnabled: snapEnableUtp,
+                          webSeedEnabled: snapEnableWebSeed,
+                          scrapeEnabled: snapEnableTrackerScrape,
+                          holepunchEnabled: snapEnableHolepunch and not snapIsPrivate,
+                          encryptionMode: encryptionModeLabel(snapEncryptionMode),
+                          utpPeers: utpPeers,
+                          tcpPeers: tcpPeers,
+                          lsdAnnounces: snapLsdAnnounces,
+                          lsdPeers: snapLsdPeers,
+                          lsdLastError: snapLsdLastError,
+                          webSeedBytes: snapWebSeedBytes,
+                          webSeedFailures: snapWebSeedFailures,
+                          webSeedActiveUrl: snapWebSeedActiveUrl,
+                          holepunchAttempts: snapHolepunchAttempts,
+                          holepunchSuccesses: snapHolepunchSuccesses,
+                          holepunchLastError: snapHolepunchLastError)))
     of cekPeerConnected:
       pushEvent(UiEvent(kind: uiPeerConnected, torrentId: torrentId,
                         text: evt.peerAddr))
@@ -1732,40 +1703,43 @@ proc drainClientEvents(torrentId: int, client: TorrentClient): CpsVoidFuture {.c
 # Event loop: build config from current settings
 # ============================================================
 
+proc tryTcpListen(port: uint16): TcpListener =
+  ## Try dual-stack IPv6, then IPv4 on specified port, then any port.
+  try: return tcpListen("::", port.int, domain = AF_INET6, dualStack = true)
+  except CatchableError: discard
+  try: return tcpListen("0.0.0.0", port.int)
+  except CatchableError: discard
+  try: return tcpListen("0.0.0.0", 0)
+  except CatchableError:
+    logBridge "[SHARED] Failed to create TCP listener"
+    return nil
+
+proc tryUtpManager(port: int): UtpManager =
+  ## Try IPv6 uTP manager, then IPv4, then any port.
+  try:
+    result = newUtpManager(port, AF_INET6)
+    result.start(); return
+  except CatchableError: discard
+  try:
+    result = newUtpManager(port)
+    result.start(); return
+  except CatchableError: discard
+  try:
+    result = newUtpManager(0)
+    result.start(); return
+  except CatchableError:
+    logBridge "[SHARED] Failed to create uTP manager"
+    return nil
+
 proc ensureSharedResources() =
   ## Create shared TCP listener, uTP manager, and LSD socket once.
   ## Called on the event loop thread before creating each client.
-  ## Tries dual-stack IPv6 first (accepts both IPv4 and IPv6), falls back to IPv4.
   let port = (try: parseUInt(gListenPort).uint16 except: 6881'u16)
   if gSharedListener == nil:
-    # Try dual-stack IPv6 listener first
-    try:
-      gSharedListener = tcpListen("::", port.int, domain = AF_INET6, dualStack = true)
-    except CatchableError:
-      try:
-        gSharedListener = tcpListen("0.0.0.0", port.int)
-      except CatchableError:
-        try:
-          gSharedListener = tcpListen("0.0.0.0", 0)
-        except CatchableError:
-          logBridge "[SHARED] Failed to create TCP listener"
+    gSharedListener = tryTcpListen(port)
   if gSharedUtpMgr == nil:
-    # Try dual-stack IPv6 uTP manager first
-    try:
-      let utpPort = if gSharedListener != nil: gSharedListener.localPort() else: 0
-      gSharedUtpMgr = newUtpManager(utpPort, AF_INET6)
-      gSharedUtpMgr.start()
-    except CatchableError:
-      try:
-        let utpPort = if gSharedListener != nil: gSharedListener.localPort() else: 0
-        gSharedUtpMgr = newUtpManager(utpPort)
-        gSharedUtpMgr.start()
-      except CatchableError:
-        try:
-          gSharedUtpMgr = newUtpManager(0)
-          gSharedUtpMgr.start()
-        except CatchableError:
-          logBridge "[SHARED] Failed to create uTP manager"
+    let utpPort = if gSharedListener != nil: gSharedListener.localPort() else: 0
+    gSharedUtpMgr = tryUtpManager(utpPort)
 
 proc parseEncryptionMode(modeStr: string): EncryptionMode =
   case modeStr.toLowerAscii
@@ -1822,6 +1796,12 @@ proc buildConfig(): ClientConfig =
     enableTrackerScrape: gTrackerScrapeEnabled,
     enableHolepunch: gHolepunchEnabled,
     encryptionMode: parseEncryptionMode(gEncryptionMode),
+    enableRacing: true,
+    maxRacersPerBlock: 10,
+    raceSlowPeerSec: 5.0,
+    enableOptimisticVerification: true,
+    optimisticMinAgreePeers: 2,
+    optimisticMinAgreeBlocks: 3,
     sharedListener: gSharedListener,
     sharedUtpMgr: gSharedUtpMgr,
     sharedLsdSock: gSharedLsdSock,
@@ -1918,109 +1898,66 @@ proc collectInfoHashes(): seq[array[20, byte]] =
       if tc.state in {csDownloading, csSeeding}:
         result.add(tc.metainfo.info.infoHash)
 
+proc dispatchIncomingPeer(stream: AsyncStream, remoteIp: string,
+    remotePort: uint16, transport: TransportKind): CpsVoidFuture {.cps.} =
+  ## Shared handshake dispatch: peek first byte, detect plain BT vs MSE,
+  ## route to the correct TorrentClient by info hash. Used by both TCP and uTP accept loops.
+  try:
+    let firstByte: string = await readExactRaw(stream, 1)
+    if firstByte[0].byte == 19:
+      # Plain BT handshake: read remaining 47 bytes to get info hash (at offset 28)
+      let restHeader: string = await readExactRaw(stream, 47)
+      let headerData: string = firstByte & restHeader
+      var peerInfoHash: array[20, byte]
+      copyMem(addr peerInfoHash[0], unsafeAddr headerData[28], 20)
+      let targetClient: TorrentClient = findClientByInfoHash(peerInfoHash)
+      if targetClient == nil:
+        stream.close()
+        return
+      let prefixed: PrefixedStream = newPrefixedStream(stream, headerData)
+      targetClient.handleIncomingPeer(prefixed.AsyncStream, remoteIp, remotePort, transport)
+    else:
+      # MSE handshake: read full DH public key
+      let restOfDh: string = await readExactRaw(stream, DhKeyLen - 1)
+      let yaData: string = firstByte & restOfDh
+      let hashes: seq[array[20, byte]] = collectInfoHashes()
+      if hashes.len == 0:
+        stream.close()
+        return
+      let mseRes: MseResult = await withTimeout(
+        mseRespondMulti(stream, hashes, yaData), 5000)
+      let mseClient: TorrentClient = findClientByInfoHash(mseRes.matchedInfoHash)
+      if mseClient == nil:
+        mseRes.stream.close()
+        return
+      if mseRes.initialPayload.len > 0:
+        let mseStream: PrefixedStream = newPrefixedStream(
+          mseRes.stream, mseRes.initialPayload)
+        mseClient.handleIncomingPeer(mseStream.AsyncStream, remoteIp, remotePort, transport)
+      else:
+        mseClient.handleIncomingPeer(mseRes.stream, remoteIp, remotePort, transport)
+  except CatchableError:
+    stream.close()
+
 proc sharedTcpAcceptLoop(): CpsVoidFuture {.cps.} =
-  ## Single accept loop for the shared TCP listener. Dispatches incoming
-  ## connections to the correct torrent client based on info hash.
+  ## Accept loop for the shared TCP listener.
   if gSharedListener == nil:
     return
   while true:
     let tcpStream: TcpStream = await gSharedListener.accept()
-    let stream: AsyncStream = tcpStream.AsyncStream
     let remoteEp = tcpStream.peerEndpoint()
     let remoteIp = if remoteEp.ip.len > 0: remoteEp.ip else: "incoming"
-    let remotePort = remoteEp.port
-
-    # Peek at first byte to detect plain BT vs MSE handshake
-    try:
-      let firstByte: string = await readExactRaw(stream, 1)
-      if firstByte[0].byte == 19:
-        # Plain BT handshake: read remaining 47 bytes to get info hash (at offset 28)
-        let restHeader: string = await readExactRaw(stream, 47)
-        let headerData: string = firstByte & restHeader
-        # Info hash is at bytes 28-48 of the 68-byte handshake
-        var peerInfoHash: array[20, byte]
-        copyMem(addr peerInfoHash[0], unsafeAddr headerData[28], 20)
-        let targetClient: TorrentClient = findClientByInfoHash(peerInfoHash)
-        if targetClient == nil:
-          stream.close()
-          continue
-        # Wrap stream with prefix so runIncoming re-reads the handshake
-        let prefixed: PrefixedStream = newPrefixedStream(stream, headerData)
-        targetClient.handleIncomingPeer(prefixed.AsyncStream, remoteIp, remotePort, ptTcp)
-      else:
-        # MSE handshake: read full DH public key
-        let restOfDh: string = await readExactRaw(stream, DhKeyLen - 1)
-        let yaData: string = firstByte & restOfDh
-        let hashes: seq[array[20, byte]] = collectInfoHashes()
-        if hashes.len == 0:
-          stream.close()
-          continue
-        let mseRes: MseResult = await withTimeout(
-          mseRespondMulti(stream, hashes, yaData), 5000)
-        let mseClient: TorrentClient = findClientByInfoHash(mseRes.matchedInfoHash)
-        if mseClient == nil:
-          mseRes.stream.close()
-          continue
-        # After MSE, the BT handshake comes through the (possibly encrypted) stream.
-        # If there's an initial payload (IA), prepend it.
-        if mseRes.initialPayload.len > 0:
-          let mseStream: PrefixedStream = newPrefixedStream(
-            mseRes.stream, mseRes.initialPayload)
-          mseClient.handleIncomingPeer(mseStream.AsyncStream, remoteIp, remotePort, ptTcp)
-        else:
-          mseClient.handleIncomingPeer(mseRes.stream, remoteIp, remotePort, ptTcp)
-    except CatchableError:
-      stream.close()
+    discard spawn dispatchIncomingPeer(
+      tcpStream.AsyncStream, remoteIp, remoteEp.port, ptTcp)
 
 proc sharedUtpAcceptLoop(): CpsVoidFuture {.cps.} =
-  ## Single accept loop for the shared uTP manager. Dispatches incoming
-  ## connections to the correct torrent client based on info hash.
+  ## Accept loop for the shared uTP manager.
   if gSharedUtpMgr == nil:
     return
   while true:
     let utpStream: UtpStream = await utpAccept(gSharedUtpMgr)
-    let utpAsAsync: AsyncStream = utpStream.AsyncStream
-
-    try:
-      let utpFirstByte: string = await readExactRaw(utpAsAsync, 1)
-      if utpFirstByte[0].byte == 19:
-        # Plain BT handshake
-        let utpRestHeader: string = await readExactRaw(utpAsAsync, 47)
-        let utpHeaderData: string = utpFirstByte & utpRestHeader
-        var utpInfoHash: array[20, byte]
-        copyMem(addr utpInfoHash[0], unsafeAddr utpHeaderData[28], 20)
-        let utpClient: TorrentClient = findClientByInfoHash(utpInfoHash)
-        if utpClient == nil:
-          utpAsAsync.close()
-          continue
-        let utpPrefixed: PrefixedStream = newPrefixedStream(utpAsAsync, utpHeaderData)
-        utpClient.handleIncomingPeer(utpPrefixed.AsyncStream,
-          utpStream.remoteIp, utpStream.remotePort.uint16, ptUtp)
-      else:
-        # MSE handshake over uTP: read full DH public key and route by matched
-        # info hash.
-        let utpRestDh: string = await readExactRaw(utpAsAsync, DhKeyLen - 1)
-        let utpYaData: string = utpFirstByte & utpRestDh
-        let hashes: seq[array[20, byte]] = collectInfoHashes()
-        if hashes.len == 0:
-          utpAsAsync.close()
-          continue
-        let mseRes: MseResult = await withTimeout(
-          mseRespondMulti(utpAsAsync, hashes, utpYaData), 5000)
-        let mseClient: TorrentClient = findClientByInfoHash(mseRes.matchedInfoHash)
-        if mseClient == nil:
-          mseRes.stream.close()
-          continue
-        if mseRes.initialPayload.len > 0:
-          let mseStream: PrefixedStream = newPrefixedStream(
-            mseRes.stream, mseRes.initialPayload)
-          mseClient.handleIncomingPeer(mseStream.AsyncStream,
-            utpStream.remoteIp, utpStream.remotePort.uint16, ptUtp)
-        else:
-          mseClient.handleIncomingPeer(mseRes.stream,
-            utpStream.remoteIp, utpStream.remotePort.uint16, ptUtp)
-    except CatchableError:
-      utpAsAsync.close()
+    discard spawn dispatchIncomingPeer(
+      utpStream.AsyncStream, utpStream.remoteIp, utpStream.remotePort.uint16, ptUtp)
 
 proc drainCommandNotifyPipe() =
   if gCmdPipeRead < 0:
@@ -2134,11 +2071,7 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
       # Notify UI of NAT status
       var natEvt = UiEvent(kind: uiNatStatus,
                            boolParam: true)
-      natEvt.text = (case gNatMgr.protocol
-        of npNatPmp: "NAT-PMP"
-        of npPcp: "PCP"
-        of npUpnpIgd: "UPnP IGD"
-        of npNone: "Not available")
+      natEvt.text = natProtocolLabel(gNatMgr.protocol)
       natEvt.text2 = extIp
       natEvt.text3 = gNatMgr.gatewayIp
       natEvt.downloadDir = gNatMgr.localIp  # reuse field for localIp
@@ -2146,11 +2079,7 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
       if gNatMgr.doubleNat:
         natEvt.intParam2 = 1  # doubleNat flag
         if gNatMgr.outerMgr != nil and gNatMgr.outerMgr.protocol != npNone:
-          natEvt.pieceMapData = (case gNatMgr.outerMgr.protocol
-            of npNatPmp: "NAT-PMP"
-            of npPcp: "PCP"
-            of npUpnpIgd: "UPnP IGD"
-            of npNone: "Not available")
+          natEvt.pieceMapData = natProtocolLabel(gNatMgr.outerMgr.protocol)
           natEvt.floatParam = 1.0  # outer forwarded marker
           if gNatMgr.outerMgr.gatewayIp.len > 0:
             # Encode outer gateway in peerSnapshot (reuse field)
@@ -2356,11 +2285,16 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
 # Process UI events from the event loop thread (runs on main thread)
 # ============================================================
 
-proc processUiEvents(): bool =
+type ProcessResult = object
+  hadEvents: bool
+  selectedTorrentAffected: bool
+
+proc processUiEvents(): ProcessResult =
   ## Drain event queue and update main-thread state.
-  ## Returns true if any state changes occurred.
+  ## Returns whether events occurred and whether the selected torrent was affected.
   ## Lock-free — uses atomic-exchange batch drain + atomic dirty flag.
   var handledAny = false
+  var selectedAffected = false
   var eventDirtyMask = 0'u32
   var drainRounds = 0
   while drainRounds < 3:
@@ -2386,8 +2320,10 @@ proc processUiEvents(): bool =
       let dirtyForEvent = case evt.kind
         of uiClientReady: dmTorrents or dmFiles or dmTrackers or dmSelection
         of uiClientError, uiTorrentPaused, uiRechecking,
-           uiTorrentStarted, uiPieceVerified, uiCompleted,
+           uiTorrentStarted, uiCompleted,
            uiError, uiInfo, uiStopped: dmTorrents or dmStatus
+        of uiPieceVerified: dmTorrents or dmStatus or dmPieceMap
+        of uiPieceStateChanged: dmPieceMap
         of uiTrackerResponse: dmTorrents or dmTrackers or dmStatus
         of uiProgress: dmTorrents or dmPeers or dmPieceMap or dmStatus
         of uiPeerConnected, uiPeerDisconnected: dmTorrents or dmPeers or dmStatus
@@ -2434,13 +2370,7 @@ proc processUiEvents(): bool =
           gTorrents.delete(idx)
           gPeerSnapshots.del(evt.torrentId)
           # Clean up per-peer rate tracking tables for this torrent
-          let prefix = $evt.torrentId & ":"
-          var staleKeys: seq[string]
-          for key in gPeerSmoothedRates.keys:
-            if key.startsWith(prefix): staleKeys.add(key)
-          for key in staleKeys:
-            gPeerSmoothedRates.del(key)
-            gPeerPrevBytes.del(key)
+          deletePeerRatesForPrefix($evt.torrentId & ":")
           gTorrentPrevBytes.del(evt.torrentId)
           gTorrentSmoothedRates.del(evt.torrentId)
           gLastPeerPollTimes.del(evt.torrentId)
@@ -2485,6 +2415,19 @@ proc processUiEvents(): bool =
           if gTorrents[idx].pieceCount > 0:
             gTorrents[idx].progress = min(1.0,
               gTorrents[idx].verifiedPieces.float / gTorrents[idx].pieceCount.float)
+          # Incremental piece map update for immediate visual feedback
+          let pi = evt.intParam
+          if pi >= 0 and pi < gTorrents[idx].pieceMapData.len:
+            gTorrents[idx].pieceMapData[pi] = pieceStateToChar(PieceState(evt.intParam2))
+
+      of uiPieceStateChanged:
+        # Background verification result (optimistic→verified/failed) — update
+        # piece map only, no counter change (piece was already counted).
+        let idx = findTorrentIdx(evt.torrentId)
+        if idx >= 0:
+          let pi = evt.intParam
+          if pi >= 0 and pi < gTorrents[idx].pieceMapData.len:
+            gTorrents[idx].pieceMapData[pi] = pieceStateToChar(PieceState(evt.intParam2))
 
       of uiProgress:
         let idx = findTorrentIdx(evt.torrentId)
@@ -2560,26 +2503,7 @@ proc processUiEvents(): bool =
                 eventDirtyMask = eventDirtyMask or dmTrackers
             gTorrents[idx].trackerStates = evt.trackerSnapshot
 
-          gTorrents[idx].protocolPrivate = evt.protocolPrivate
-          gTorrents[idx].protocolDhtEnabled = evt.protocolDhtEnabled
-          gTorrents[idx].protocolPexEnabled = evt.protocolPexEnabled
-          gTorrents[idx].protocolLsdEnabled = evt.protocolLsdEnabled
-          gTorrents[idx].protocolUtpEnabled = evt.protocolUtpEnabled
-          gTorrents[idx].protocolWebSeedEnabled = evt.protocolWebSeedEnabled
-          gTorrents[idx].protocolScrapeEnabled = evt.protocolScrapeEnabled
-          gTorrents[idx].protocolHolepunchEnabled = evt.protocolHolepunchEnabled
-          gTorrents[idx].protocolEncryptionMode = evt.protocolEncryptionMode
-          gTorrents[idx].protocolUtpPeers = evt.protocolUtpPeers
-          gTorrents[idx].protocolTcpPeers = evt.protocolTcpPeers
-          gTorrents[idx].protocolLsdAnnounces = evt.protocolLsdAnnounces
-          gTorrents[idx].protocolLsdPeers = evt.protocolLsdPeers
-          gTorrents[idx].protocolLsdLastError = evt.protocolLsdLastError
-          gTorrents[idx].protocolWebSeedBytes = evt.protocolWebSeedBytes.float
-          gTorrents[idx].protocolWebSeedFailures = evt.protocolWebSeedFailures
-          gTorrents[idx].protocolWebSeedActiveUrl = evt.protocolWebSeedActiveUrl
-          gTorrents[idx].protocolHolepunchAttempts = evt.protocolHolepunchAttempts
-          gTorrents[idx].protocolHolepunchSuccesses = evt.protocolHolepunchSuccesses
-          gTorrents[idx].protocolHolepunchLastError = evt.protocolHolepunchLastError
+          gTorrents[idx].protocol = evt.protocol
 
       of uiPeerConnected:
         let idx = findTorrentIdx(evt.torrentId)
@@ -2621,8 +2545,10 @@ proc processUiEvents(): bool =
           gTorrents[idx].seedCount = evt.intParam
           gTorrents[idx].hasTrackerResponse = true
       eventDirtyMask = eventDirtyMask or dirtyForEvent
+      if evt.torrentId == gSelectedTorrentId or evt.kind == uiNatStatus:
+        selectedAffected = true
 
-  result = handledAny
+  result = ProcessResult(hadEvents: handledAny, selectedTorrentAffected: selectedAffected)
   if eventDirtyMask != 0'u32:
     markDirty(eventDirtyMask)
 
@@ -2729,7 +2655,7 @@ proc bridgeDispatchForTest*(payload: openArray[byte]): BridgeDispatchTestResult 
 proc injectEvent*(runtime: var BridgeRuntime, evt: sink UiEvent): bool =
   ## Test hook: inject an event into the runtime queue.
   discard addr runtime
-  if not gEventQueue.send(cloneUiEventIsolated(evt)):
+  if not gEventQueue.send(evt):
     return false
   gDirty.store(true, moRelease)
   true
@@ -2737,63 +2663,18 @@ proc injectEvent*(runtime: var BridgeRuntime, evt: sink UiEvent): bool =
 proc bridgeResetForTest*() =
   ## Resets main-thread bridge state. Intended for unit tests that do not
   ## start the event loop thread.
+  initRuntimeDefaults(gRuntime)
   gTorrents = @[]
-  gSelectedTorrentId = -1
-  gNextTorrentId = 0
-  gDetailTab = 0
   gFiles = @[]
   gPeers = @[]
   gTrackers = @[]
-  gPieceMapData = ""
   gPeerSnapshots.clear()
   gPeerSmoothedRates.clear()
   gPeerPrevBytes.clear()
   gLastPeerPollTimes.clear()
   gTorrentPrevBytes.clear()
   gTorrentSmoothedRates.clear()
-
-  gShowAddTorrent = false
-  gAddMagnetLink = ""
-  gAddTorrentPath = ""
-  gShowSettings = false
-  gDownloadDir = "~/Downloads"
-  gListenPort = "6881"
-  gDownloadBandwidth = "0"
-  gUploadBandwidth = "0"
-  gMaxPeers = "50"
-  gDhtEnabled = true
-  gPexEnabled = true
-  gLsdEnabled = true
-  gUtpEnabled = true
-  gWebSeedEnabled = true
-  gTrackerScrapeEnabled = true
-  gHolepunchEnabled = true
-  gEncryptionMode = "prefer_encrypted"
-  gActionPriority = "normal"
-
-  gStatusDownRate = 0.0
-  gStatusUpRate = 0.0
-  gStatusDhtNodes = 0
-  gStatusText = ""
-  gPollActive = false
-  gSessionLoaded = false
-
-  gNatProtocol = "Discovering..."
-  gNatExternalIp = ""
-  gNatGatewayIp = ""
-  gNatLocalIp = ""
-  gNatDoubleNat = false
-  gNatOuterProtocol = ""
-  gNatOuterGatewayIp = ""
-  gNatPortsForwarded = false
-  gNatActiveMappings = 0
-
-  gShowRemoveConfirm = false
-  gRemoveDeleteFiles = false
-  gActionTorrentId = -1
-
   gDirty.store(false, moRelaxed)
-  gDirtyMask = dmAll
   gNotifyPending.store(false, moRelaxed)
   gDroppedEventCount.store(0'u64, moRelaxed)
   gDroppedCommandCount.store(0'u64, moRelaxed)
@@ -3135,26 +3016,26 @@ proc buildPatchBinary(includeEditableFields: bool, dirtyMask: uint32): seq[byte]
       w.key("pieceCount"); w.writeInt(ts.pieceCount)
       w.key("verifiedPieces"); w.writeInt(ts.verifiedPieces)
       w.key("trackerCount"); w.writeInt(ts.trackerCount)
-      w.key("protocolPrivate"); w.writeBool(ts.protocolPrivate)
-      w.key("protocolDhtEnabled"); w.writeBool(ts.protocolDhtEnabled)
-      w.key("protocolPexEnabled"); w.writeBool(ts.protocolPexEnabled)
-      w.key("protocolLsdEnabled"); w.writeBool(ts.protocolLsdEnabled)
-      w.key("protocolUtpEnabled"); w.writeBool(ts.protocolUtpEnabled)
-      w.key("protocolWebSeedEnabled"); w.writeBool(ts.protocolWebSeedEnabled)
-      w.key("protocolScrapeEnabled"); w.writeBool(ts.protocolScrapeEnabled)
-      w.key("protocolHolepunchEnabled"); w.writeBool(ts.protocolHolepunchEnabled)
-      w.key("protocolEncryptionMode"); w.writeString(ts.protocolEncryptionMode)
-      w.key("protocolUtpPeers"); w.writeInt(ts.protocolUtpPeers)
-      w.key("protocolTcpPeers"); w.writeInt(ts.protocolTcpPeers)
-      w.key("protocolLsdAnnounces"); w.writeInt(ts.protocolLsdAnnounces)
-      w.key("protocolLsdPeers"); w.writeInt(ts.protocolLsdPeers)
-      w.key("protocolLsdLastError"); w.writeString(ts.protocolLsdLastError)
-      w.key("protocolWebSeedBytes"); w.writeFloat(ts.protocolWebSeedBytes)
-      w.key("protocolWebSeedFailures"); w.writeInt(ts.protocolWebSeedFailures)
-      w.key("protocolWebSeedActiveUrl"); w.writeString(ts.protocolWebSeedActiveUrl)
-      w.key("protocolHolepunchAttempts"); w.writeInt(ts.protocolHolepunchAttempts)
-      w.key("protocolHolepunchSuccesses"); w.writeInt(ts.protocolHolepunchSuccesses)
-      w.key("protocolHolepunchLastError"); w.writeString(ts.protocolHolepunchLastError)
+      w.key("protocolPrivate"); w.writeBool(ts.protocol.isPrivate)
+      w.key("protocolDhtEnabled"); w.writeBool(ts.protocol.dhtEnabled)
+      w.key("protocolPexEnabled"); w.writeBool(ts.protocol.pexEnabled)
+      w.key("protocolLsdEnabled"); w.writeBool(ts.protocol.lsdEnabled)
+      w.key("protocolUtpEnabled"); w.writeBool(ts.protocol.utpEnabled)
+      w.key("protocolWebSeedEnabled"); w.writeBool(ts.protocol.webSeedEnabled)
+      w.key("protocolScrapeEnabled"); w.writeBool(ts.protocol.scrapeEnabled)
+      w.key("protocolHolepunchEnabled"); w.writeBool(ts.protocol.holepunchEnabled)
+      w.key("protocolEncryptionMode"); w.writeString(ts.protocol.encryptionMode)
+      w.key("protocolUtpPeers"); w.writeInt(ts.protocol.utpPeers)
+      w.key("protocolTcpPeers"); w.writeInt(ts.protocol.tcpPeers)
+      w.key("protocolLsdAnnounces"); w.writeInt(ts.protocol.lsdAnnounces)
+      w.key("protocolLsdPeers"); w.writeInt(ts.protocol.lsdPeers)
+      w.key("protocolLsdLastError"); w.writeString(ts.protocol.lsdLastError)
+      w.key("protocolWebSeedBytes"); w.writeFloat(ts.protocol.webSeedBytes.float)
+      w.key("protocolWebSeedFailures"); w.writeInt(ts.protocol.webSeedFailures)
+      w.key("protocolWebSeedActiveUrl"); w.writeString(ts.protocol.webSeedActiveUrl)
+      w.key("protocolHolepunchAttempts"); w.writeInt(ts.protocol.holepunchAttempts)
+      w.key("protocolHolepunchSuccesses"); w.writeInt(ts.protocol.holepunchSuccesses)
+      w.key("protocolHolepunchLastError"); w.writeString(ts.protocol.holepunchLastError)
       w.endObject()
     w.endArray()
     addPatchJsonStringField(fields, fldTorrents, w.finish())
@@ -3288,6 +3169,7 @@ proc syncFromSnapshot(payload: ptr uint8, payloadLen: uint32) =
 
 proc ensureInit() =
   if not gInitialized:
+    installCrashHandler()
     initRuntimeDefaults(gRuntime)
     initMailbox[UiEvent](gEventQueue)
     initMailbox[BridgeCommand](gCommandQueue)
@@ -3528,15 +3410,15 @@ proc dispatch*(runtime: var BridgeRuntime, payload: ptr uint8, payloadLen: uint3
   of tagPoll:
     # Auto-recover event loop if it crashed
     ensureEventLoop()
-    let hadEvents = processUiEvents()
-    # Update detail data only when the selected torrent has new data
-    if gSelectedTorrentId >= 0 and hadEvents:
+    let pr = processUiEvents()
+    # Update detail data only when events affected the selected torrent
+    if gSelectedTorrentId >= 0 and pr.selectedTorrentAffected:
       let oldPieceMap = gPieceMapData
       updateSelectedTorrentDetail()
       if gPieceMapData != oldPieceMap:
         markDirty(dmPieceMap)
     # Skip patch only when nothing changed at all
-    if not hadEvents and gDirtyMask == 0'u32:
+    if not pr.hadEvents and gDirtyMask == 0'u32:
       domain.pollSkipped = true
     # Periodic session save (every 30s) to survive crashes/force-quit
     if gTorrents.len > 0:

@@ -17,41 +17,42 @@ proc buildIrV2*(semProgram: GuiSemanticProgram): GuiIrV2Program =
   buildIr(semProgram)
 
 proc canonicalActionShape(action: GuiActionDecl): string =
-  var params: seq[string] = @[]
+  var params: seq[string]
   for param in action.params:
     params.add param.name & ":" & param.typ
   action.name & "(" & params.join(",") & ")@" & actionOwnerText(action.owner)
 
+template addWindowField(result: var string; win: GuiWindowDecl;
+                        has: untyped; key, val: string) =
+  if win.has:
+    result.add key & "=" & val & "\n"
+
 proc canonicalIrSignature*(program: GuiIrV2Program): string =
-  var lines: seq[string] = @[]
-  lines.add "app=" & program.appName
-  lines.add "bridge=" & program.bridge.nimEntry
-  if program.window.hasTitle:
-    lines.add "window.title=" & program.window.title
-  if program.window.hasWidth:
-    lines.add "window.width=" & $program.window.width
-  if program.window.hasHeight:
-    lines.add "window.height=" & $program.window.height
-  if program.window.hasMinWidth:
-    lines.add "window.minWidth=" & $program.window.minWidth
-  if program.window.hasMinHeight:
-    lines.add "window.minHeight=" & $program.window.minHeight
-  if program.window.hasMaxWidth:
-    lines.add "window.maxWidth=" & $program.window.maxWidth
-  if program.window.hasMaxHeight:
-    lines.add "window.maxHeight=" & $program.window.maxHeight
-  if program.window.hasClosePolicy:
-    lines.add "window.closeOnLast=" & $program.window.closeAppOnLastWindowClose
-  if program.window.hasShowTitleBar:
-    lines.add "window.showTitleBar=" & $program.window.showTitleBar
+  result.add "app=" & program.appName & "\n"
+  result.add "bridge=" & program.bridge.nimEntry & "\n"
+
+  let w = program.window
+  addWindowField(result, w, hasTitle, "window.title", w.title)
+  addWindowField(result, w, hasWidth, "window.width", $w.width)
+  addWindowField(result, w, hasHeight, "window.height", $w.height)
+  addWindowField(result, w, hasMinWidth, "window.minWidth", $w.minWidth)
+  addWindowField(result, w, hasMinHeight, "window.minHeight", $w.minHeight)
+  addWindowField(result, w, hasMaxWidth, "window.maxWidth", $w.maxWidth)
+  addWindowField(result, w, hasMaxHeight, "window.maxHeight", $w.maxHeight)
+  addWindowField(result, w, hasClosePolicy, "window.closeOnLast",
+                 $w.closeAppOnLastWindowClose)
+  addWindowField(result, w, hasShowTitleBar, "window.showTitleBar",
+                 $w.showTitleBar)
+  addWindowField(result, w, hasSuppressDefaultMenus,
+                 "window.suppressDefaultMenus", $w.suppressDefaultMenus)
 
   for action in program.actions:
-    lines.add "action=" & canonicalActionShape(action)
-
+    result.add "action=" & canonicalActionShape(action) & "\n"
   for component in program.components:
-    lines.add "component=" & component.name
+    result.add "component=" & component.name & "\n"
 
-  lines.join("\n")
+  if result.len > 0 and result[^1] == '\n':
+    result.setLen(result.len - 1)
 
 proc irParityDiagnostics*(
   leftName: string,
@@ -61,12 +62,25 @@ proc irParityDiagnostics*(
 ): seq[GuiDiagnostic] =
   let leftSig = canonicalIrSignature(leftProgram)
   let rightSig = canonicalIrSignature(rightProgram)
-  if leftSig != rightSig:
-    result.add mkDiagnostic(
-      "",
-      1,
-      1,
-      gsError,
-      "IR parity mismatch between " & leftName & " and " & rightName,
-      "GUI_IR_PARITY"
-    )
+  if leftSig == rightSig:
+    return
+
+  let leftLines = leftSig.split('\n')
+  let rightLines = rightSig.split('\n')
+  let maxLen = max(leftLines.len, rightLines.len)
+  var diffs: seq[string]
+  for i in 0 ..< maxLen:
+    let l = if i < leftLines.len: leftLines[i] else: "(missing)"
+    let r = if i < rightLines.len: rightLines[i] else: "(missing)"
+    if l != r:
+      diffs.add leftName & ": " & l & "  |  " & rightName & ": " & r
+
+  result.add mkDiagnostic(
+    "",
+    1,
+    1,
+    gsError,
+    "IR parity mismatch between " & leftName & " and " & rightName &
+      ":\n" & diffs.join("\n"),
+    "GUI_IR_PARITY"
+  )

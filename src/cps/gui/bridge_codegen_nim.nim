@@ -241,8 +241,6 @@ else
   EXT="so"
 fi
 
-STAMP="$(date +%s)"
-OUT_FILE="$SCRIPT_DIR/libgui_bridge_${STAMP}.${EXT}"
 LATEST_FILE="$SCRIPT_DIR/libgui_bridge_latest.${EXT}"
 
 nim c \
@@ -250,10 +248,8 @@ nim c \
   --threads:on \
   --mm:atomicArc \
   --app:lib \
-  --out:"$OUT_FILE" \
+  --out:"$LATEST_FILE" \
   "$SOURCE_ENTRY"
-
-cp "$OUT_FILE" "$LATEST_FILE"
 
 echo "$LATEST_FILE"
 """

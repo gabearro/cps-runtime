@@ -524,15 +524,21 @@ proc initTrampoline*(c: sink Continuation): Trampoline {.inline.} =
 
 proc bounce*(t: var Trampoline): bool {.inline.} =
   ## Execute one step. Returns true if there are more steps.
-  if t.current.isNil or t.current.fn.isNil:
+  if t.current.isNil:
     return false
   let fn = t.current.fn
+  if fn.isNil:
+    return false
   t.current = fn(t.current)
-  result = not t.current.isNil and not t.current.fn.isNil
+  if t.current.isNil:
+    return false
+  result = not t.current.fn.isNil
 
 proc run*(c: sink Continuation): Continuation {.discardable.} =
   ## Run a continuation chain to completion or suspension via trampoline.
   ## Uses a direct while loop — no Trampoline struct overhead.
+  ## The fn pointer is loaded exactly once per iteration to prevent
+  ## TOCTOU races when another thread modifies the continuation.
   if mtDispatcher != nil:
     mtDispatcher(c)
     return nil
@@ -542,8 +548,10 @@ proc run*(c: sink Continuation): Continuation {.discardable.} =
     setCurrentRuntime(targetRt)
   try:
     result = c
-    while not result.isNil and not result.fn.isNil:
+    while not result.isNil:
       let fn = result.fn
+      if fn.isNil:
+        break
       result = fn(result)
   finally:
     if targetRt != nil and targetRt != prevRt:
@@ -551,14 +559,17 @@ proc run*(c: sink Continuation): Continuation {.discardable.} =
 
 proc runUntilSuspend*(c: sink Continuation): Continuation =
   ## Run until the continuation suspends or finishes.
+  ## Single-load fn to match run() TOCTOU fix.
   let targetRt = if c != nil: c.runtimeOwner else: nil
   let prevRt = currentRuntimeCtx
   if targetRt != nil and targetRt != prevRt:
     setCurrentRuntime(targetRt)
   try:
     result = c
-    while not result.isNil and not result.fn.isNil:
+    while not result.isNil:
       let fn = result.fn
+      if fn.isNil:
+        break
       result = fn(result)
   finally:
     if targetRt != nil and targetRt != prevRt:

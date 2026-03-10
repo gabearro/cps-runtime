@@ -25,29 +25,11 @@ proc mergeDiagnostics(parts: openArray[seq[GuiDiagnostic]]): seq[GuiDiagnostic] 
   for chunk in parts:
     result.add chunk
 
-proc toSemaOptions(opts: GuiCompileOptions): GuiSemaOptions =
+proc toSemaOptions(opts: GuiCoreOptions): GuiSemaOptions =
   GuiSemaOptions(
     backend: opts.backend,
     targets: opts.targets,
     unsupportedPolicy: opts.unsupportedPolicy
-  )
-
-proc toCompileOptions(opts: GuiCheckOptions): GuiCompileOptions =
-  GuiCompileOptions(
-    backend: opts.backend,
-    targets: opts.targets,
-    unsupportedPolicy: opts.unsupportedPolicy,
-    dialect: opts.dialect,
-    verbose: opts.verbose
-  )
-
-proc toCompileOptions(opts: GuiGenerateOptions): GuiCompileOptions =
-  GuiCompileOptions(
-    backend: opts.backend,
-    targets: opts.targets,
-    unsupportedPolicy: opts.unsupportedPolicy,
-    dialect: opts.dialect,
-    verbose: opts.verbose
   )
 
 proc sanitizeAppName(name: string): string =
@@ -92,7 +74,7 @@ proc checkGuiProject*(
   entryFile: string,
   opts: GuiCheckOptions = defaultCheckOptions()
 ): seq[GuiDiagnostic] =
-  let compileRes = compileGuiIr(entryFile, toCompileOptions(opts))
+  let compileRes = compileGuiIr(entryFile, opts)
   compileRes.diagnostics
 
 proc listSwiftUiCoverage*(
@@ -102,6 +84,14 @@ proc listSwiftUiCoverage*(
   of gbkSwiftUI:
     coverageReportForSwiftUi(opts)
 
+proc toBridgeInfo(artifacts: GuiBridgeArtifacts): GuiBridgeInfo {.inline.} =
+  GuiBridgeInfo(
+    enabled: artifacts.enabled,
+    buildScript: artifacts.buildScriptPath,
+    entry: artifacts.entryFile,
+    dylibPath: artifacts.dylibLatestPath
+  )
+
 proc generateGuiProject*(
   entryFile: string,
   outDir: string,
@@ -109,7 +99,7 @@ proc generateGuiProject*(
 ): GuiGenerateResult =
   let normalizedEntry = normalizedPath(entryFile)
   let parsed = parseGuiProgram(normalizedEntry)
-  let sem = semanticCheck(parsed.program, toSemaOptions(toCompileOptions(opts)))
+  let sem = semanticCheck(parsed.program, toSemaOptions(opts.core))
 
   result.diagnostics = mergeDiagnostics([parsed.diagnostics, sem.diagnostics])
   if result.diagnostics.hasErrors:
@@ -156,10 +146,7 @@ proc generateGuiProject*(
   result.scheme = backendEmit.scheme
   result.generatedFiles = generatedFiles.deduplicate()
   result.diagnostics = diagnostics
-  result.bridgeEnabled = bridgeArtifacts.enabled
-  result.bridgeBuildScript = bridgeArtifacts.buildScriptPath
-  result.bridgeEntry = bridgeArtifacts.entryFile
-  result.bridgeDylibPath = bridgeArtifacts.dylibLatestPath
+  result.bridge = toBridgeInfo(bridgeArtifacts)
 
 proc runCommand(
   cmd: string,
@@ -196,42 +183,24 @@ proc buildGuiProject*(
   outDir: string,
   opts: GuiBuildOptions
 ): GuiBuildResult =
-  let gen = generateGuiProject(
-    entryFile,
-    outDir,
-    GuiGenerateOptions(
-      configuration: opts.configuration,
-      derivedDataPath: opts.derivedDataPath,
-      clean: opts.clean,
-      verbose: opts.verbose,
-      nimBridgeEntry: opts.nimBridgeEntry,
-      bridgeMode: opts.bridgeMode,
-      backend: opts.backend,
-      targets: opts.targets,
-      unsupportedPolicy: opts.unsupportedPolicy,
-      dialect: opts.dialect
-    )
-  )
+  let gen = generateGuiProject(entryFile, outDir, opts)
 
   result.projectPath = gen.projectPath
   result.scheme = gen.scheme
   result.diagnostics = gen.diagnostics
-  result.bridgeEnabled = gen.bridgeEnabled
-  result.bridgeBuildScript = gen.bridgeBuildScript
-  result.bridgeEntry = gen.bridgeEntry
-  result.bridgeDylibPath = gen.bridgeDylibPath
+  result.bridge = gen.bridge
 
   if result.diagnostics.hasErrors:
     return
 
-  if gen.bridgeEnabled:
+  if gen.bridge.enabled:
     var diags = result.diagnostics
     let bridgeOk = compileBridge(
       GuiBridgeArtifacts(
-        enabled: gen.bridgeEnabled,
-        entryFile: gen.bridgeEntry,
-        buildScriptPath: gen.bridgeBuildScript,
-        dylibLatestPath: gen.bridgeDylibPath
+        enabled: gen.bridge.enabled,
+        entryFile: gen.bridge.entry,
+        buildScriptPath: gen.bridge.buildScript,
+        dylibLatestPath: gen.bridge.dylibPath
       ),
       diags,
       opts.verbose
@@ -299,27 +268,11 @@ proc runGuiProject*(
   outDir: string,
   opts: GuiRunOptions
 ): GuiRunResult =
-  let build = buildGuiProject(
-    entryFile,
-    outDir,
-    GuiBuildOptions(
-      configuration: opts.configuration,
-      derivedDataPath: opts.derivedDataPath,
-      clean: opts.clean,
-      verbose: opts.verbose,
-      nimBridgeEntry: opts.nimBridgeEntry,
-      bridgeMode: opts.bridgeMode,
-      backend: opts.backend,
-      targets: opts.targets,
-      unsupportedPolicy: opts.unsupportedPolicy,
-      dialect: opts.dialect
-    )
-  )
+  let build = buildGuiProject(entryFile, outDir, opts.toBuildOptions())
 
   result.diagnostics = build.diagnostics
   result.appPath = build.appPath
-  result.bridgeEnabled = build.bridgeEnabled
-  result.bridgeDylibPath = build.bridgeDylibPath
+  result.bridge = build.bridge
   if result.diagnostics.hasErrors or not build.success:
     return
 
@@ -456,21 +409,7 @@ proc devGuiProject*(
   opts: GuiDevOptions
 ): GuiRunResult =
   let normalizedEntry = normalizedPath(entry)
-
-  proc toRunOptions(): GuiRunOptions =
-    GuiRunOptions(
-      configuration: opts.configuration,
-      derivedDataPath: "",
-      clean: false,
-      verbose: opts.verbose,
-      keepAppOpen: true,
-      nimBridgeEntry: opts.nimBridgeEntry,
-      bridgeMode: opts.bridgeMode,
-      backend: opts.backend,
-      targets: opts.targets,
-      unsupportedPolicy: opts.unsupportedPolicy,
-      dialect: opts.dialect
-    )
+  let runOpts = opts.toRunOptions()
 
   proc collectWatchFiles(): seq[string] =
     let parsed = parseGuiProgram(normalizedEntry)
@@ -491,11 +430,7 @@ proc devGuiProject*(
 
     result = result.deduplicate()
 
-  result = runGuiProject(
-    entry,
-    outDir,
-    toRunOptions()
-  )
+  result = runGuiProject(entry, outDir, runOpts)
   if result.diagnostics.hasErrors or not result.success:
     return
 
@@ -524,7 +459,7 @@ proc devGuiProject*(
     if not hasWatchChanges(watchState, files):
       continue
 
-    let rerun = runGuiProject(entry, outDir, toRunOptions())
+    let rerun = runGuiProject(entry, outDir, runOpts)
     result = rerun
     if rerun.diagnostics.hasErrors:
       # Keep watch loop alive so a follow-up fix can recover.

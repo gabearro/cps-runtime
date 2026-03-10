@@ -3,8 +3,19 @@
 import std/[os, strutils]
 import ../gui
 
-proc usage(): string =
-  """
+type
+  GuiCliCommand = enum
+    gccCheck = "check"
+    gccGenerate = "generate"
+    gccBuild = "build"
+    gccRun = "run"
+    gccDev = "dev"
+    gccCoverage = "coverage"
+    gccParity = "parity"
+    gccEmit = "emit"
+    gccRunNim = "run-nim"
+
+const UsageText = """
 Usage:
   nimble gui -- check <entry.gui> [--backend swiftui] [--platform macos,ios] [--unsupported-policy strict|warn-passthrough] [--dialect v3]
   nimble gui -- generate <entry.gui> [--out <dir>] [--configuration Debug|Release] [--clean] [--verbose] [--nim-bridge <path>] [--bridge-mode embedded|none] [--backend swiftui] [--platform macos,ios] [--unsupported-policy strict|warn-passthrough] [--dialect v3]
@@ -14,8 +25,7 @@ Usage:
   nimble gui -- coverage [--backend swiftui] [--dialect v3] [--typed-only]
   nimble gui -- parity <left.(gui|nim)> <right.(gui|nim)> [--backend swiftui] [--platform macos,ios] [--unsupported-policy strict|warn-passthrough] [--dialect v3]
   nimble gui -- emit <entry.nim> --out <entry.gui> [--module <name>]
-  nimble gui -- run-nim <entry.nim> [--out <dir>] [--configuration Debug|Release] [--verbose] [--nim-bridge <path>] [--bridge-mode embedded|none] [--backend swiftui] [--platform macos,ios] [--unsupported-policy strict|warn-passthrough] [--dialect v3]
-""".strip()
+  nimble gui -- run-nim <entry.nim> [--out <dir>] [--configuration Debug|Release] [--verbose] [--nim-bridge <path>] [--bridge-mode embedded|none] [--backend swiftui] [--platform macos,ios] [--unsupported-policy strict|warn-passthrough] [--dialect v3]"""
 
 proc printDiagnostics(diagnostics: openArray[GuiDiagnostic]) =
   for d in diagnostics:
@@ -23,8 +33,8 @@ proc printDiagnostics(diagnostics: openArray[GuiDiagnostic]) =
 
 type
   ParsedCli = object
-    ok: bool
-    cmd: string
+    error: string
+    cmd: GuiCliCommand
     entryFile: string
     secondEntryFile: string
     outDir: string
@@ -45,243 +55,215 @@ type
     dialect: GuiDialectVersion
     includePassthrough: bool
 
+proc ok(p: ParsedCli): bool {.inline.} = p.error.len == 0
+
+proc coreOpts(p: ParsedCli): GuiCoreOptions {.inline.} =
+  GuiCoreOptions(
+    backend: p.backend,
+    targets: p.targets,
+    unsupportedPolicy: p.unsupportedPolicy,
+    dialect: p.dialect,
+    verbose: p.verbose
+  )
+
 proc isConfigLiteral(value: string): bool {.inline.} =
-  let lowered = value.toLowerAscii()
-  lowered == "debug" or lowered == "release"
+  cmpIgnoreCase(value, "debug") == 0 or cmpIgnoreCase(value, "release") == 0
+
+proc parseCommand(s: string): tuple[cmd: GuiCliCommand, ok: bool] =
+  case s.toLowerAscii()
+  of "check": (gccCheck, true)
+  of "generate": (gccGenerate, true)
+  of "build": (gccBuild, true)
+  of "run": (gccRun, true)
+  of "dev": (gccDev, true)
+  of "coverage": (gccCoverage, true)
+  of "parity": (gccParity, true)
+  of "emit": (gccEmit, true)
+  of "run-nim": (gccRunNim, true)
+  else: (gccCheck, false)
+
+proc nextArg(args: seq[string], i: var int): string =
+  ## Consume the next argument if it exists and is not a flag.
+  if i + 1 < args.len and not args[i + 1].startsWith("--"):
+    inc i
+    args[i]
+  else:
+    ""
+
+proc parseTailArgs(tail: openArray[string], parsed: var ParsedCli, allowDerivedData: bool) =
+  ## Parse optional trailing positional args: [outDir] [configuration] [derivedDataPath].
+  var idx = 0
+  if parsed.outDir == "out" and idx < tail.len:
+    parsed.outDir = tail[idx]
+    inc idx
+  if idx < tail.len and isConfigLiteral(tail[idx]):
+    parsed.configuration = parseBuildConfiguration(tail[idx])
+    inc idx
+  if allowDerivedData and parsed.derivedDataPath.len == 0 and idx < tail.len:
+    parsed.derivedDataPath = tail[idx]
+    inc idx
+  if idx < tail.len:
+    parsed.error = "unexpected argument: " & tail[idx]
 
 proc parseCli(args: seq[string]): ParsedCli =
-  result.ok = false
-  result.outDir = "out"
-  result.outGuiFile = ""
-  result.configuration = gbcDebug
-  result.bridgeMode = gbmEmbeddedDylib
-  result.watch = true
-  result.hotReload = true
-  result.debounceMs = 500
-  result.backend = gbkSwiftUI
-  result.targets = defaultTargets()
-  result.unsupportedPolicy = gupWarnPassthrough
-  result.dialect = gdv3
-  result.includePassthrough = true
+  result = ParsedCli(
+    outDir: "out",
+    configuration: gbcDebug,
+    bridgeMode: gbmEmbeddedDylib,
+    watch: true,
+    hotReload: true,
+    debounceMs: 500,
+    backend: gbkSwiftUI,
+    targets: defaultTargets(),
+    unsupportedPolicy: gupWarnPassthrough,
+    dialect: gdv3,
+    includePassthrough: true
+  )
 
   if args.len == 0:
+    result.error = "no command specified"
     return
 
-  result.cmd = args[0].toLowerAscii()
-  if result.cmd notin ["check", "generate", "build", "run", "dev", "coverage", "parity", "emit", "run-nim"]:
+  let (cmd, cmdOk) = parseCommand(args[0])
+  if not cmdOk:
+    result.error = "unknown command: " & args[0]
     return
+  result.cmd = cmd
 
   var i = 1
   var positional: seq[string] = @[]
   while i < args.len:
     let arg = args[i]
-    if arg == "--out":
-      if i + 1 < args.len and not args[i + 1].startsWith("--"):
-        inc i
-        if result.cmd == "emit":
-          result.outGuiFile = args[i]
-        else:
-          result.outDir = args[i]
-    elif arg == "--configuration":
-      if i + 1 < args.len and not args[i + 1].startsWith("--"):
-        inc i
-        result.configuration = parseBuildConfiguration(args[i])
-    elif arg == "--bridge-mode":
-      if i + 1 < args.len and not args[i + 1].startsWith("--"):
-        inc i
-        result.bridgeMode = parseBridgeMode(args[i])
-    elif arg == "--derived-data":
-      if i + 1 < args.len and not args[i + 1].startsWith("--"):
-        inc i
-        result.derivedDataPath = args[i]
-    elif arg == "--nim-bridge":
-      if i + 1 < args.len and not args[i + 1].startsWith("--"):
-        inc i
-        result.nimBridgeEntry = args[i]
-    elif arg == "--module":
-      if i + 1 < args.len and not args[i + 1].startsWith("--"):
-        inc i
-        result.moduleName = args[i]
-    elif arg == "--backend":
-      if i + 1 < args.len and not args[i + 1].startsWith("--"):
-        inc i
-        result.backend = parseBackendKind(args[i])
-    elif arg == "--platform":
-      if i + 1 < args.len and not args[i + 1].startsWith("--"):
-        inc i
-        result.targets = parseTargetPlatforms(args[i])
-    elif arg == "--unsupported-policy":
-      if i + 1 < args.len and not args[i + 1].startsWith("--"):
-        inc i
-        result.unsupportedPolicy = parseUnsupportedPolicy(args[i])
-    elif arg == "--dialect":
-      if i + 1 < args.len and not args[i + 1].startsWith("--"):
-        inc i
-        result.dialect = parseDialectVersion(args[i])
-    elif arg == "--debounce":
-      if i + 1 < args.len and not args[i + 1].startsWith("--"):
-        inc i
-        try:
-          result.debounceMs = max(50, parseInt(args[i]))
+    case arg
+    of "--out":
+      let val = nextArg(args, i)
+      if val.len > 0:
+        if result.cmd == gccEmit: result.outGuiFile = val
+        else: result.outDir = val
+    of "--configuration":
+      let val = nextArg(args, i)
+      if val.len > 0: result.configuration = parseBuildConfiguration(val)
+    of "--bridge-mode":
+      let val = nextArg(args, i)
+      if val.len > 0: result.bridgeMode = parseBridgeMode(val)
+    of "--derived-data":
+      let val = nextArg(args, i)
+      if val.len > 0: result.derivedDataPath = val
+    of "--nim-bridge":
+      let val = nextArg(args, i)
+      if val.len > 0: result.nimBridgeEntry = val
+    of "--module":
+      let val = nextArg(args, i)
+      if val.len > 0: result.moduleName = val
+    of "--backend":
+      let val = nextArg(args, i)
+      if val.len > 0: result.backend = parseBackendKind(val)
+    of "--platform":
+      let val = nextArg(args, i)
+      if val.len > 0: result.targets = parseTargetPlatforms(val)
+    of "--unsupported-policy":
+      let val = nextArg(args, i)
+      if val.len > 0: result.unsupportedPolicy = parseUnsupportedPolicy(val)
+    of "--dialect":
+      let val = nextArg(args, i)
+      if val.len > 0: result.dialect = parseDialectVersion(val)
+    of "--debounce":
+      let val = nextArg(args, i)
+      if val.len > 0:
+        try: result.debounceMs = max(50, parseInt(val))
         except ValueError:
+          result.error = "invalid debounce value: " & val
           return
-    elif arg == "--typed-only":
-      result.includePassthrough = false
-    elif arg == "--include-passthrough":
-      result.includePassthrough = true
-    elif arg == "--clean":
-      result.clean = true
-    elif arg == "--verbose":
-      result.verbose = true
-    elif arg == "--no-watch":
-      result.watch = false
-    elif arg == "--no-hot-reload":
-      result.hotReload = false
-    elif arg.startsWith("--"):
-      return
+    of "--typed-only": result.includePassthrough = false
+    of "--include-passthrough": result.includePassthrough = true
+    of "--clean": result.clean = true
+    of "--verbose": result.verbose = true
+    of "--no-watch": result.watch = false
+    of "--no-hot-reload": result.hotReload = false
     else:
+      if arg.startsWith("--"):
+        result.error = "unknown flag: " & arg
+        return
       positional.add arg
     inc i
 
-  if result.cmd != "coverage" and positional.len == 0:
+  if result.cmd != gccCoverage and positional.len == 0:
+    result.error = $result.cmd & " requires an entry file"
     return
 
   if positional.len > 0:
     result.entryFile = positional[0]
 
+  let tail = if positional.len > 1: positional[1..^1] else: @[]
+
   case result.cmd
-  of "check":
-    if positional.len > 1:
-      return
+  of gccCheck:
+    if tail.len > 0:
+      result.error = "check takes exactly one entry file"
 
-  of "coverage":
+  of gccCoverage:
     if positional.len > 0:
-      return
+      result.error = "coverage takes no positional arguments"
 
-  of "parity":
+  of gccParity:
     if positional.len != 2:
-      return
-    result.secondEntryFile = positional[1]
+      result.error = "parity requires exactly two entry files"
+    else:
+      result.secondEntryFile = positional[1]
 
-  of "emit":
-    var tail: seq[string] = @[]
-    for idx in 1 ..< positional.len:
-      tail.add positional[idx]
+  of gccEmit:
+    var tidx = 0
+    if result.outGuiFile.len == 0 and tidx < tail.len:
+      result.outGuiFile = tail[tidx]
+      inc tidx
+    if tidx < tail.len:
+      result.error = "unexpected argument: " & tail[tidx]
+    elif result.outGuiFile.len == 0:
+      result.error = "emit requires --out <file>"
 
-    if result.outGuiFile.len == 0 and tail.len > 0:
-      result.outGuiFile = tail[0]
-      tail.delete(0)
+  of gccRunNim, gccGenerate, gccDev:
+    parseTailArgs(tail, result, allowDerivedData = false)
 
-    if tail.len > 0:
-      return
+  of gccBuild, gccRun:
+    parseTailArgs(tail, result, allowDerivedData = true)
 
-    if result.outGuiFile.len == 0:
-      return
-
-  of "run-nim":
-    var tail: seq[string] = @[]
-    for idx in 1 ..< positional.len:
-      tail.add positional[idx]
-
-    if result.outDir == "out" and tail.len > 0:
-      result.outDir = tail[0]
-      tail.delete(0)
-
-    if tail.len > 0 and isConfigLiteral(tail[0]):
-      result.configuration = parseBuildConfiguration(tail[0])
-      tail.delete(0)
-
-    if tail.len > 0:
-      return
-
-  else:
-    var tail: seq[string] = @[]
-    for idx in 1 ..< positional.len:
-      tail.add positional[idx]
-
-    if result.outDir == "out" and tail.len > 0:
-      result.outDir = tail[0]
-      tail.delete(0)
-
-    if tail.len > 0 and isConfigLiteral(tail[0]):
-      result.configuration = parseBuildConfiguration(tail[0])
-      tail.delete(0)
-
-    if result.cmd in ["build", "run"] and result.derivedDataPath.len == 0 and tail.len > 0:
-      result.derivedDataPath = tail[0]
-      tail.delete(0)
-
-    if tail.len > 0:
-      return
-
-  result.ok = true
-
-proc toCheckOptions(parsed: ParsedCli): GuiCheckOptions =
-  GuiCheckOptions(
-    backend: parsed.backend,
-    targets: parsed.targets,
-    unsupportedPolicy: parsed.unsupportedPolicy,
-    dialect: parsed.dialect,
-    verbose: parsed.verbose
-  )
+proc toCheckOptions(parsed: ParsedCli): GuiCheckOptions {.inline.} =
+  parsed.coreOpts
 
 proc toGenerateOptions(parsed: ParsedCli): GuiGenerateOptions =
   GuiGenerateOptions(
+    core: parsed.coreOpts,
     configuration: parsed.configuration,
     derivedDataPath: parsed.derivedDataPath,
     clean: parsed.clean,
-    verbose: parsed.verbose,
     nimBridgeEntry: parsed.nimBridgeEntry,
-    bridgeMode: parsed.bridgeMode,
-    backend: parsed.backend,
-    targets: parsed.targets,
-    unsupportedPolicy: parsed.unsupportedPolicy,
-    dialect: parsed.dialect
+    bridgeMode: parsed.bridgeMode
   )
 
-proc toBuildOptions(parsed: ParsedCli): GuiBuildOptions =
-  GuiBuildOptions(
-    configuration: parsed.configuration,
-    derivedDataPath: parsed.derivedDataPath,
-    clean: parsed.clean,
-    verbose: parsed.verbose,
-    nimBridgeEntry: parsed.nimBridgeEntry,
-    bridgeMode: parsed.bridgeMode,
-    backend: parsed.backend,
-    targets: parsed.targets,
-    unsupportedPolicy: parsed.unsupportedPolicy,
-    dialect: parsed.dialect
-  )
+proc toBuildOptions(parsed: ParsedCli): GuiBuildOptions {.inline.} =
+  parsed.toGenerateOptions()
 
 proc toRunOptions(parsed: ParsedCli): GuiRunOptions =
   GuiRunOptions(
+    core: parsed.coreOpts,
     configuration: parsed.configuration,
     derivedDataPath: parsed.derivedDataPath,
     clean: parsed.clean,
-    verbose: parsed.verbose,
     keepAppOpen: true,
     nimBridgeEntry: parsed.nimBridgeEntry,
-    bridgeMode: parsed.bridgeMode,
-    backend: parsed.backend,
-    targets: parsed.targets,
-    unsupportedPolicy: parsed.unsupportedPolicy,
-    dialect: parsed.dialect
+    bridgeMode: parsed.bridgeMode
   )
 
 proc toDevOptions(parsed: ParsedCli): GuiDevOptions =
   GuiDevOptions(
+    core: parsed.coreOpts,
     configuration: parsed.configuration,
     outDir: parsed.outDir,
     watch: parsed.watch,
     hotReload: parsed.hotReload,
-    verbose: parsed.verbose,
     nimBridgeEntry: parsed.nimBridgeEntry,
     debounceMs: parsed.debounceMs,
-    bridgeMode: parsed.bridgeMode,
-    backend: parsed.backend,
-    targets: parsed.targets,
-    unsupportedPolicy: parsed.unsupportedPolicy,
-    dialect: parsed.dialect
+    bridgeMode: parsed.bridgeMode
   )
 
 proc toEmitOptions(parsed: ParsedCli): GuiEmitOptions =
@@ -294,11 +276,9 @@ proc toEmitOptions(parsed: ParsedCli): GuiEmitOptions =
 
 proc safeTmpName(path: string): string =
   result = path
-  for i in 0 ..< result.len:
-    if result[i] in {'/', '\\', ':', '.', ' '}:
-      result[i] = '_'
-  if result.len == 0:
-    result = "module"
+  for c in result.mitems:
+    if c in {'/', '\\', ':', '.', ' '}: c = '_'
+  if result.len == 0: result = "module"
 
 proc compileEntrySignature(parsed: ParsedCli, entryPath: string): tuple[signature: string, diagnostics: seq[GuiDiagnostic]] =
   var sourcePath = entryPath
@@ -310,32 +290,25 @@ proc compileEntrySignature(parsed: ParsedCli, entryPath: string): tuple[signatur
       return
     sourcePath = emittedPath
 
-  let compileRes = compileGuiIr(
-    sourcePath,
-    GuiCompileOptions(
-      backend: parsed.backend,
-      targets: parsed.targets,
-      unsupportedPolicy: parsed.unsupportedPolicy,
-      dialect: parsed.dialect,
-      verbose: parsed.verbose
-    )
-  )
+  let compileRes = compileGuiIr(sourcePath, parsed.coreOpts)
   result.diagnostics.add compileRes.diagnostics
   result.signature = compileRes.irSignature
 
 proc runGuiCli*(args: seq[string]): int =
   let parsed = parseCli(args)
   if not parsed.ok:
-    echo usage()
+    echo "error: " & parsed.error
+    echo ""
+    echo UsageText
     return 1
 
   case parsed.cmd
-  of "check":
+  of gccCheck:
     let diags = checkGuiProject(parsed.entryFile, toCheckOptions(parsed))
     printDiagnostics(diags)
     if diags.hasErrors: 1 else: 0
 
-  of "generate":
+  of gccGenerate:
     let genRes = generateGuiProject(
       parsed.entryFile,
       parsed.outDir,
@@ -348,14 +321,14 @@ proc runGuiCli*(args: seq[string]): int =
 
     echo "project: " & genRes.projectPath
     echo "scheme: " & genRes.scheme
-    if genRes.bridgeEnabled:
-      echo "bridge: " & genRes.bridgeBuildScript
+    if genRes.bridge.enabled:
+      echo "bridge: " & genRes.bridge.buildScript
     for path in genRes.generatedFiles:
       if parsed.verbose:
         echo "generated: " & path
     0
 
-  of "build":
+  of gccBuild:
     let buildRes = buildGuiProject(
       parsed.entryFile,
       parsed.outDir,
@@ -369,13 +342,13 @@ proc runGuiCli*(args: seq[string]): int =
     echo "project: " & buildRes.projectPath
     echo "scheme: " & buildRes.scheme
     echo "app: " & buildRes.appPath
-    if buildRes.bridgeEnabled:
-      echo "bridge dylib: " & buildRes.bridgeDylibPath
+    if buildRes.bridge.enabled:
+      echo "bridge dylib: " & buildRes.bridge.dylibPath
     if parsed.verbose and buildRes.command.len > 0:
       echo "command: " & buildRes.command
     0
 
-  of "run":
+  of gccRun:
     let runRes = runGuiProject(
       parsed.entryFile,
       parsed.outDir,
@@ -387,13 +360,13 @@ proc runGuiCli*(args: seq[string]): int =
       return 1
 
     echo "app: " & runRes.appPath
-    if runRes.bridgeEnabled:
-      echo "bridge dylib: " & runRes.bridgeDylibPath
+    if runRes.bridge.enabled:
+      echo "bridge dylib: " & runRes.bridge.dylibPath
     if parsed.verbose and runRes.command.len > 0:
       echo "command: " & runRes.command
     0
 
-  of "dev":
+  of gccDev:
     let devRes = devGuiProject(
       parsed.entryFile,
       parsed.outDir,
@@ -405,11 +378,11 @@ proc runGuiCli*(args: seq[string]): int =
       return 1
 
     echo "app: " & devRes.appPath
-    if devRes.bridgeEnabled:
-      echo "bridge dylib: " & devRes.bridgeDylibPath
+    if devRes.bridge.enabled:
+      echo "bridge dylib: " & devRes.bridge.dylibPath
     0
 
-  of "coverage":
+  of gccCoverage:
     let report = listSwiftUiCoverage(
       GuiCoverageOptions(
         backend: parsed.backend,
@@ -441,7 +414,7 @@ proc runGuiCli*(args: seq[string]): int =
         echo symbol.kind & " " & symbol.name & " [" & targets & "]"
     0
 
-  of "parity":
+  of gccParity:
     let left = compileEntrySignature(parsed, parsed.entryFile)
     let right = compileEntrySignature(parsed, parsed.secondEntryFile)
     let combinedDiags = left.diagnostics & right.diagnostics
@@ -465,7 +438,7 @@ proc runGuiCli*(args: seq[string]): int =
       echo right.signature
     1
 
-  of "emit":
+  of gccEmit:
     let emitDiags = emitGuiFromNim(
       parsed.entryFile,
       parsed.outGuiFile,
@@ -479,7 +452,7 @@ proc runGuiCli*(args: seq[string]): int =
     echo "emitted: " & parsed.outGuiFile
     0
 
-  of "run-nim":
+  of gccRunNim:
     let emittedPath = normalizedPath(parsed.outDir / "nim_inline_emitted.gui")
     let emitDiags = emitGuiFromNim(
       parsed.entryFile,
@@ -503,10 +476,6 @@ proc runGuiCli*(args: seq[string]): int =
 
     echo "app: " & runRes.appPath
     0
-
-  else:
-    echo usage()
-    1
 
 when isMainModule:
   quit(runGuiCli(commandLineParams()))

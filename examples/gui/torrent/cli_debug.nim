@@ -577,6 +577,12 @@ proc buildConfig(): ClientConfig =
     enableTrackerScrape: gTrackerScrapeEnabled,
     enableHolepunch: gHolepunchEnabled,
     encryptionMode: parseEncryptionMode(gEncryptionMode),
+    enableRacing: true,
+    maxRacersPerBlock: 10,
+    raceSlowPeerSec: 5.0,
+    enableOptimisticVerification: true,
+    optimisticMinAgreePeers: 2,
+    optimisticMinAgreeBlocks: 3,
     sharedListener: gSharedListener,
     sharedUtpMgr: gSharedUtpMgr,
     sharedLsdSock: gSharedLsdSock,
@@ -632,7 +638,7 @@ proc drainClientEvents(torrentId: int, client: TorrentClient): CpsVoidFuture {.c
         if client.pieceMgr != nil:
           downloaded = client.pieceMgr.downloaded.float
           uploaded = client.pieceMgr.uploaded.float
-          verifiedCount = client.pieceMgr.verifiedCount
+          verifiedCount = client.pieceMgr.verifiedCount + client.pieceMgr.optimisticCount
           progress = client.pieceMgr.progress
           totalPieces = client.pieceMgr.totalPieces
           totalSize = client.metainfo.info.totalLength.float
@@ -645,9 +651,9 @@ proc drainClientEvents(torrentId: int, client: TorrentClient): CpsVoidFuture {.c
         snapWebSeedBytes = client.webSeedBytes
         snapWebSeedFailures = client.webSeedFailures
         snapWebSeedActiveUrl = client.webSeedActiveUrl
-        snapHolepunchAttempts = client.holepunchAttempts
-        snapHolepunchSuccesses = client.holepunchSuccesses
-        snapHolepunchLastError = client.holepunchLastError
+        snapHolepunchAttempts = client.hp.attempts
+        snapHolepunchSuccesses = client.hp.successes
+        snapHolepunchLastError = client.hp.lastError
 
         for p in client.activePeers:
           if p.transport == ptUtp: inc utpPeers
@@ -662,6 +668,7 @@ proc drainClientEvents(torrentId: int, client: TorrentClient): CpsVoidFuture {.c
             of psEmpty: pmData[pi] = '0'
             of psPartial: pmData[pi] = '1'
             of psComplete: pmData[pi] = '2'
+            of psOptimistic: pmData[pi] = '5'
             of psVerified: pmData[pi] = '3'
             of psFailed: pmData[pi] = '4'
             pi += 1

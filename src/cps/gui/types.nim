@@ -31,6 +31,12 @@ type
     gbmNone,
     gbmEmbeddedDylib
 
+  GuiBuildConfiguration* = enum
+    gbcDebug,
+    gbcRelease
+
+  # -- Source location --
+
   GuiSourcePos* = object
     file*: string
     line*: int
@@ -39,6 +45,8 @@ type
   GuiSourceRange* = object
     start*: GuiSourcePos
     stop*: GuiSourcePos
+
+  # -- Diagnostics --
 
   GuiDiagnostic* = object
     file*: string
@@ -66,23 +74,56 @@ type
     message*: string
     code*: string
 
-  GuiBuildConfiguration* = enum
-    gbcDebug,
-    gbcRelease
+  # -- Composable option groups --
 
-  GuiCheckOptions* = object
+  GuiCoreOptions* = object
+    ## Shared compilation/analysis options present on every command.
     backend*: GuiBackendKind
     targets*: seq[GuiTargetPlatform]
     unsupportedPolicy*: GuiUnsupportedPolicy
     dialect*: GuiDialectVersion
     verbose*: bool
 
-  GuiCompileOptions* = object
-    backend*: GuiBackendKind
-    targets*: seq[GuiTargetPlatform]
-    unsupportedPolicy*: GuiUnsupportedPolicy
-    dialect*: GuiDialectVersion
+  GuiCheckOptions* = GuiCoreOptions
+    ## Check and compile use the same option set.
+
+  GuiCompileOptions* = GuiCoreOptions
+
+  GuiGenerateOptions* = object
+    core*: GuiCoreOptions
+    configuration*: GuiBuildConfiguration
+    derivedDataPath*: string
+    clean*: bool
+    nimBridgeEntry*: string
+    bridgeMode*: GuiBridgeMode
+
+  GuiBuildOptions* = GuiGenerateOptions
+    ## Build and generate share identical options.
+
+  GuiRunOptions* = object
+    core*: GuiCoreOptions
+    configuration*: GuiBuildConfiguration
+    derivedDataPath*: string
+    clean*: bool
+    keepAppOpen*: bool
+    nimBridgeEntry*: string
+    bridgeMode*: GuiBridgeMode
+
+  GuiDevOptions* = object
+    core*: GuiCoreOptions
+    configuration*: GuiBuildConfiguration
+    outDir*: string
+    watch*: bool
+    hotReload*: bool
+    nimBridgeEntry*: string
+    debounceMs*: int
+    bridgeMode*: GuiBridgeMode
+
+  GuiEmitOptions* = object
+    moduleName*: string
+    emitDir*: string
     verbose*: bool
+    dialect*: GuiDialectVersion
 
   GuiCoverageOptions* = object
     backend*: GuiBackendKind
@@ -107,78 +148,28 @@ type
     symbols*: seq[GuiCoverageSymbol]
     diagnostics*: seq[GuiDiagnostic]
 
+  # -- Bridge metadata (shared across result types) --
+
+  GuiBridgeInfo* = object
+    enabled*: bool
+    buildScript*: string
+    entry*: string
+    dylibPath*: string
+
+  # -- Result types --
+
   GuiCompileResult* = object
     appName*: string
     loadedFiles*: seq[string]
     irSignature*: string
     diagnostics*: seq[GuiDiagnostic]
 
-  GuiGenerateOptions* = object
-    configuration*: GuiBuildConfiguration
-    derivedDataPath*: string
-    clean*: bool
-    verbose*: bool
-    nimBridgeEntry*: string
-    bridgeMode*: GuiBridgeMode
-    backend*: GuiBackendKind
-    targets*: seq[GuiTargetPlatform]
-    unsupportedPolicy*: GuiUnsupportedPolicy
-    dialect*: GuiDialectVersion
-
-  GuiBuildOptions* = object
-    configuration*: GuiBuildConfiguration
-    derivedDataPath*: string
-    clean*: bool
-    verbose*: bool
-    nimBridgeEntry*: string
-    bridgeMode*: GuiBridgeMode
-    backend*: GuiBackendKind
-    targets*: seq[GuiTargetPlatform]
-    unsupportedPolicy*: GuiUnsupportedPolicy
-    dialect*: GuiDialectVersion
-
-  GuiRunOptions* = object
-    configuration*: GuiBuildConfiguration
-    derivedDataPath*: string
-    clean*: bool
-    verbose*: bool
-    keepAppOpen*: bool
-    nimBridgeEntry*: string
-    bridgeMode*: GuiBridgeMode
-    backend*: GuiBackendKind
-    targets*: seq[GuiTargetPlatform]
-    unsupportedPolicy*: GuiUnsupportedPolicy
-    dialect*: GuiDialectVersion
-
-  GuiDevOptions* = object
-    configuration*: GuiBuildConfiguration
-    outDir*: string
-    watch*: bool
-    hotReload*: bool
-    verbose*: bool
-    nimBridgeEntry*: string
-    debounceMs*: int
-    bridgeMode*: GuiBridgeMode
-    backend*: GuiBackendKind
-    targets*: seq[GuiTargetPlatform]
-    unsupportedPolicy*: GuiUnsupportedPolicy
-    dialect*: GuiDialectVersion
-
-  GuiEmitOptions* = object
-    moduleName*: string
-    emitDir*: string
-    verbose*: bool
-    dialect*: GuiDialectVersion
-
   GuiGenerateResult* = object
     projectPath*: string
     scheme*: string
     generatedFiles*: seq[string]
     diagnostics*: seq[GuiDiagnostic]
-    bridgeEnabled*: bool
-    bridgeBuildScript*: string
-    bridgeEntry*: string
-    bridgeDylibPath*: string
+    bridge*: GuiBridgeInfo
 
   GuiBuildResult* = object
     success*: bool
@@ -187,18 +178,33 @@ type
     appPath*: string
     command*: string
     diagnostics*: seq[GuiDiagnostic]
-    bridgeEnabled*: bool
-    bridgeBuildScript*: string
-    bridgeEntry*: string
-    bridgeDylibPath*: string
+    bridge*: GuiBridgeInfo
 
   GuiRunResult* = object
     success*: bool
     appPath*: string
     command*: string
     diagnostics*: seq[GuiDiagnostic]
-    bridgeEnabled*: bool
-    bridgeDylibPath*: string
+    bridge*: GuiBridgeInfo
+
+# -- Forwarding templates: transparent access to core fields through composition --
+
+template backend*(opts: GuiGenerateOptions | GuiRunOptions | GuiDevOptions): GuiBackendKind =
+  opts.core.backend
+
+template targets*(opts: GuiGenerateOptions | GuiRunOptions | GuiDevOptions): seq[GuiTargetPlatform] =
+  opts.core.targets
+
+template unsupportedPolicy*(opts: GuiGenerateOptions | GuiRunOptions | GuiDevOptions): GuiUnsupportedPolicy =
+  opts.core.unsupportedPolicy
+
+template dialect*(opts: GuiGenerateOptions | GuiRunOptions | GuiDevOptions): GuiDialectVersion =
+  opts.core.dialect
+
+template verbose*(opts: GuiGenerateOptions | GuiRunOptions | GuiDevOptions): bool =
+  opts.core.verbose
+
+# -- Source helpers --
 
 proc sourcePos*(file: string, line: int, col: int): GuiSourcePos {.inline.} =
   GuiSourcePos(file: file, line: line, col: col)
@@ -217,6 +223,12 @@ proc sourceRange*(
 
 proc noRange*(file = ""): GuiSourceRange {.inline.} =
   sourceRange(file, 1, 1, 1, 1)
+
+proc rangeSpan*(a, b: GuiSourceRange): GuiSourceRange {.inline.} =
+  ## Constructs a range from `a`'s start to `b`'s stop.
+  sourceRange(a.start.file, a.start.line, a.start.col, b.stop.line, b.stop.col)
+
+# -- Diagnostic helpers --
 
 proc mkDiagnostic*(
   file: string,
@@ -253,32 +265,41 @@ proc mkDiagnostic*(
 proc isError*(d: GuiDiagnostic): bool {.inline.} =
   d.severity == gsError
 
-proc hasErrors*(diagnostics: openArray[GuiDiagnostic]): bool =
+proc hasErrors*(diagnostics: openArray[GuiDiagnostic]): bool {.inline.} =
   for d in diagnostics:
     if d.isError:
       return true
   false
 
-proc severityText*(s: GuiSeverity): string =
+proc severityText*(s: GuiSeverity): string {.inline.} =
   case s
-  of gsError:
-    "error"
-  of gsWarning:
-    "warning"
-  of gsInfo:
-    "info"
+  of gsError: "error"
+  of gsWarning: "warning"
+  of gsInfo: "info"
 
 proc formatDiagnostic*(d: GuiDiagnostic): string =
   let fileText = if d.file.len > 0: d.file else: "<unknown>"
-  let codeText = if d.code.len > 0: " [" & d.code & "]" else: ""
-  fileText & ":" & $d.line & ":" & $d.col & ": " &
-    severityText(d.severity) & codeText & ": " & d.message
+  result.add fileText
+  result.add ':'
+  result.addInt d.line
+  result.add ':'
+  result.addInt d.col
+  result.add ": "
+  result.add severityText(d.severity)
+  if d.code.len > 0:
+    result.add " ["
+    result.add d.code
+    result.add ']'
+  result.add ": "
+  result.add d.message
 
-proc defaultTargets*(): seq[GuiTargetPlatform] =
+# -- Defaults --
+
+proc defaultTargets*(): seq[GuiTargetPlatform] {.inline.} =
   @[gtpMacOS]
 
-proc defaultCheckOptions*(): GuiCheckOptions =
-  GuiCheckOptions(
+proc defaultCoreOptions*(): GuiCoreOptions {.inline.} =
+  GuiCoreOptions(
     backend: gbkSwiftUI,
     targets: defaultTargets(),
     unsupportedPolicy: gupWarnPassthrough,
@@ -286,16 +307,13 @@ proc defaultCheckOptions*(): GuiCheckOptions =
     verbose: false
   )
 
-proc defaultCompileOptions*(): GuiCompileOptions =
-  GuiCompileOptions(
-    backend: gbkSwiftUI,
-    targets: defaultTargets(),
-    unsupportedPolicy: gupWarnPassthrough,
-    dialect: gdv3,
-    verbose: false
-  )
+proc defaultCheckOptions*(): GuiCheckOptions {.inline.} =
+  defaultCoreOptions()
 
-proc defaultCoverageOptions*(): GuiCoverageOptions =
+proc defaultCompileOptions*(): GuiCompileOptions {.inline.} =
+  defaultCoreOptions()
+
+proc defaultCoverageOptions*(): GuiCoverageOptions {.inline.} =
   GuiCoverageOptions(
     backend: gbkSwiftUI,
     dialect: gdv3,
@@ -304,142 +322,111 @@ proc defaultCoverageOptions*(): GuiCoverageOptions =
 
 proc defaultGenerateOptions*(): GuiGenerateOptions =
   GuiGenerateOptions(
+    core: defaultCoreOptions(),
     configuration: gbcDebug,
-    derivedDataPath: "",
-    clean: false,
-    verbose: false,
-    nimBridgeEntry: "",
-    bridgeMode: gbmEmbeddedDylib,
-    backend: gbkSwiftUI,
-    targets: defaultTargets(),
-    unsupportedPolicy: gupWarnPassthrough,
-    dialect: gdv3
+    bridgeMode: gbmEmbeddedDylib
   )
 
-proc defaultBuildOptions*(): GuiBuildOptions =
-  GuiBuildOptions(
-    configuration: gbcDebug,
-    derivedDataPath: "",
-    clean: false,
-    verbose: false,
-    nimBridgeEntry: "",
-    bridgeMode: gbmEmbeddedDylib,
-    backend: gbkSwiftUI,
-    targets: defaultTargets(),
-    unsupportedPolicy: gupWarnPassthrough,
-    dialect: gdv3
-  )
+proc defaultBuildOptions*(): GuiBuildOptions {.inline.} =
+  defaultGenerateOptions()
 
 proc defaultRunOptions*(): GuiRunOptions =
   GuiRunOptions(
+    core: defaultCoreOptions(),
     configuration: gbcDebug,
-    derivedDataPath: "",
-    clean: false,
-    verbose: false,
     keepAppOpen: true,
-    nimBridgeEntry: "",
-    bridgeMode: gbmEmbeddedDylib,
-    backend: gbkSwiftUI,
-    targets: defaultTargets(),
-    unsupportedPolicy: gupWarnPassthrough,
-    dialect: gdv3
+    bridgeMode: gbmEmbeddedDylib
   )
 
 proc defaultDevOptions*(): GuiDevOptions =
   GuiDevOptions(
+    core: defaultCoreOptions(),
     configuration: gbcDebug,
     outDir: "out",
     watch: true,
     hotReload: true,
-    verbose: false,
-    nimBridgeEntry: "",
     debounceMs: 500,
-    bridgeMode: gbmEmbeddedDylib,
-    backend: gbkSwiftUI,
-    targets: defaultTargets(),
-    unsupportedPolicy: gupWarnPassthrough,
-    dialect: gdv3
+    bridgeMode: gbmEmbeddedDylib
   )
 
-proc defaultEmitOptions*(): GuiEmitOptions =
+proc defaultEmitOptions*(): GuiEmitOptions {.inline.} =
   GuiEmitOptions(
-    moduleName: "",
-    emitDir: "",
-    verbose: false,
     dialect: gdv3
   )
 
-proc parseBuildConfiguration*(value: string): GuiBuildConfiguration =
-  case value.toLowerAscii()
-  of "release":
-    gbcRelease
-  else:
-    gbcDebug
+# -- Type conversion helpers --
 
-proc buildConfigurationText*(cfg: GuiBuildConfiguration): string =
+proc toBuildOptions*(opts: GuiRunOptions): GuiBuildOptions {.inline.} =
+  GuiBuildOptions(
+    core: opts.core,
+    configuration: opts.configuration,
+    derivedDataPath: opts.derivedDataPath,
+    clean: opts.clean,
+    nimBridgeEntry: opts.nimBridgeEntry,
+    bridgeMode: opts.bridgeMode
+  )
+
+proc toRunOptions*(opts: GuiDevOptions): GuiRunOptions {.inline.} =
+  GuiRunOptions(
+    core: opts.core,
+    configuration: opts.configuration,
+    keepAppOpen: true,
+    nimBridgeEntry: opts.nimBridgeEntry,
+    bridgeMode: opts.bridgeMode
+  )
+
+# -- Enum text/parse --
+
+proc parseBuildConfiguration*(value: string): GuiBuildConfiguration {.inline.} =
+  case value.toLowerAscii()
+  of "release": gbcRelease
+  else: gbcDebug
+
+proc buildConfigurationText*(cfg: GuiBuildConfiguration): string {.inline.} =
   case cfg
-  of gbcDebug:
-    "Debug"
-  of gbcRelease:
-    "Release"
+  of gbcDebug: "Debug"
+  of gbcRelease: "Release"
 
-proc actionOwnerText*(owner: GuiActionOwner): string =
+proc actionOwnerText*(owner: GuiActionOwner): string {.inline.} =
   case owner
-  of gaoSwift:
-    "swift"
-  of gaoNim:
-    "nim"
-  of gaoBoth:
-    "both"
+  of gaoSwift: "swift"
+  of gaoNim: "nim"
+  of gaoBoth: "both"
 
-proc parseActionOwner*(value: string): GuiActionOwner =
+proc parseActionOwner*(value: string): GuiActionOwner {.inline.} =
   case value.toLowerAscii()
-  of "nim":
-    gaoNim
-  of "both":
-    gaoBoth
-  else:
-    gaoSwift
+  of "nim": gaoNim
+  of "both": gaoBoth
+  else: gaoSwift
 
-proc bridgeModeText*(mode: GuiBridgeMode): string =
+proc bridgeModeText*(mode: GuiBridgeMode): string {.inline.} =
   case mode
-  of gbmNone:
-    "none"
-  of gbmEmbeddedDylib:
-    "embedded"
+  of gbmNone: "none"
+  of gbmEmbeddedDylib: "embedded"
 
-proc parseBridgeMode*(value: string): GuiBridgeMode =
+proc parseBridgeMode*(value: string): GuiBridgeMode {.inline.} =
   case value.toLowerAscii()
-  of "none":
-    gbmNone
-  else:
-    gbmEmbeddedDylib
+  of "none": gbmNone
+  else: gbmEmbeddedDylib
 
-proc backendKindText*(kind: GuiBackendKind): string =
+proc backendKindText*(kind: GuiBackendKind): string {.inline.} =
   case kind
-  of gbkSwiftUI:
-    "swiftui"
+  of gbkSwiftUI: "swiftui"
 
-proc parseBackendKind*(value: string): GuiBackendKind =
+proc parseBackendKind*(value: string): GuiBackendKind {.inline.} =
   case value.toLowerAscii()
-  of "swiftui":
-    gbkSwiftUI
-  else:
-    gbkSwiftUI
+  of "swiftui": gbkSwiftUI
+  else: gbkSwiftUI
 
-proc targetPlatformText*(platform: GuiTargetPlatform): string =
+proc targetPlatformText*(platform: GuiTargetPlatform): string {.inline.} =
   case platform
-  of gtpMacOS:
-    "macos"
-  of gtpIOS:
-    "ios"
+  of gtpMacOS: "macos"
+  of gtpIOS: "ios"
 
-proc parseTargetPlatform*(value: string): GuiTargetPlatform =
+proc parseTargetPlatform*(value: string): GuiTargetPlatform {.inline.} =
   case value.toLowerAscii()
-  of "ios", "iphoneos", "iphonesimulator":
-    gtpIOS
-  else:
-    gtpMacOS
+  of "ios", "iphoneos", "iphonesimulator": gtpIOS
+  else: gtpMacOS
 
 proc parseTargetPlatforms*(value: string): seq[GuiTargetPlatform] =
   if value.len == 0:
@@ -455,33 +442,25 @@ proc parseTargetPlatforms*(value: string): seq[GuiTargetPlatform] =
     result = defaultTargets()
 
 proc targetPlatformsText*(targets: openArray[GuiTargetPlatform]): string =
-  var parts: seq[string] = @[]
-  for target in targets:
-    parts.add targetPlatformText(target)
-  parts.join(",")
+  for i, target in targets:
+    if i > 0: result.add ','
+    result.add targetPlatformText(target)
 
-proc unsupportedPolicyText*(policy: GuiUnsupportedPolicy): string =
+proc unsupportedPolicyText*(policy: GuiUnsupportedPolicy): string {.inline.} =
   case policy
-  of gupStrict:
-    "strict"
-  of gupWarnPassthrough:
-    "warn-passthrough"
+  of gupStrict: "strict"
+  of gupWarnPassthrough: "warn-passthrough"
 
-proc parseUnsupportedPolicy*(value: string): GuiUnsupportedPolicy =
+proc parseUnsupportedPolicy*(value: string): GuiUnsupportedPolicy {.inline.} =
   case value.toLowerAscii()
-  of "strict":
-    gupStrict
-  else:
-    gupWarnPassthrough
+  of "strict": gupStrict
+  else: gupWarnPassthrough
 
-proc dialectVersionText*(dialect: GuiDialectVersion): string =
+proc dialectVersionText*(dialect: GuiDialectVersion): string {.inline.} =
   case dialect
-  of gdv3:
-    "v3"
+  of gdv3: "v3"
 
-proc parseDialectVersion*(value: string): GuiDialectVersion =
+proc parseDialectVersion*(value: string): GuiDialectVersion {.inline.} =
   case value.toLowerAscii()
-  of "v3", "3":
-    gdv3
-  else:
-    gdv3
+  of "v3", "3": gdv3
+  else: gdv3
