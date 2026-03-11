@@ -492,13 +492,15 @@ proc utpConnect*(mgr: UtpManager, ip: string, port: int,
   let synPkt: string = sock.makeSynPacket()
   mgr.sendPacket(synPkt, ip, port)
   # BEP 55 holepunch: send a burst of SYN packets to widen the NAT timing
-  # window. Multiple sends increase the chance that one SYN arrives while
-  # the remote's NAT mapping (created by their outgoing SYN) is active.
+  # window.  Back-to-back sends maximise the chance that one SYN is in
+  # transit when the remote's NAT mapping (created by their outgoing SYN)
+  # opens.  The checkTimeouts retransmit loop (500ms) covers the rest of
+  # the timeout window.
   if timeoutMs >= 5000:
     mgr.sendPacket(synPkt, ip, port)
     mgr.sendPacket(synPkt, ip, port)
     sock.rto = 500  # Faster retransmit for holepunch (500ms vs default 1000ms)
-    sock.maxRetransmit = 9  # ~4.5s of retransmits to fill the 5s holepunch window
+    sock.maxRetransmit = 14  # 500ms * 14 = 7s of retransmits, fills the 8s window
   sock.outBuffer.addLast(OutstandingPacket(
     seqNr: sock.seqNr - 1,
     data: synPkt,

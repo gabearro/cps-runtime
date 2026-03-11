@@ -191,7 +191,6 @@ type
     dhtSecret: string              ## Current token generation secret
     dhtPrevSecret: string          ## Previous secret (for token rotation)
     dhtPeerStore: DhtPeerStore     ## Store peers we've learned about
-    dhtTokenCache: Table[string, string]  ## ip:port → token from get_peers responses
     # Choking algorithm state
     lastUnchokeTime: float
     optimisticPeerKey: string  ## Current optimistic unchoke peer
@@ -2239,7 +2238,11 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
               client.hp.recordError(hpKey, hp.errCode)
             of HpRendezvous:
               # Act as relay: forward CONNECT to both peers when possible.
-              let requesterPort = if relayPeer.remoteListenPort > 0: relayPeer.remoteListenPort else: relayPeer.port
+              # BEP 55: relay must use the *observed* address (peer.port) — the
+              # NAT-mapped external port — NOT remoteListenPort (which is the
+              # peer's internal port behind NAT).  Sending the internal port
+              # causes the other side to SYN a port the NAT doesn't forward.
+              let requesterPort = relayPeer.port
               if hp.ip == relayPeer.ip and hp.port == requesterPort:
                 let errPayload = encodeHolepunchMsg(errorMsg(hp.ip, hp.port, HpErrNoSelf))
                 await relayPeer.sendExtended(UtHolepunchName, errPayload)
@@ -2255,10 +2258,8 @@ proc handlePeerEvent(client: TorrentClient, evt: PeerEvent): CpsVoidFuture {.cps
                   let errPayload = encodeHolepunchMsg(errorMsg(hp.ip, hp.port, HpErrNoSupport))
                   await relayPeer.sendExtended(UtHolepunchName, errPayload)
                 else:
-                  let relayPort = if relayPeer.remoteListenPort > 0: relayPeer.remoteListenPort else: relayPeer.port
-                  let targetPort = if targetPeer.remoteListenPort > 0: targetPeer.remoteListenPort else: targetPeer.port
-                  let toTarget = encodeHolepunchMsg(connectMsg(relayPeer.ip, relayPort))
-                  let toRequester = encodeHolepunchMsg(connectMsg(targetPeer.ip, targetPort))
+                  let toTarget = encodeHolepunchMsg(connectMsg(relayPeer.ip, relayPeer.port))
+                  let toRequester = encodeHolepunchMsg(connectMsg(targetPeer.ip, targetPeer.port))
                   # Send HpConnect to both peers in parallel for tighter timing
                   let relayFut = targetPeer.sendExtended(UtHolepunchName, toTarget)
                   let reqFut = relayPeer.sendExtended(UtHolepunchName, toRequester)
@@ -2606,9 +2607,12 @@ const
   FailedPeerTtlSec = 1800.0    ## Expire failedPeers entries after 30 min
   FailedIpTtlSec = 1800.0      ## Expire failedIps entries after 30 min
   KnownSeederTtlSec = 3600.0   ## Expire knownSeeders entries after 1 hour
+  UtpReconnectCooldownTtlSec = 300.0  ## Expire uTP reconnect cooldown after 5 min
+  MaxPexPeerFlags = 2000       ## Cap pexPeerFlags table size
 
 proc cleanupStaleTables(client: TorrentClient) =
-  ## Remove expired entries from failedPeers, failedIps, and knownSeeders.
+  ## Remove expired entries from failedPeers, failedIps, knownSeeders,
+  ## utpReconnectCooldown, and pexPeerFlags.
   ## Called periodically under the mutex to bound memory growth.
   let now = epochTime()
 
@@ -2633,6 +2637,34 @@ proc cleanupStaleTables(client: TorrentClient) =
   # While seeding, it prevents reconnecting to seeders we already know about.
   if client.state == csSeeding and client.knownSeeders.len > 500:
     client.knownSeeders.clear()
+
+  # Sweep utpReconnectCooldown: delete entries older than UtpReconnectCooldownTtlSec.
+  # These accumulate with every uTP reconnect attempt and have no other expiration.
+  var expiredUtp: seq[string]
+  for k, t in client.utpReconnectCooldown:
+    if now - t > UtpReconnectCooldownTtlSec:
+      expiredUtp.add(k)
+  for k in expiredUtp:
+    client.utpReconnectCooldown.del(k)
+
+  # Sweep orphaned utpReconnectState: entries for peers not in utpReconnectInProgress
+  # are leftovers from abandoned reconnection attempts (e.g., torrent paused mid-reconnect).
+  var orphanedSnaps: seq[string]
+  for k in client.utpReconnectState.keys:
+    if k notin client.utpReconnectInProgress:
+      orphanedSnaps.add(k)
+  for k in orphanedSnaps:
+    client.utpReconnectState.del(k)
+
+  # Sweep pexPeerFlags: PEX messages add entries for peers we've never connected to.
+  # Remove entries for non-connected peers when the table exceeds MaxPexPeerFlags.
+  if client.pexPeerFlags.len > MaxPexPeerFlags:
+    var stalePex: seq[string]
+    for k in client.pexPeerFlags.keys:
+      if k notin client.peers:
+        stalePex.add(k)
+    for k in stalePex:
+      client.pexPeerFlags.del(k)
 
 proc requestRefreshLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
   ## Periodically recover from stale block requests.
@@ -4770,6 +4802,11 @@ proc start*(client: TorrentClient): CpsVoidFuture {.cps.} =
     client.lsdSock.close()
   # Cancel any remaining pending DHT queries to avoid dangling futures
   client.dhtCleanup()
+  # Clear reconnect state tables to prevent orphaned entries
+  client.utpReconnectCooldown.clear()
+  client.utpReconnectState.clear()
+  client.utpReconnectInProgress.clear()
+  client.pexPeerFlags.clear()
   client.state = csStopped
   await client.events.send(ClientEvent(kind: cekStopped))
 

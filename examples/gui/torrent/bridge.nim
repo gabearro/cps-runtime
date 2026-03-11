@@ -601,8 +601,14 @@ type
     droppedEventCount: Atomic[uint64]
     droppedCommandCount: Atomic[uint64]
 
+# Cross-thread selected torrent ID: written by main thread, read by event
+# loop thread.  Allows drainClientEvents to skip building expensive peer/
+# tracker snapshots for non-selected torrents, reducing allocation pressure.
+var gSelectedTorrentIdAtomic: Atomic[int]
+
 proc initRuntimeDefaults*(runtime: var BridgeRuntime) =
   runtime.selectedTorrentId = -1
+  gSelectedTorrentIdAtomic.store(-1, moRelease)
   runtime.nextTorrentId = 0
   runtime.detailTab = 0
   runtime.pieceMapData = ""
@@ -1495,6 +1501,12 @@ proc drainClientEvents(torrentId: int, client: TorrentClient): CpsVoidFuture {.c
       var snapEncryptionMode = emPreferEncrypted
       var snapClientStopped = false
 
+      # Check if this torrent is currently selected by the GUI.
+      # Non-selected torrents skip expensive peer/tracker/piece-map snapshots
+      # to reduce allocation pressure on the event queue. The main thread only
+      # needs these details for the torrent the user is actually looking at.
+      let isSelected = gSelectedTorrentIdAtomic.load(moAcquire) == torrentId
+
       # Read DHT node count outside client.mtx — dhtNodeCount() has its own lock
       dhtNodes = client.dhtNodeCount
 
@@ -1531,7 +1543,8 @@ proc drainClientEvents(torrentId: int, client: TorrentClient): CpsVoidFuture {.c
       snapClientStopped = client.state == csStopped
 
       # Copy file info (immutable metainfo, no lock needed)
-      if snapFileInfo and client.metainfo.info.files.len > 0:
+      # Only for selected torrent — non-selected torrents already have this data
+      if isSelected and snapFileInfo and client.metainfo.info.files.len > 0:
         for i, f in client.metainfo.info.files:
           fInfoSnap.add((path: f.path, length: f.length))
           var pr = client.filePriorities.getOrDefault(i, "normal")
@@ -1542,29 +1555,40 @@ proc drainClientEvents(torrentId: int, client: TorrentClient): CpsVoidFuture {.c
 
       # ============================================================
       # LOCK: peer data + piece states (mutated by handlePeerEvent)
+      # Only build detailed peer/piece snapshots for the selected torrent.
+      # Non-selected torrents still need uTP/TCP counts (cheap scalars).
       # ============================================================
       await lock(client.mtx)
       try:
-        # Copy raw peer data (just field values, no parsePeerId/bitfieldPopcount)
-        for p in client.activePeers:
-          if p.transport == ptUtp:
-            inc utpPeers
-          else:
-            inc tcpPeers
-          rawPeers.add(copyRawPeerData(p))
+        if isSelected:
+          # Copy raw peer data (just field values, no parsePeerId/bitfieldPopcount)
+          for p in client.activePeers:
+            if p.transport == ptUtp:
+              inc utpPeers
+            else:
+              inc tcpPeers
+            rawPeers.add(copyRawPeerData(p))
 
-        # Copy piece states (simple byte-per-piece, no string formatting)
-        if client.pieceMgr != nil:
-          pmData = newString(client.pieceMgr.totalPieces)
-          var pi = 0
-          while pi < client.pieceMgr.totalPieces:
-            pmData[pi] = pieceStateToChar(client.pieceMgr.pieces[pi].state)
-            pi += 1
+          # Copy piece states (simple byte-per-piece, no string formatting)
+          if client.pieceMgr != nil:
+            pmData = newString(client.pieceMgr.totalPieces)
+            var pi = 0
+            while pi < client.pieceMgr.totalPieces:
+              pmData[pi] = pieceStateToChar(client.pieceMgr.pieces[pi].state)
+              pi += 1
+        else:
+          # Non-selected: only count transport types (no per-peer snapshot)
+          for p in client.activePeers:
+            if p.transport == ptUtp:
+              inc utpPeers
+            else:
+              inc tcpPeers
       finally:
         unlock(client.mtx)
 
       # Tracker snapshot under dedicated trackerLock (independent of main mtx)
-      if snapTrackers:
+      # Only for selected torrent — non-selected torrents don't need tracker detail
+      if isSelected and snapTrackers:
         withSpinLock(client.trackerLock):
           var seenTrackerUrls = initHashSet[string]()
           if client.metainfo.announce.len > 0:
@@ -1612,6 +1636,7 @@ proc drainClientEvents(torrentId: int, client: TorrentClient): CpsVoidFuture {.c
       # ============================================================
       # OUTSIDE LOCK: expensive formatting (parsePeerId, bitfieldPopcount,
       # formatTimestamp, flag building, string concatenation)
+      # Only for selected torrent — non-selected torrents send empty seqs.
       # ============================================================
 
       # Format peer snapshots (parsePeerId, bitfieldPopcount, flag strings)
@@ -2376,6 +2401,7 @@ proc processUiEvents(): ProcessResult =
           gLastPeerPollTimes.del(evt.torrentId)
           if gSelectedTorrentId == evt.torrentId:
             gSelectedTorrentId = -1
+            gSelectedTorrentIdAtomic.store(-1, moRelease)
 
       of uiRechecking:
         let idx = findTorrentIdx(evt.torrentId)
@@ -2560,6 +2586,35 @@ proc processUiEvents(): ProcessResult =
     gStatusDownRate += ts.downloadRate
     gStatusUpRate += ts.uploadRate
     gStatusDhtNodes += ts.dhtNodeCount
+
+  # Periodic cleanup of rate-tracking tables for non-selected torrents.
+  # buildPeerInfoFromSnapshot only cleans rates for the selected torrent.
+  # Without this, peerSmoothedRates/peerPrevBytes accumulate entries for
+  # every peer ever seen on every non-selected torrent (memory leak).
+  if handledAny and gPeerSmoothedRates.len > 500:
+    # Build set of active torrent IDs for fast lookup
+    var activeTorrentIds = initHashSet[int]()
+    for ts in gTorrents:
+      activeTorrentIds.incl(ts.id)
+    # Remove entries for torrents that no longer exist
+    var staleRateKeys: seq[string]
+    for key in gPeerSmoothedRates.keys:
+      let colonPos = key.find(':')
+      if colonPos > 0:
+        let tidStr = key[0 ..< colonPos]
+        let tid = (try: parseInt(tidStr) except: -1)
+        if tid >= 0 and tid notin activeTorrentIds:
+          staleRateKeys.add(key)
+    for key in staleRateKeys:
+      gPeerSmoothedRates.del(key)
+      gPeerPrevBytes.del(key)
+    # Also clean peerSnapshots for removed torrents
+    var stalePeerSnapIds: seq[int]
+    for tid in gPeerSnapshots.keys:
+      if tid notin activeTorrentIds:
+        stalePeerSnapIds.add(tid)
+    for tid in stalePeerSnapIds:
+      gPeerSnapshots.del(tid)
 
 # ============================================================
 # Alloc / Free / Blob helpers
@@ -2878,6 +2933,7 @@ proc syncFromRequestFields(payload: ptr uint8, payloadLen: uint32) =
     of fldSelectedTorrentId:
       if field.valueType == bridgeTypeInt64:
         gSelectedTorrentId = decodeInt64Bytes(field.payload, gSelectedTorrentId.int64).int
+        gSelectedTorrentIdAtomic.store(gSelectedTorrentId, moRelease)
     of fldDetailTab:
       if field.valueType == bridgeTypeInt64:
         gDetailTab = decodeInt64Bytes(field.payload, gDetailTab.int64).int
@@ -3387,6 +3443,7 @@ proc addTorrentFileEntry(path: string): int =
     torrentFilePath: path,
   ))
   gSelectedTorrentId = torrentId
+  gSelectedTorrentIdAtomic.store(torrentId, moRelease)
   enqueueCommand(BridgeCommand(kind: cmdAddTorrentFile,
     text: path, intParam: torrentId))
   torrentId
@@ -3477,6 +3534,7 @@ proc dispatch*(runtime: var BridgeRuntime, payload: ptr uint8, payloadLen: uint3
         magnetUri: uri,
       ))
       gSelectedTorrentId = torrentId
+      gSelectedTorrentIdAtomic.store(torrentId, moRelease)
       gShowAddTorrent = false
       gStatusText = "Adding magnet link (DHT peer discovery)..."
       enqueueCommand(BridgeCommand(kind: cmdAddTorrentMagnet,

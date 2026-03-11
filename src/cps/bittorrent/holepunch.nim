@@ -193,6 +193,8 @@ type
     successes*: int
     lastError*: string
 
+proc removeTarget*(hp: var HolepunchState, targetKey: string)  # forward decl
+
 proc initHolepunchState*(): HolepunchState =
   HolepunchState(
     relayByTarget: initTable[string, HashSet[string]](),
@@ -229,12 +231,15 @@ proc markInFlight*(hp: var HolepunchState, key: string) =
   hp.expected[key] = epochTime() + DefaultExpectedSec
 
 proc recordSuccess*(hp: var HolepunchState, key: string) =
-  ## Record a successful holepunch connection. Resets backoff state.
+  ## Record a successful holepunch connection. Resets backoff state
+  ## and removes relay mappings — we no longer need relay candidates
+  ## for a target we've directly connected to.
   hp.successes += 1
   hp.backoff.del(key)
   hp.expected.del(key)
   hp.inFlight.excl(key)
   hp.retryCount.del(key)
+  hp.removeTarget(key)
 
 proc recordError*(hp: var HolepunchState, key: string, errCode: uint32) =
   ## Record a holepunch error from a relay. Applies exponential backoff.
@@ -330,6 +335,19 @@ proc cleanupExpired*(hp: var HolepunchState) =
       expiredExpected.add(k)
   for k in expiredExpected:
     hp.expected.del(k)
+
+  # Sweep stale relay targets: remove targets that have no active state
+  # (not in backoff, inFlight, or expected). These are targets we've either
+  # already connected to, permanently failed, or forgotten about.
+  var staleTargets: seq[string]
+  for targetKey in hp.relayByTarget.keys:
+    if targetKey notin hp.backoff and
+       targetKey notin hp.inFlight and
+       targetKey notin hp.expected and
+       targetKey notin hp.retryCount:
+      staleTargets.add(targetKey)
+  for targetKey in staleTargets:
+    hp.removeTarget(targetKey)
 
 iterator relaysFor*(hp: HolepunchState, targetKey: string): string =
   ## Yield all relay peer keys for a given target.
