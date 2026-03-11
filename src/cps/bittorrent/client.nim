@@ -2551,9 +2551,8 @@ proc eventLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
     await lock(client.mtx)
     try:
       await client.handlePeerEvent(evt)
-
     finally:
-      unlock(client.mtx)
+      discard tryUnlock(client.mtx)
 proc optimisticVerifyLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
   ## Background loop that SHA1-confirms optimistically verified pieces.
   ## Drains the optimisticVerifyQueue at a moderate pace to avoid starving I/O.
@@ -4222,7 +4221,7 @@ proc webSeedLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
                 # Piece was reset by failAndResetPiece above — notify peers
                 await client.sendLtDonthaveToPeers(pieceIdx)
         finally:
-          unlock(client.mtx)
+          discard tryUnlock(client.mtx)
         ws.state = wssIdle
         client.webSeedActiveUrl = ""
       except CatchableError as e:
