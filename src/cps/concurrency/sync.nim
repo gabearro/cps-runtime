@@ -167,13 +167,30 @@ proc lock*(m: AsyncMutex): CpsVoidFuture =
 proc unlock*(m: AsyncMutex) =
   ## Release the mutex. If there are waiters, the oldest waiter
   ## acquires the lock (FIFO). Otherwise, the mutex becomes unlocked.
+  ## Raises ValueError if the mutex is not locked.
   var waiter: CpsVoidFuture
   withOptLock(m.lock, m.mtEnabled):
-    assert m.locked, "Mutex is not locked"
+    if not m.locked:
+      raise newException(ValueError, "Mutex is not locked")
     waiter = popLiveWaiter(m.waiters)
     if waiter.isNil:
       m.locked = false
   # Complete outside lock — lock transfers directly to next waiter
+  if not waiter.isNil:
+    complete(waiter)
+
+proc tryUnlock*(m: AsyncMutex): bool =
+  ## Try to release the mutex. Returns true if the mutex was locked and
+  ## is now released. Returns false if the mutex was not locked (no-op).
+  ## Safe to call in finally blocks where lock state is uncertain.
+  var waiter: CpsVoidFuture
+  withOptLock(m.lock, m.mtEnabled):
+    if not m.locked:
+      return false
+    waiter = popLiveWaiter(m.waiters)
+    if waiter.isNil:
+      m.locked = false
+    result = true
   if not waiter.isNil:
     complete(waiter)
 
