@@ -135,6 +135,20 @@ proc encodeMessage*(msg: PeerMessage): string =
     result.add(char(msg.extId))
     result.add(msg.extPayload)
 
+proc wireSize*(msg: PeerMessage): int {.inline.} =
+  ## Total wire bytes for a framed message (4-byte length prefix + payload).
+  ## Does not allocate.
+  let payloadLen = case msg.id
+    of msgChoke, msgUnchoke, msgInterested, msgNotInterested,
+       msgHaveAll, msgHaveNone: 1
+    of msgHave, msgSuggestPiece, msgAllowedFast: 5
+    of msgBitfield: 1 + msg.bitfield.len
+    of msgRequest, msgCancel, msgRejectRequest: 13
+    of msgPiece: 9 + msg.blockData.len
+    of msgPort: 3
+    of msgExtended: 2 + msg.extPayload.len
+  4 + payloadLen
+
 proc encodeKeepAlive*(): string =
   ## Encode a keep-alive message (4 zero bytes).
   result = newStringOfCap(4)

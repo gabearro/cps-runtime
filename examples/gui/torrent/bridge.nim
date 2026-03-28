@@ -1855,8 +1855,15 @@ proc startClientFromFile(torrentId: int, path: string): CpsVoidFuture {.cps.} =
   # Use the shared global bandwidth limiter so all torrents are rate-limited together.
   if gSharedBandwidthLimiter == nil:
     gSharedBandwidthLimiter = tc.bandwidthLimiter
+    logBridge "[RATELIMIT] Shared limiter created: effectiveDown=" &
+      $int(gSharedBandwidthLimiter.effectiveRate(Download)) &
+      " B/s effectiveUp=" &
+      $int(gSharedBandwidthLimiter.effectiveRate(Upload)) & " B/s"
   else:
     tc.bandwidthLimiter = gSharedBandwidthLimiter
+    logBridge "[RATELIMIT] Torrent " & $torrentId &
+      " assigned shared limiter (effectiveDown=" &
+      $int(gSharedBandwidthLimiter.effectiveRate(Download)) & " B/s)"
   gClients[torrentId] = tc
 
   var trackerCount = metainfo.announceList.len
@@ -2192,6 +2199,10 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
                                    parsed.displayName, config, parsed.selectedFiles)
           if gSharedBandwidthLimiter == nil:
             gSharedBandwidthLimiter = tc.bandwidthLimiter
+            logBridge "[RATELIMIT] Shared limiter created (magnet): effectiveDown=" &
+              $int(gSharedBandwidthLimiter.effectiveRate(Download)) &
+              " B/s effectiveUp=" &
+              $int(gSharedBandwidthLimiter.effectiveRate(Upload)) & " B/s"
           else:
             tc.bandwidthLimiter = gSharedBandwidthLimiter
 
@@ -2251,11 +2262,19 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
         let dlBps = parseBandwidth(gDownloadBandwidth, gDownloadBandwidthUnit)
         let ulBps = parseBandwidth(gUploadBandwidth, gUploadBandwidthUnit)
         let bwPct = (try: parseInt(gBandwidthPercent) except: 80)
+        logBridge "[RATELIMIT] SaveSettings: dlBps=" & $dlBps &
+          " ulBps=" & $ulBps & " pct=" & $bwPct &
+          " (raw: dl=" & gDownloadBandwidth & " " & gDownloadBandwidthUnit &
+          ", ul=" & gUploadBandwidth & " " & gUploadBandwidthUnit & ")"
         if gSharedBandwidthLimiter != nil:
           gSharedBandwidthLimiter.updateLimits(
             uploadBps = if ulBps > 0: ulBps else: -1,
             downloadBps = if dlBps > 0: dlBps else: -1,
             percent = bwPct)
+          logBridge "[RATELIMIT] Updated limiter: effectiveDown=" &
+            $int(gSharedBandwidthLimiter.effectiveRate(Download)) &
+            " B/s effectiveUp=" &
+            $int(gSharedBandwidthLimiter.effectiveRate(Upload)) & " B/s"
         let ids = snapshotClientIds()
         var idi = 0
         while idi < ids.len:
@@ -3092,18 +3111,39 @@ proc buildPatchBinary(includeEditableFields: bool, dirtyMask: uint32): seq[byte]
       w.key("protocolHolepunchAttempts"); w.writeInt(ts.protocol.holepunchAttempts)
       w.key("protocolHolepunchSuccesses"); w.writeInt(ts.protocol.holepunchSuccesses)
       w.key("protocolHolepunchLastError"); w.writeString(ts.protocol.holepunchLastError)
-      # Per-torrent piece breakdown percentages (computed from pieceMapData)
-      var countV, countO, countP: int
-      for c in ts.pieceMapData:
-        case c
-        of '3': inc countV
-        of '5': inc countO
-        of '1', '2': inc countP
-        else: discard
-      let pcDivisor = max(ts.pieceCount, 1).float
-      w.key("pctVerified"); w.writeFloat(countV.float / pcDivisor)
-      w.key("pctOptimistic"); w.writeFloat(countO.float / pcDivisor)
-      w.key("pctPartial"); w.writeFloat(countP.float / pcDivisor)
+      # Per-torrent piece breakdown percentages.
+      # Fast path: derive from exact per-piece states when pieceMapData is available.
+      # Fallback: when snapshots are unavailable (e.g. non-selected torrents at
+      # startup/session restore), derive a stable approximation from aggregate
+      # progress counters so sidebar progress bars are still populated.
+      var pctVerified = 0.0
+      var pctOptimistic = 0.0
+      var pctPartial = 0.0
+      if ts.pieceMapData.len > 0:
+        var countV, countO, countP: int
+        for c in ts.pieceMapData:
+          case c
+          of '3': inc countV
+          of '5': inc countO
+          of '1', '2': inc countP
+          else: discard
+        let pcDivisor = max(max(ts.pieceCount, ts.pieceMapData.len), 1).float
+        pctVerified = countV.float / pcDivisor
+        pctOptimistic = countO.float / pcDivisor
+        pctPartial = countP.float / pcDivisor
+      else:
+        # Clamp aggregate progress to [0, 1] for safe rendering.
+        let totalProgress = min(1.0, max(0.0, ts.progress))
+        if ts.status == tsSeeding:
+          # Completed torrents should render as fully verified.
+          pctVerified = totalProgress
+        elif ts.pieceCount > 0 and ts.verifiedPieces > 0:
+          let verifiedPct = ts.verifiedPieces.float / max(ts.pieceCount, 1).float
+          pctVerified = min(totalProgress, max(0.0, verifiedPct))
+        pctPartial = max(0.0, totalProgress - pctVerified)
+      w.key("pctVerified"); w.writeFloat(pctVerified)
+      w.key("pctOptimistic"); w.writeFloat(pctOptimistic)
+      w.key("pctPartial"); w.writeFloat(pctPartial)
       w.endObject()
     w.endArray()
     addPatchJsonStringField(fields, fldTorrents, w.finish())

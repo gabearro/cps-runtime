@@ -24,6 +24,7 @@ import std/[monotimes, times, math]
 import ../runtime
 import ../transform
 import ../eventloop
+import ../private/spinlock
 
 const
   MinBurstBytes* = 16384    ## Minimum burst size (16 KiB) — prevents micro-sleeps
@@ -45,6 +46,7 @@ type
   BandwidthLimiter* = ref object
     buckets*: array[Direction, TokenBucket]
     percent*: int            ## Percentage of bandwidth to use (1-100)
+    lock*: SpinLock          ## Protects buckets from concurrent worker access
 
 proc initTokenBucket*(bps: int, percent: int): TokenBucket =
   ## Create a token bucket for the given bandwidth (bytes/sec) and percentage.
@@ -108,10 +110,11 @@ proc newBandwidthLimiter*(uploadBps: int = 0, downloadBps: int = 0,
   ## - `downloadBps`: Total download bandwidth in bytes/sec (0 = unlimited)
   ## - `percent`: Percentage of bandwidth to allocate (1-100)
   let pct = clamp(percent, 1, 100)
-  BandwidthLimiter(
+  result = BandwidthLimiter(
     buckets: [initTokenBucket(uploadBps, pct), initTokenBucket(downloadBps, pct)],
     percent: pct
   )
+  initSpinLock(result.lock)
 
 proc isLimited*(limiter: BandwidthLimiter, dir: Direction): bool {.inline.} =
   limiter.buckets[dir].rate > 0
@@ -119,24 +122,42 @@ proc isLimited*(limiter: BandwidthLimiter, dir: Direction): bool {.inline.} =
 proc effectiveRate*(limiter: BandwidthLimiter, dir: Direction): float {.inline.} =
   limiter.buckets[dir].rate
 
+proc refund*(limiter: BandwidthLimiter, bytes: int, dir: Direction) {.inline.} =
+  ## Return tokens to the bucket (e.g., when pre-consumed estimate was too high).
+  ## Does not wake sleepers — just adjusts the token count.
+  if limiter == nil or limiter.buckets[dir].rate <= 0 or bytes <= 0:
+    return
+  withSpinLock(limiter.lock):
+    let bucket = limiter.buckets[dir]
+    # Never allow refunds to build credit above burst capacity.
+    limiter.buckets[dir].tokens = min(bucket.capacity, bucket.tokens + bytes.float)
+
 proc waitForBudget*(limiter: BandwidthLimiter, dir: Direction): CpsVoidFuture {.cps.} =
   ## Wait until the bucket has non-negative tokens (debt is repaid).
   ## Call this BEFORE reading from the network to prevent reading at wire speed
   ## while over budget. Does not consume tokens — only waits for debt recovery.
   if limiter == nil or limiter.buckets[dir].rate <= 0:
     return
-  # Zero-byte consume: refills and computes sleep from existing debt without deducting.
-  let waitMs = limiter.buckets[dir].consumeWithDebt(0)
-  if waitMs > 0:
+  while true:
+    # Zero-byte consume: refills and computes sleep from existing debt without deducting.
+    var waitMs: int
+    withSpinLock(limiter.lock):
+      waitMs = limiter.buckets[dir].consumeWithDebt(0)
+    if waitMs <= 0:
+      break
     await cpsSleep(waitMs)
 
 proc consume*(limiter: BandwidthLimiter, bytes: int, dir: Direction): CpsVoidFuture {.cps.} =
   ## Throttle traffic: consume tokens and wait if in debt.
   if limiter == nil or not limiter.isLimited(dir):
     return
-  let waitMs = limiter.buckets[dir].consumeWithDebt(bytes)
-  if waitMs > 0:
+  var waitMs: int
+  withSpinLock(limiter.lock):
+    waitMs = limiter.buckets[dir].consumeWithDebt(bytes)
+  while waitMs > 0:
     await cpsSleep(waitMs)
+    withSpinLock(limiter.lock):
+      waitMs = limiter.buckets[dir].consumeWithDebt(0)
 
 proc updateLimits*(limiter: BandwidthLimiter, uploadBps: int = 0,
                    downloadBps: int = 0, percent: int = 0) =
@@ -144,9 +165,10 @@ proc updateLimits*(limiter: BandwidthLimiter, uploadBps: int = 0,
   ## Pass 0 for any parameter to leave it unchanged.
   ## Pass -1 for uploadBps/downloadBps to disable that limit.
   let pct = if percent > 0: clamp(percent, 1, 100) else: limiter.percent
-  for (dir, bps) in [(Upload, uploadBps), (Download, downloadBps)]:
-    if bps != 0:
-      limiter.buckets[dir] = initTokenBucket(max(bps, 0), pct)
-    elif percent > 0 and limiter.buckets[dir].rate > 0:
-      limiter.buckets[dir] = initTokenBucket(limiter.buckets[dir].baseBps, pct)
-  limiter.percent = pct
+  withSpinLock(limiter.lock):
+    for (dir, bps) in [(Upload, uploadBps), (Download, downloadBps)]:
+      if bps != 0:
+        limiter.buckets[dir] = initTokenBucket(max(bps, 0), pct)
+      elif percent > 0 and limiter.buckets[dir].rate > 0:
+        limiter.buckets[dir] = initTokenBucket(limiter.buckets[dir].baseBps, pct)
+    limiter.percent = pct

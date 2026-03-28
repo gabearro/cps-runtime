@@ -1150,7 +1150,9 @@ proc bridgeWireKind(typ: string): string =
 
 const bridgeRequestCandidates = [
   "selectedTorrentId", "detailTab", "showAddTorrent", "addMagnetLink", "addTorrentPath",
-  "showSettings", "downloadDir", "listenPort", "downloadBandwidth", "uploadBandwidth",
+  "showSettings", "downloadDir", "listenPort",
+  "maxDownloadRate", "maxUploadRate",      # Current torrent GUI field names
+  "downloadBandwidth", "uploadBandwidth",  # Backward compatibility with older GUIs
   "downloadBandwidthUnit", "uploadBandwidthUnit", "bandwidthPercent",
   "maxPeers", "dhtEnabled", "pexEnabled", "lsdEnabled", "utpEnabled", "webSeedEnabled",
   "trackerScrapeEnabled", "holepunchEnabled", "encryptionMode", "actionPriority",

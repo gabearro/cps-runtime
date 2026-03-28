@@ -592,6 +592,10 @@ proc initClientCommon(client: TorrentClient, config: ClientConfig) =
     downloadBps = config.downloadBandwidth,
     percent = config.bandwidthPercent
   )
+  btDebug "[RATELIMIT] Created limiter: upload=", config.uploadBandwidth,
+    " B/s download=", config.downloadBandwidth, " B/s percent=",
+    config.bandwidthPercent, " effectiveDown=",
+    int(client.bandwidthLimiter.effectiveRate(Download)), " B/s"
   client.mtx = newAsyncMutex()
   initSpinLock(client.trackerLock)
   initSpinLock(client.dhtSpinLock)
@@ -4191,10 +4195,14 @@ proc webSeedLoop(client: TorrentClient): CpsVoidFuture {.cps.} =
           raise newException(WebSeedError, "no ranges produced for piece")
         var data = newString(pieceLen)
         for rr in ranges:
+          # Throttle web seed downloads through the shared bandwidth limiter.
           let expectedChunkLen = int(rr.rangeEnd - rr.rangeStart + 1)
+          await client.bandwidthLimiter.consume(expectedChunkLen, Download)
           let chunk: string = await withTimeout(
             httpRangeRequest(rr.url, rr.rangeStart, rr.rangeEnd), 30000)
           if chunk.len != expectedChunkLen:
+            # Refund the unused portion if we got less than expected.
+            client.bandwidthLimiter.refund(expectedChunkLen - chunk.len, Download)
             raise newException(WebSeedError,
               "webseed short read: got " & $chunk.len & " expected " & $expectedChunkLen)
           if chunk.len > 0:

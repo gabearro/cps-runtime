@@ -28,6 +28,7 @@ const
   UtpFallbackTimeoutMs* = 2000  ## uTP connect timeout before TCP fallback
   UtpPreferredTimeoutMs* = 5000 ## uTP connect timeout for peers known to support uTP (from PEX)
   MaxAllowedFastPieces = 256    ## Cap on allowedFastSet to prevent memory exhaustion from hostile peers
+  PreConsumeEstimate = BlockSize + 13  ## Pre-consume budget per read iteration (16 KiB + piece header)
   ClientName = "NimCPS/0.1.0"
 
 proc formatPeerAddr*(ip: string, port: uint16): string =
@@ -235,8 +236,8 @@ proc trackWireDownload(peer: PeerConn, bytes: int) {.inline.} =
 
 proc sendMessage(peer: PeerConn, msg: PeerMessage): CpsVoidFuture {.cps.} =
   let data = encodeMessage(msg)
-  if msg.id == msgPiece:
-    await peer.bandwidthLimiter.consume(data.len, Upload)
+  # Consume upload budget for all outgoing wire bytes, not just piece data.
+  await peer.bandwidthLimiter.consume(data.len, Upload)
   if peer.stream == nil or peer.stream.closed:
     raise newException(AsyncIoError, "peer stream closed")
   await peer.stream.write(data)
@@ -272,9 +273,11 @@ proc performHandshake(peer: PeerConn): CpsFuture[string] {.cps.} =
   ## Perform BitTorrent handshake. Returns "" on success, error message on failure.
   try:
     let hsData = encodeHandshake(peer.infoHash, peer.peerId)
+    await peer.bandwidthLimiter.consume(hsData.len, Upload)
     await peer.stream.write(hsData)
     peer.trackWireUpload(hsData.len)
 
+    await peer.bandwidthLimiter.consume(HandshakeLength, Download)
     let respData = await withTimeout(peer.reader.readExact(HandshakeLength), 15000)
     peer.trackWireDownload(HandshakeLength)
     let hs = decodeHandshake(respData)
@@ -302,17 +305,31 @@ proc performHandshake(peer: PeerConn): CpsFuture[string] {.cps.} =
 
 proc readLoop(peer: PeerConn): CpsVoidFuture {.cps.} =
   ## Read messages from peer until disconnected.
+  ## Pre-consumes an estimated block-sized budget before each read so that
+  ## peers collectively cannot burst past the global limit at wire speed.
+  ## After the read completes, refunds or charges the difference.
   while peer.state == psActive:
-    # Pre-read throttle: wait if download bucket is in debt to prevent
-    # aggregate overshoot proportional to the number of active peers.
-    await peer.bandwidthLimiter.waitForBudget(Download)
+    # Pre-consume: deduct estimated bytes and sleep off any resulting debt
+    # BEFORE touching the wire. All peers compete for budget here, so
+    # aggregate throughput stays within the global limit.
+    await peer.bandwidthLimiter.consume(PreConsumeEstimate, Download)
     let readResult = await peer.readMessage()
     peer.lastActivity = epochTime()
 
     if readResult.isKeepAlive:
+      # Keep-alive is 4 bytes on the wire; refund the overestimate.
+      peer.bandwidthLimiter.refund(PreConsumeEstimate - 4, Download)
       continue
 
     let msg = readResult.msg
+    let actualWire: int = wireSize(msg)
+    # Settle the difference between estimate and actual wire bytes.
+    let diff: int = PreConsumeEstimate - actualWire
+    if diff > 0:
+      peer.bandwidthLimiter.refund(diff, Download)
+    elif diff < 0:
+      # Underestimate (e.g., large extension message) — charge the extra.
+      await peer.bandwidthLimiter.consume(-diff, Download)
 
     case msg.id
     of msgChoke:
@@ -333,7 +350,6 @@ proc readLoop(peer: PeerConn): CpsVoidFuture {.cps.} =
       if msg.blockData.len > MaxBlockSize:
         raise newException(AsyncIoError, "piece block too large: " & $msg.blockData.len &
                            " > " & $MaxBlockSize)
-      await peer.bandwidthLimiter.consume(13 + msg.blockData.len, Download)
       peer.bytesDownloaded += msg.blockData.len
       peer.lastPieceTime = epochTime()
       await peer.emitEvent(PeerEvent(kind: pekBlock,
@@ -403,6 +419,7 @@ proc keepAliveLoop(peer: PeerConn): CpsVoidFuture {.cps.} =
     if peer.stream == nil or peer.stream.closed:
       break
     let ka = encodeKeepAlive()
+    await peer.bandwidthLimiter.consume(ka.len, Upload)
     await peer.stream.write(ka)
     peer.trackWireUpload(ka.len)
 
@@ -485,7 +502,8 @@ proc run*(peer: PeerConn): CpsVoidFuture {.cps.} =
           peer.stream = tcpStream.AsyncStream
           peer.transport = ptTcp
 
-    peer.reader = newBufferedReader(peer.stream, 65536)
+    # Keep read-ahead bounded to one pre-consume quantum to avoid large wire bursts.
+    peer.reader = newBufferedReader(peer.stream, PreConsumeEstimate)
     peer.state = psHandshaking
 
     let hsErr: string = await peer.performHandshake()
@@ -510,9 +528,11 @@ proc runIncoming*(peer: PeerConn, stream: AsyncStream): CpsVoidFuture {.cps.} =
     peer.stream = stream
     peer.state = psHandshaking
 
+    await peer.bandwidthLimiter.consume(1, Download)
     let firstByte: string = await withTimeout(readExactRaw(stream, 1), 15000)
     if firstByte[0].byte != 19:
       # MSE handshake: first byte is start of DH public key (96 bytes total)
+      await peer.bandwidthLimiter.consume(DhKeyLen - 1, Download)
       let restOfDh: string = await withTimeout(readExactRaw(stream, DhKeyLen - 1), 15000)
       let yaData: string = firstByte & restOfDh
       let mseRes: MseResult = await withTimeout(
@@ -524,13 +544,16 @@ proc runIncoming*(peer: PeerConn, stream: AsyncStream): CpsVoidFuture {.cps.} =
     elif peer.encryptionMode in {emRequireEncrypted, emForceRc4}:
       raise newException(AsyncIoError, peer.cachedAddr & ": plaintext rejected by encryption policy")
 
-    peer.reader = newBufferedReader(peer.stream, 65536)
+    # Keep read-ahead bounded to one pre-consume quantum to avoid large wire bursts.
+    peer.reader = newBufferedReader(peer.stream, PreConsumeEstimate)
 
     var respData: string
     if firstByte[0].byte == 19:
+      await peer.bandwidthLimiter.consume(HandshakeLength - 1, Download)
       let rest: string = await withTimeout(peer.reader.readExact(HandshakeLength - 1), 15000)
       respData = firstByte & rest
     else:
+      await peer.bandwidthLimiter.consume(HandshakeLength, Download)
       respData = await withTimeout(peer.reader.readExact(HandshakeLength), 15000)
     let hs = decodeHandshake(respData)
 
@@ -542,6 +565,7 @@ proc runIncoming*(peer: PeerConn, stream: AsyncStream): CpsVoidFuture {.cps.} =
     peer.peerSupportsFastExt = (hs.reserved[7] and 0x04) != 0
 
     let hsData = encodeHandshake(peer.infoHash, peer.peerId)
+    await peer.bandwidthLimiter.consume(hsData.len, Upload)
     await peer.stream.write(hsData)
     await peer.sendExtHandshake()
 
