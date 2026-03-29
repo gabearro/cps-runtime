@@ -72,8 +72,7 @@ type
     selfEntry: int        # instruction index of this function's entry (for self-recursion)
     brTablesRef: ptr seq[BrTableData]  # br_table auxiliary data (from Expr.brTables)
     globalsOffset: int    # byte offset into locals array where globals start
-    tosReg: Reg           # x16 - cached TOS value
-    tosValid: bool        # whether tosReg holds a valid TOS value
+    tosValid: bool        # whether rTos holds a valid TOS value
     usesMemory: bool      # true if function uses memory load/store/size/grow ops
     moduleTypes: ptr seq[FuncType]           # for call_indirect type lookup
     tableElems: ptr UncheckedArray[TableElem]  # pre-resolved table 0
@@ -642,17 +641,12 @@ proc compileInstr(ctx: var CompilerCtx, instr: Instr) =
     # Unary op: pop via cache, result stays in cache
     if ctx.tosValid:
       ctx.buf.cmpImm(rTos, 0, is64 = false)
-      # CSET Wd, EQ => CSINC Wd, WZR, WZR, NE
-      ctx.buf.emit(0x1A800400'u32 or (xzr.uint8.uint32 shl 16) or
-                   (condNE.uint32 shl 12) or (xzr.uint8.uint32 shl 5) or
-                   rTos.uint8.uint32)
+      ctx.buf.cset(rTos, condEQ)
       # tosValid remains true, result is in rTos
     else:
       ctx.emitPopX(rScratch0)
       ctx.buf.cmpImm(rScratch0, 0, is64 = false)
-      ctx.buf.emit(0x1A800400'u32 or (xzr.uint8.uint32 shl 16) or
-                   (condNE.uint32 shl 12) or (xzr.uint8.uint32 shl 5) or
-                   rTos.uint8.uint32)
+      ctx.buf.cset(rTos, condEQ)
       ctx.tosValid = true
 
   of opI32Eq, opI32Ne, opI32LtS, opI32LtU, opI32GtS, opI32GtU,
@@ -673,22 +667,7 @@ proc compileInstr(ctx: var CompilerCtx, instr: Instr) =
       of opI32GeS: condGE
       of opI32GeU: condCS   # unsigned >=
       else: condAL  # unreachable
-    # CSET: CSINC Wd, WZR, WZR, invert(cond)
-    let invCond = case cond
-      of condEQ: condNE
-      of condNE: condEQ
-      of condLT: condGE
-      of condGE: condLT
-      of condGT: condLE
-      of condLE: condGT
-      of condCC: condCS
-      of condCS: condCC
-      of condHI: condLS
-      of condLS: condHI
-      else: condAL
-    ctx.buf.emit(0x1A800400'u32 or (xzr.uint8.uint32 shl 16) or
-                 (invCond.uint32 shl 12) or (xzr.uint8.uint32 shl 5) or
-                 rScratch0.uint8.uint32)
+    ctx.buf.cset(rScratch0, cond)
     ctx.emitPushX(rScratch0)
 
   # ---- Control flow ----
@@ -1009,23 +988,7 @@ proc compileInstr(ctx: var CompilerCtx, instr: Instr) =
       of opI64GeS: condGE
       of opI64GeU: condCS
       else: condAL
-    let invCond = case cond
-      of condEQ: condNE
-      of condNE: condEQ
-      of condLT: condGE
-      of condGE: condLT
-      of condGT: condLE
-      of condLE: condGT
-      of condCC: condCS
-      of condCS: condCC
-      of condHI: condLS
-      of condLS: condHI
-      else: condAL
-    # CSET: result is 32-bit i32 (WASM comparisons always return i32)
-    # Use 32-bit CSINC (sf=0) so upper bits are zeroed
-    ctx.buf.emit(0x1A800400'u32 or (xzr.uint8.uint32 shl 16) or
-                 (invCond.uint32 shl 12) or (xzr.uint8.uint32 shl 5) or
-                 rScratch0.uint8.uint32)
+    ctx.buf.cset(rScratch0, cond)
     ctx.emitPushX(rScratch0)
 
   # ---- Conversions ----
@@ -1583,24 +1546,7 @@ proc compileInstr(ctx: var CompilerCtx, instr: Instr) =
       of opF32Le: condLS   # LS = less or same (unordered → false)
       of opF32Ge: condGE
       else: condAL
-    let invCond = case cond
-      of condEQ: condNE
-      of condNE: condEQ
-      of condMI: condPL
-      of condPL: condMI
-      of condGT: condLE
-      of condLE: condGT
-      of condLS: condHI
-      of condHI: condLS
-      of condGE: condLT
-      of condLT: condGE
-      of condCC: condCS
-      of condCS: condCC
-      else: condAL
-    # CSET W<scratch0>, cond => CSINC W<scratch0>, WZR, WZR, inv(cond)
-    ctx.buf.emit(0x1A800400'u32 or (xzr.uint8.uint32 shl 16) or
-                 (invCond.uint32 shl 12) or (xzr.uint8.uint32 shl 5) or
-                 rScratch0.uint8.uint32)
+    ctx.buf.cset(rScratch0, cond)
     ctx.emitPushX(rScratch0)
 
   # ---- f64 Arithmetic (binary) ----
@@ -1738,23 +1684,7 @@ proc compileInstr(ctx: var CompilerCtx, instr: Instr) =
       of opF64Le: condLS
       of opF64Ge: condGE
       else: condAL
-    let invCond = case cond
-      of condEQ: condNE
-      of condNE: condEQ
-      of condMI: condPL
-      of condPL: condMI
-      of condGT: condLE
-      of condLE: condGT
-      of condLS: condHI
-      of condHI: condLS
-      of condGE: condLT
-      of condLT: condGE
-      of condCC: condCS
-      of condCS: condCC
-      else: condAL
-    ctx.buf.emit(0x1A800400'u32 or (xzr.uint8.uint32 shl 16) or
-                 (invCond.uint32 shl 12) or (xzr.uint8.uint32 shl 5) or
-                 rScratch0.uint8.uint32)
+    ctx.buf.cset(rScratch0, cond)
     ctx.emitPushX(rScratch0)
 
   # ---- Float↔Int conversions ----
@@ -2238,10 +2168,7 @@ proc compileInstr(ctx: var CompilerCtx, instr: Instr) =
     ctx.emitPopX(rScratch0)  # value
     ctx.buf.loadImm32(rScratch1, constVal)
     ctx.buf.cmpReg(rScratch0, rScratch1, is64 = false)
-    # CSET for HI (unsigned >)
-    ctx.buf.emit(0x1A800400'u32 or (xzr.uint8.uint32 shl 16) or
-                 (condLS.uint32 shl 12) or (xzr.uint8.uint32 shl 5) or
-                 rScratch0.uint8.uint32)
+    ctx.buf.cset(rScratch0, condHI)
     ctx.emitPushX(rScratch0)
 
   of opI32ConstI32LtS:
@@ -2250,9 +2177,7 @@ proc compileInstr(ctx: var CompilerCtx, instr: Instr) =
     ctx.emitPopX(rScratch0)
     ctx.buf.loadImm32(rScratch1, constVal)
     ctx.buf.cmpReg(rScratch0, rScratch1, is64 = false)
-    ctx.buf.emit(0x1A800400'u32 or (xzr.uint8.uint32 shl 16) or
-                 (condGE.uint32 shl 12) or (xzr.uint8.uint32 shl 5) or
-                 rScratch0.uint8.uint32)
+    ctx.buf.cset(rScratch0, condLT)
     ctx.emitPushX(rScratch0)
 
   of opI32ConstI32GeS:
@@ -2261,9 +2186,7 @@ proc compileInstr(ctx: var CompilerCtx, instr: Instr) =
     ctx.emitPopX(rScratch0)
     ctx.buf.loadImm32(rScratch1, constVal)
     ctx.buf.cmpReg(rScratch0, rScratch1, is64 = false)
-    ctx.buf.emit(0x1A800400'u32 or (xzr.uint8.uint32 shl 16) or
-                 (condLT.uint32 shl 12) or (xzr.uint8.uint32 shl 5) or
-                 rScratch0.uint8.uint32)
+    ctx.buf.cset(rScratch0, condGE)
     ctx.emitPushX(rScratch0)
 
   of opI32ConstI32Eq:
@@ -2273,10 +2196,7 @@ proc compileInstr(ctx: var CompilerCtx, instr: Instr) =
     ctx.emitPopX(rScratch0)
     ctx.buf.loadImm32(rScratch1, constVal)
     ctx.buf.cmpReg(rScratch0, rScratch1, is64 = false)
-    # CSET Rd, EQ = CSINC Rd, WZR, WZR, NE
-    ctx.buf.emit(0x1A800400'u32 or (xzr.uint8.uint32 shl 16) or
-                 (condNE.uint32 shl 12) or (xzr.uint8.uint32 shl 5) or
-                 rScratch0.uint8.uint32)
+    ctx.buf.cset(rScratch0, condEQ)
     ctx.emitPushX(rScratch0)
 
   of opI32ConstI32Ne:
@@ -2286,10 +2206,7 @@ proc compileInstr(ctx: var CompilerCtx, instr: Instr) =
     ctx.emitPopX(rScratch0)
     ctx.buf.loadImm32(rScratch1, constVal)
     ctx.buf.cmpReg(rScratch0, rScratch1, is64 = false)
-    # CSET Rd, NE = CSINC Rd, WZR, WZR, EQ
-    ctx.buf.emit(0x1A800400'u32 or (xzr.uint8.uint32 shl 16) or
-                 (condEQ.uint32 shl 12) or (xzr.uint8.uint32 shl 5) or
-                 rScratch0.uint8.uint32)
+    ctx.buf.cset(rScratch0, condNE)
     ctx.emitPushX(rScratch0)
 
   of opLocalGetI32GtS:
@@ -2299,10 +2216,7 @@ proc compileInstr(ctx: var CompilerCtx, instr: Instr) =
     ctx.emitPopX(rScratch0)  # TOS (left operand)
     ctx.buf.ldrImm(rScratch1, rLocals, localOffset)
     ctx.buf.cmpReg(rScratch0, rScratch1, is64 = false)
-    # CSET Rd, GT = CSINC Rd, WZR, WZR, LE
-    ctx.buf.emit(0x1A800400'u32 or (xzr.uint8.uint32 shl 16) or
-                 (condLE.uint32 shl 12) or (xzr.uint8.uint32 shl 5) or
-                 rScratch0.uint8.uint32)
+    ctx.buf.cset(rScratch0, condGT)
     ctx.emitPushX(rScratch0)
 
   of opI32ConstI32And:
@@ -2769,10 +2683,7 @@ proc compileInstr(ctx: var CompilerCtx, instr: Instr) =
     ctx.buf.movReg(rScratch0, rScratch0, is64 = false)  # zero-extend 32-bit
     ctx.buf.loadImm32(rScratch1, cast[int32](0xFFFFFFFF'u32))
     ctx.buf.cmpReg(rScratch0, rScratch1, is64 = false)
-    # CSET W<scratch0>, EQ => CSINC W<scratch0>, WZR, WZR, NE
-    ctx.buf.emit(0x1A800400'u32 or (xzr.uint8.uint32 shl 16) or
-                 (condNE.uint32 shl 12) or (xzr.uint8.uint32 shl 5) or
-                 rScratch0.uint8.uint32)
+    ctx.buf.cset(rScratch0, condEQ)
     ctx.emitPushX(rScratch0)
 
   of opRefFunc:
@@ -2854,7 +2765,6 @@ proc compileFunction*(pool: var JitMemPool, module: WasmModule,
     selfEntry: -1,
     brTablesRef: if brTables.len > 0: brTables.addr else: nil,
     globalsOffset: globalsOffset,
-    tosReg: rTos,
     tosValid: false,
     usesMemory: usesMemory,
     moduleTypes: moduleTypesCopy.addr,

@@ -393,10 +393,20 @@ proc sxtbReg*(buf: var AsmBuffer, dst, src: Reg, is64: bool = false) =
 
 # ---- Conditional select ----
 
+proc invertCond*(c: Cond): Cond =
+  ## Invert an AArch64 condition code (flips bit 0).
+  Cond(c.ord xor 1)
+
 proc csel*(buf: var AsmBuffer, dst, a, b: Reg, cond: Cond, is64: bool = true) =
   ## CSEL Rd, Rn, Rm, cond (if cond then Rd=Rn else Rd=Rm)
   let sf = if is64: 1'u32 shl 31 else: 0'u32
   buf.emit(sf or 0x1A800000'u32 or rm(b) or (cond.uint32 shl 12) or rn(a) or rd(dst))
+
+proc cset*(buf: var AsmBuffer, dst: Reg, cond: Cond) =
+  ## CSET Wd, cond — alias for CSINC Wd, WZR, WZR, invert(cond)
+  buf.emit(0x1A800400'u32 or (xzr.uint8.uint32 shl 16) or
+           (invertCond(cond).uint32 shl 12) or (xzr.uint8.uint32 shl 5) or
+           dst.uint8.uint32)
 
 # ---- Floating point ----
 

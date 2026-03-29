@@ -12,7 +12,7 @@
 
 import ir
 import codegen
-import std/tables
+import std/[tables, sets]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -20,6 +20,39 @@ import std/tables
 
 type
   ConstInfo = tuple[known: bool, val: int64]
+
+# Bit flag in imm2 to indicate "bounds check already covered"
+const boundsCheckedFlag* = 0x40000000'i32
+
+proc accessSize*(op: IrOpKind): int32 =
+  ## Byte width of a memory load/store instruction, or 0 for non-memory ops.
+  case op
+  of irLoad8U, irLoad8S, irStore8: 1
+  of irLoad16U, irLoad16S, irStore16: 2
+  of irLoad32, irLoad32U, irLoad32S, irStore32, irStore32From64: 4
+  of irLoad64, irStore64: 8
+  of irLoadF32, irStoreF32: 4
+  of irLoadF64, irStoreF64: 8
+  else: 0
+
+const pureOps* = {irConst32, irConst64,
+  irAdd32, irSub32, irMul32, irDiv32S, irDiv32U, irRem32S, irRem32U,
+  irAnd32, irOr32, irXor32, irShl32, irShr32S, irShr32U,
+  irRotl32, irRotr32, irClz32, irCtz32, irPopcnt32, irEqz32,
+  irAdd64, irSub64, irMul64, irDiv64S, irDiv64U, irRem64S, irRem64U,
+  irAnd64, irOr64, irXor64, irShl64, irShr64S, irShr64U,
+  irRotl64, irRotr64, irClz64, irCtz64, irPopcnt64, irEqz64,
+  irEq32, irNe32, irLt32S, irLt32U, irGt32S, irGt32U,
+  irLe32S, irLe32U, irGe32S, irGe32U,
+  irEq64, irNe64, irLt64S, irLt64U, irGt64S, irGt64U,
+  irLe64S, irLe64U, irGe64S, irGe64U,
+  irWrapI64, irExtendI32S, irExtendI32U,
+  irExtend8S32, irExtend16S32, irExtend8S64, irExtend16S64, irExtend32S64,
+  irSelect, irNop}
+
+const pureOpsWithFma* = pureOps + {
+  irFmaF32, irFmsF32, irFnmaF32, irFnmsF32,
+  irFmaF64, irFmsF64, irFnmaF64, irFnmsF64}
 
 proc isPowerOfTwo(v: int64): bool =
   v > 0 and (v and (v - 1)) == 0
@@ -656,21 +689,6 @@ proc commonSubexprElim*(f: var IrFunc) =
   ## Loads are also excluded because intervening stores may change the value.
   ## Uses a hash table for O(1) lookup instead of O(n) linear scan.
 
-  let pureOps = {irConst32, irConst64,
-    irAdd32, irSub32, irMul32, irDiv32S, irDiv32U, irRem32S, irRem32U,
-    irAnd32, irOr32, irXor32, irShl32, irShr32S, irShr32U,
-    irRotl32, irRotr32, irClz32, irCtz32, irPopcnt32, irEqz32,
-    irAdd64, irSub64, irMul64, irDiv64S, irDiv64U, irRem64S, irRem64U,
-    irAnd64, irOr64, irXor64, irShl64, irShr64S, irShr64U,
-    irRotl64, irRotr64, irClz64, irCtz64, irPopcnt64, irEqz64,
-    irEq32, irNe32, irLt32S, irLt32U, irGt32S, irGt32U,
-    irLe32S, irLe32U, irGe32S, irGe32U,
-    irEq64, irNe64, irLt64S, irLt64U, irGt64S, irGt64U,
-    irLe64S, irLe64U, irGe64S, irGe64U,
-    irWrapI64, irExtendI32S, irExtendI32U,
-    irExtend8S32, irExtend16S32, irExtend8S64, irExtend16S64, irExtend32S64,
-    irSelect, irNop}
-
   # Key: (opcode, op0, op1, op2, imm, imm2) — fully identifies a pure expression.
   type CseKey = tuple[op: IrOpKind, op0, op1, op2: IrValue, imm: int64, imm2: int32]
 
@@ -725,23 +743,6 @@ proc commonSubexprElimGlobal*(f: var IrFunc) =
   ##   · Inlined code: repeated sub-expressions after inlining show up as
   ##     identical (op, operands) tuples across BBs
 
-  let pureOps = {irConst32, irConst64,
-    irAdd32, irSub32, irMul32, irDiv32S, irDiv32U, irRem32S, irRem32U,
-    irAnd32, irOr32, irXor32, irShl32, irShr32S, irShr32U,
-    irRotl32, irRotr32, irClz32, irCtz32, irPopcnt32, irEqz32,
-    irAdd64, irSub64, irMul64, irDiv64S, irDiv64U, irRem64S, irRem64U,
-    irAnd64, irOr64, irXor64, irShl64, irShr64S, irShr64U,
-    irRotl64, irRotr64, irClz64, irCtz64, irPopcnt64, irEqz64,
-    irEq32, irNe32, irLt32S, irLt32U, irGt32S, irGt32U,
-    irLe32S, irLe32U, irGe32S, irGe32U,
-    irEq64, irNe64, irLt64S, irLt64U, irGt64S, irGt64U,
-    irLe64S, irLe64U, irGe64S, irGe64U,
-    irWrapI64, irExtendI32S, irExtendI32U,
-    irExtend8S32, irExtend16S32, irExtend8S64, irExtend16S64, irExtend32S64,
-    irFmaF32, irFmsF32, irFnmaF32, irFnmsF32,
-    irFmaF64, irFmsF64, irFnmaF64, irFnmsF64,
-    irSelect, irNop}
-
   # Key: (opcode, op0, op1, op2, imm, imm2); Value: resultVal (IrValue).
   # Using a hash table gives O(1) lookup and O(n) intersection vs O(n²) with seq.
   type CseKey = tuple[op: IrOpKind, op0, op1, op2: IrValue, imm: int64, imm2: int32]
@@ -778,7 +779,7 @@ proc commonSubexprElimGlobal*(f: var IrFunc) =
     # ---- Apply CSE to this block ----
     for i in 0 ..< f.blocks[bbIdx].instrs.len:
       let instr = f.blocks[bbIdx].instrs[i]
-      if instr.op notin pureOps or instr.result < 0:
+      if instr.op notin pureOpsWithFma or instr.result < 0:
         continue
       let key = CseKey((instr.op, instr.operands[0], instr.operands[1],
                         instr.operands[2], instr.imm, instr.imm2))
@@ -807,17 +808,6 @@ proc boundsCheckElim*(f: var IrFunc) =
   ## For now, a conservative heuristic: if two loads/stores share the same
   ## base operand (operands[0]) and the second access's (offset + accessSize)
   ## is <= the first access's (offset + accessSize), the second is redundant.
-
-  proc accessSize(op: IrOpKind): int32 =
-    case op
-    of irLoad8U, irLoad8S, irStore8: 1
-    of irLoad16U, irLoad16S, irStore16: 2
-    of irLoad32, irLoad32U, irLoad32S, irStore32, irStore32From64: 4
-    of irLoad64, irStore64: 8
-    else: 0
-
-  # Bit flag in imm2 to indicate "bounds check already covered"
-  const boundsCheckedFlag = 0x40000000'i32
 
   type AccessRecord = tuple[base: IrValue, maxReach: int64]  # offset + size
 
@@ -869,16 +859,6 @@ proc boundsCheckElimGlobal*(f: var IrFunc) =
   ## a predecessor block with a lower index is a conservative approximation
   ## of a dominator. Build a global map of (base IrValue -> max reach) across
   ## all blocks, propagating from predecessors, then eliminate redundant checks.
-
-  const boundsCheckedFlag = 0x40000000'i32
-
-  proc accessSize(op: IrOpKind): int32 =
-    case op
-    of irLoad8U, irLoad8S, irStore8: 1
-    of irLoad16U, irLoad16S, irStore16: 2
-    of irLoad32, irLoad32U, irLoad32S, irStore32, irStore32From64: 4
-    of irLoad64, irStore64: 8
-    else: 0
 
   type AccessRecord = tuple[base: IrValue, maxReach: int64]
 
@@ -994,18 +974,6 @@ proc boundsCheckElimAlias*(f: var IrFunc) =
   ## The flow-insensitive global pass (boundsCheckElimGlobal) then propagates
   ## the already-flagged instructions across blocks.
 
-  const boundsCheckedFlag = 0x40000000'i32
-
-  proc accessSize(op: IrOpKind): int32 =
-    case op
-    of irLoad8U, irLoad8S, irStore8: 1
-    of irLoad16U, irLoad16S, irStore16: 2
-    of irLoad32, irLoad32U, irLoad32S, irStore32, irStore32From64: 4
-    of irLoad64, irStore64: 8
-    of irLoadF32, irStoreF32: 4
-    of irLoadF64, irStoreF64: 8
-    else: 0
-
   let origins = buildPtrOrigins(f)
 
   type AliasRecord = tuple[root: IrValue, maxReach: int64]
@@ -1070,18 +1038,6 @@ proc boundsCheckElimAliasGlobal*(f: var IrFunc) =
   ##
   ## Algorithm mirrors boundsCheckElimGlobal but tracks (root, maxReach)
   ## tuples derived via pointer-origin analysis rather than exact base values.
-
-  const boundsCheckedFlag = 0x40000000'i32
-
-  proc accessSize(op: IrOpKind): int32 =
-    case op
-    of irLoad8U, irLoad8S, irStore8: 1
-    of irLoad16U, irLoad16S, irStore16: 2
-    of irLoad32, irLoad32U, irLoad32S, irStore32, irStore32From64: 4
-    of irLoad64, irStore64: 8
-    of irLoadF32, irStoreF32: 4
-    of irLoadF64, irStoreF64: 8
-    else: 0
 
   let origins = buildPtrOrigins(f)
 
@@ -1548,15 +1504,14 @@ proc loopInvariantCodeMotion*(f: var IrFunc) =
     # Collect the set of canonical roots that are written anywhere in the loop.
     # A load whose address root is NOT in this set is safe to hoist (no aliasing
     # store can invalidate it during any loop iteration).
-    var writtenRoots: seq[IrValue]
+    var writtenRoots: HashSet[IrValue]
     for bodyIdx in bbIdx .. loopEnd:
       for instr in f.blocks[bodyIdx].instrs:
         if instr.op in storeOps and instr.operands[0] >= 0:
           let addrOp = instr.operands[0]
           let root = if addrOp.int < origins.len: origins[addrOp.int].root
                      else: addrOp
-          if root notin writtenRoots:
-            writtenRoots.add(root)
+          writtenRoots.incl(root)
 
     # Multi-pass until no new instructions can be hoisted
     var globalChanged = true
@@ -1870,16 +1825,6 @@ proc boundsCheckLoopHoist*(f: var IrFunc) =
   ## This is a conservative approximation; a full implementation would track
   ## induction variables. The approximation is sound: we only skip a check
   ## when we know the pre-check covers it.
-
-  const boundsCheckedFlag = 0x40000000'i32
-
-  proc accessSize(op: IrOpKind): int32 =
-    case op
-    of irLoad8U, irLoad8S, irStore8: 1
-    of irLoad16U, irLoad16S, irStore16: 2
-    of irLoad32, irLoad32U, irLoad32S, irStore32, irStore32From64: 4
-    of irLoad64, irStore64: 8
-    else: 0
 
   # Build defBlock for invariance check (reuse the same approach as LICM)
   var defBlock = newSeq[int](f.numValues)

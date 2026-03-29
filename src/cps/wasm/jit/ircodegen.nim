@@ -268,7 +268,7 @@ type
 # Memory bounds check helper
 # ---------------------------------------------------------------------------
 
-const boundsCheckedFlag = 0x40000000'i32  # set by BCE passes in optimize.nim
+# boundsCheckedFlag is imported from optimize.nim
 
 proc emitBoundsCheck(buf: var AsmBuffer, addrReg: Reg, accessBytes: int32,
                      imm2: int32 = 0) =

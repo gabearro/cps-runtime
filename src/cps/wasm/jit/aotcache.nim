@@ -108,8 +108,6 @@ proc writeCacheFile*(path: string, cache: AotCache) =
 proc readCacheFile*(path: string, expectedHash: uint64): AotCache =
   ## Read and verify cache.  Raises IOError on missing file, wrong format,
   ## or hash mismatch (caller should catch and treat as cache-miss).
-  if not fileExists(path):
-    raise newException(IOError, "Cache file not found: " & path)
   let s = newFileStream(path, fmRead)
   if s == nil:
     raise newException(IOError, "Cannot open cache file: " & path)

@@ -92,14 +92,14 @@ proc pos*(buf: X64AsmBuffer): int = buf.code.len  ## Current byte offset
 
 proc emitImm32*(buf: var X64AsmBuffer, v: int32) =
   let u = cast[uint32](v)
-  buf.emit(byte(u and 0xFF))
-  buf.emit(byte((u shr 8) and 0xFF))
-  buf.emit(byte((u shr 16) and 0xFF))
-  buf.emit(byte((u shr 24) and 0xFF))
+  buf.emit([byte(u and 0xFF), byte((u shr 8) and 0xFF),
+            byte((u shr 16) and 0xFF), byte((u shr 24) and 0xFF)])
 
 proc emitImm64*(buf: var X64AsmBuffer, v: uint64) =
-  for i in 0 ..< 8:
-    buf.emit(byte((v shr (i * 8)) and 0xFF))
+  buf.emit([byte(v and 0xFF), byte((v shr 8) and 0xFF),
+            byte((v shr 16) and 0xFF), byte((v shr 24) and 0xFF),
+            byte((v shr 32) and 0xFF), byte((v shr 40) and 0xFF),
+            byte((v shr 48) and 0xFF), byte((v shr 56) and 0xFF)])
 
 # ---- REX prefix ----
 proc rex(w: bool = false, r: X64Reg = X64Reg(0), x: X64Reg = X64Reg(0), b: X64Reg = X64Reg(0)): byte =
@@ -179,29 +179,20 @@ proc subRegReg*(buf: var X64AsmBuffer, dst, src: X64Reg) =
   buf.emit(0x29)
   buf.emit(modRM(0b11, src.uint8, dst.uint8))
 
-proc addRegImm32*(buf: var X64AsmBuffer, dst: X64Reg, imm: int32) =
-  ## ADD dst, imm32
+proc aluRegImm32(buf: var X64AsmBuffer, dst: X64Reg, imm: int32, regField: byte) {.inline.} =
+  ## Generic ALU reg, imm32 (64-bit): ADD/OR/AND/SUB/XOR/CMP selected by regField
   buf.emit(rex(w = true, b = dst))
   if imm >= -128 and imm <= 127:
     buf.emit(0x83)
-    buf.emit(modRM(0b11, 0, dst.uint8))
+    buf.emit(modRM(0b11, regField, dst.uint8))
     buf.emit(cast[byte](imm))
   else:
     buf.emit(0x81)
-    buf.emit(modRM(0b11, 0, dst.uint8))
+    buf.emit(modRM(0b11, regField, dst.uint8))
     buf.emitImm32(imm)
 
-proc subRegImm32*(buf: var X64AsmBuffer, dst: X64Reg, imm: int32) =
-  ## SUB dst, imm32
-  buf.emit(rex(w = true, b = dst))
-  if imm >= -128 and imm <= 127:
-    buf.emit(0x83)
-    buf.emit(modRM(0b11, 5, dst.uint8))
-    buf.emit(cast[byte](imm))
-  else:
-    buf.emit(0x81)
-    buf.emit(modRM(0b11, 5, dst.uint8))
-    buf.emitImm32(imm)
+proc addRegImm32*(buf: var X64AsmBuffer, dst: X64Reg, imm: int32) = buf.aluRegImm32(dst, imm, 0)
+proc subRegImm32*(buf: var X64AsmBuffer, dst: X64Reg, imm: int32) = buf.aluRegImm32(dst, imm, 5)
 
 proc cmpRegReg*(buf: var X64AsmBuffer, a, b: X64Reg) =
   ## CMP a, b (64-bit)
@@ -209,17 +200,7 @@ proc cmpRegReg*(buf: var X64AsmBuffer, a, b: X64Reg) =
   buf.emit(0x39)
   buf.emit(modRM(0b11, b.uint8, a.uint8))
 
-proc cmpRegImm32*(buf: var X64AsmBuffer, dst: X64Reg, imm: int32) =
-  ## CMP dst, imm32
-  buf.emit(rex(w = true, b = dst))
-  if imm >= -128 and imm <= 127:
-    buf.emit(0x83)
-    buf.emit(modRM(0b11, 7, dst.uint8))
-    buf.emit(cast[byte](imm))
-  else:
-    buf.emit(0x81)
-    buf.emit(modRM(0b11, 7, dst.uint8))
-    buf.emitImm32(imm)
+proc cmpRegImm32*(buf: var X64AsmBuffer, dst: X64Reg, imm: int32) = buf.aluRegImm32(dst, imm, 7)
 
 proc jmpRel32*(buf: var X64AsmBuffer, offset: int32) =
   ## JMP rel32
@@ -408,55 +389,11 @@ proc addImmX64*(buf: var X64AsmBuffer, dst: X64Reg, imm: int32) =
   ## ADD dst, imm32
   buf.addRegImm32(dst, imm)
 
-proc subImmX64*(buf: var X64AsmBuffer, dst: X64Reg, imm: int32) =
-  ## SUB dst, imm32
-  buf.subRegImm32(dst, imm)
-
-proc andRegImm32*(buf: var X64AsmBuffer, dst: X64Reg, imm: int32) =
-  ## AND dst, imm32
-  buf.emit(rex(w = true, b = dst))
-  if imm >= -128 and imm <= 127:
-    buf.emit(0x83)
-    buf.emit(modRM(0b11, 4, dst.uint8))
-    buf.emit(cast[byte](imm))
-  else:
-    buf.emit(0x81)
-    buf.emit(modRM(0b11, 4, dst.uint8))
-    buf.emitImm32(imm)
-
-proc orRegImm32*(buf: var X64AsmBuffer, dst: X64Reg, imm: int32) =
-  ## OR dst, imm32
-  buf.emit(rex(w = true, b = dst))
-  if imm >= -128 and imm <= 127:
-    buf.emit(0x83)
-    buf.emit(modRM(0b11, 1, dst.uint8))
-    buf.emit(cast[byte](imm))
-  else:
-    buf.emit(0x81)
-    buf.emit(modRM(0b11, 1, dst.uint8))
-    buf.emitImm32(imm)
-
-proc xorRegImm32*(buf: var X64AsmBuffer, dst: X64Reg, imm: int32) =
-  ## XOR dst, imm32
-  buf.emit(rex(w = true, b = dst))
-  if imm >= -128 and imm <= 127:
-    buf.emit(0x83)
-    buf.emit(modRM(0b11, 6, dst.uint8))
-    buf.emit(cast[byte](imm))
-  else:
-    buf.emit(0x81)
-    buf.emit(modRM(0b11, 6, dst.uint8))
-    buf.emitImm32(imm)
+proc andRegImm32*(buf: var X64AsmBuffer, dst: X64Reg, imm: int32) = buf.aluRegImm32(dst, imm, 4)
+proc orRegImm32*(buf: var X64AsmBuffer, dst: X64Reg, imm: int32)  = buf.aluRegImm32(dst, imm, 1)
+proc xorRegImm32*(buf: var X64AsmBuffer, dst: X64Reg, imm: int32) = buf.aluRegImm32(dst, imm, 6)
 
 # ---- Arithmetic (register-register, 64-bit) ----
-
-proc addRegX64*(buf: var X64AsmBuffer, dst, src: X64Reg) =
-  ## ADD dst, src (64-bit)
-  buf.addRegReg(dst, src)
-
-proc subRegX64*(buf: var X64AsmBuffer, dst, src: X64Reg) =
-  ## SUB dst, src (64-bit)
-  buf.subRegReg(dst, src)
 
 proc mulRegX64*(buf: var X64AsmBuffer, dst, src: X64Reg) =
   ## IMUL dst, src (64-bit, two-operand form: dst *= src)
@@ -578,70 +515,23 @@ proc rorRegX64*(buf: var X64AsmBuffer, dst: X64Reg) =
 
 # ---- Shifts (by immediate) ----
 
-proc shlRegImm*(buf: var X64AsmBuffer, dst: X64Reg, imm: byte) =
-  ## SHL dst, imm8 (64-bit)
+proc shiftRegImm(buf: var X64AsmBuffer, dst: X64Reg, imm: byte, regField: byte) {.inline.} =
+  ## Generic shift/rotate by immediate: SHL/SHR/SAR/ROL/ROR dst, imm8 (64-bit)
   buf.emit(rex(w = true, b = dst))
   if imm == 1:
     buf.emit(0xD1)
-    buf.emit(modRM(0b11, 4, dst.uint8))
   else:
     buf.emit(0xC1)
-    buf.emit(modRM(0b11, 4, dst.uint8))
-    buf.emit(imm)
+  buf.emit(modRM(0b11, regField, dst.uint8))
+  if imm != 1: buf.emit(imm)
 
-proc shrRegImm*(buf: var X64AsmBuffer, dst: X64Reg, imm: byte) =
-  ## SHR dst, imm8 (64-bit)
-  buf.emit(rex(w = true, b = dst))
-  if imm == 1:
-    buf.emit(0xD1)
-    buf.emit(modRM(0b11, 5, dst.uint8))
-  else:
-    buf.emit(0xC1)
-    buf.emit(modRM(0b11, 5, dst.uint8))
-    buf.emit(imm)
-
-proc sarRegImm*(buf: var X64AsmBuffer, dst: X64Reg, imm: byte) =
-  ## SAR dst, imm8 (64-bit)
-  buf.emit(rex(w = true, b = dst))
-  if imm == 1:
-    buf.emit(0xD1)
-    buf.emit(modRM(0b11, 7, dst.uint8))
-  else:
-    buf.emit(0xC1)
-    buf.emit(modRM(0b11, 7, dst.uint8))
-    buf.emit(imm)
-
-proc rolRegImm*(buf: var X64AsmBuffer, dst: X64Reg, imm: byte) =
-  ## ROL dst, imm8 (64-bit)
-  buf.emit(rex(w = true, b = dst))
-  if imm == 1:
-    buf.emit(0xD1)
-    buf.emit(modRM(0b11, 0, dst.uint8))
-  else:
-    buf.emit(0xC1)
-    buf.emit(modRM(0b11, 0, dst.uint8))
-    buf.emit(imm)
-
-proc rorRegImm*(buf: var X64AsmBuffer, dst: X64Reg, imm: byte) =
-  ## ROR dst, imm8 (64-bit)
-  buf.emit(rex(w = true, b = dst))
-  if imm == 1:
-    buf.emit(0xD1)
-    buf.emit(modRM(0b11, 1, dst.uint8))
-  else:
-    buf.emit(0xC1)
-    buf.emit(modRM(0b11, 1, dst.uint8))
-    buf.emit(imm)
+proc shlRegImm*(buf: var X64AsmBuffer, dst: X64Reg, imm: byte) = buf.shiftRegImm(dst, imm, 4)
+proc shrRegImm*(buf: var X64AsmBuffer, dst: X64Reg, imm: byte) = buf.shiftRegImm(dst, imm, 5)
+proc sarRegImm*(buf: var X64AsmBuffer, dst: X64Reg, imm: byte) = buf.shiftRegImm(dst, imm, 7)
+proc rolRegImm*(buf: var X64AsmBuffer, dst: X64Reg, imm: byte) = buf.shiftRegImm(dst, imm, 0)
+proc rorRegImm*(buf: var X64AsmBuffer, dst: X64Reg, imm: byte) = buf.shiftRegImm(dst, imm, 1)
 
 # ---- Comparison ----
-
-proc cmpRegX64*(buf: var X64AsmBuffer, a, b: X64Reg) =
-  ## CMP a, b (64-bit) — alias for cmpRegReg
-  buf.cmpRegReg(a, b)
-
-proc cmpImmX64*(buf: var X64AsmBuffer, reg: X64Reg, imm: int32) =
-  ## CMP reg, imm32 — alias for cmpRegImm32
-  buf.cmpRegImm32(reg, imm)
 
 proc setccX64*(buf: var X64AsmBuffer, cond: X64Cond, dst: X64Reg) =
   ## SETcc dst(8) — set byte to 1 if condition true, else 0
@@ -660,32 +550,12 @@ proc cmovX64*(buf: var X64AsmBuffer, cond: X64Cond, dst, src: X64Reg) =
 
 # ---- Control flow ----
 
-proc jmpX64*(buf: var X64AsmBuffer, offset: int32) =
-  ## JMP rel32 — alias for jmpRel32
-  buf.jmpRel32(offset)
-
-proc jccX64*(buf: var X64AsmBuffer, cond: X64Cond, offset: int32) =
-  ## Jcc rel32 — alias for jccRel32
-  buf.jccRel32(cond, offset)
-
 proc jmpRegX64*(buf: var X64AsmBuffer, reg: X64Reg) =
   ## JMP reg (indirect jump)
   if needsRex(reg):
     buf.emit(0x41)
   buf.emit(0xFF)
   buf.emit(modRM(0b11, 4, reg.uint8))
-
-proc callRegX64*(buf: var X64AsmBuffer, reg: X64Reg) =
-  ## CALL reg — alias for callReg
-  buf.callReg(reg)
-
-proc retX64*(buf: var X64AsmBuffer) =
-  ## RET — alias for ret
-  buf.ret()
-
-proc jmpRelX64*(buf: var X64AsmBuffer, offset: int32) =
-  ## JMP rel32 — alias for jmpRel32
-  buf.jmpRel32(offset)
 
 proc jmpRel8*(buf: var X64AsmBuffer, offset: int8) =
   ## JMP rel8 (short jump)
@@ -698,14 +568,6 @@ proc jccRel8*(buf: var X64AsmBuffer, cond: X64Cond, offset: int8) =
   buf.emit(cast[byte](offset))
 
 # ---- Stack ----
-
-proc pushRegX64*(buf: var X64AsmBuffer, reg: X64Reg) =
-  ## PUSH reg — alias for pushReg
-  buf.pushReg(reg)
-
-proc popRegX64*(buf: var X64AsmBuffer, reg: X64Reg) =
-  ## POP reg — alias for popReg
-  buf.popReg(reg)
 
 proc pushImm32*(buf: var X64AsmBuffer, imm: int32) =
   ## PUSH imm32 (sign-extended to 64-bit)
@@ -722,12 +584,8 @@ proc nopX64*(buf: var X64AsmBuffer) =
   ## NOP — alias for nop
   buf.nop()
 
-proc brkX64*(buf: var X64AsmBuffer) =
-  ## INT3 — breakpoint
-  buf.emit(0xCC)
-
 proc int3*(buf: var X64AsmBuffer) =
-  ## INT3 — breakpoint (alias for brkX64)
+  ## INT3 — breakpoint
   buf.emit(0xCC)
 
 proc ud2*(buf: var X64AsmBuffer) =
@@ -915,40 +773,18 @@ proc udivRegX6432*(buf: var X64AsmBuffer, divisor: X64Reg) =
   buf.emit(0xF7)
   buf.emit(modRM(0b11, 6, divisor.uint8))
 
-proc shlRegX6432*(buf: var X64AsmBuffer, dst: X64Reg) =
-  ## SHL dst(32), CL
+proc shiftRegCL32(buf: var X64AsmBuffer, dst: X64Reg, regField: byte) {.inline.} =
+  ## Generic 32-bit shift/rotate by CL register
   if needsRex(dst):
     buf.emit(rex(w = false, b = dst))
   buf.emit(0xD3)
-  buf.emit(modRM(0b11, 4, dst.uint8))
+  buf.emit(modRM(0b11, regField, dst.uint8))
 
-proc shrRegX6432*(buf: var X64AsmBuffer, dst: X64Reg) =
-  ## SHR dst(32), CL
-  if needsRex(dst):
-    buf.emit(rex(w = false, b = dst))
-  buf.emit(0xD3)
-  buf.emit(modRM(0b11, 5, dst.uint8))
-
-proc sarRegX6432*(buf: var X64AsmBuffer, dst: X64Reg) =
-  ## SAR dst(32), CL
-  if needsRex(dst):
-    buf.emit(rex(w = false, b = dst))
-  buf.emit(0xD3)
-  buf.emit(modRM(0b11, 7, dst.uint8))
-
-proc rolRegX6432*(buf: var X64AsmBuffer, dst: X64Reg) =
-  ## ROL dst(32), CL
-  if needsRex(dst):
-    buf.emit(rex(w = false, b = dst))
-  buf.emit(0xD3)
-  buf.emit(modRM(0b11, 0, dst.uint8))
-
-proc rorRegX6432*(buf: var X64AsmBuffer, dst: X64Reg) =
-  ## ROR dst(32), CL
-  if needsRex(dst):
-    buf.emit(rex(w = false, b = dst))
-  buf.emit(0xD3)
-  buf.emit(modRM(0b11, 1, dst.uint8))
+proc shlRegX6432*(buf: var X64AsmBuffer, dst: X64Reg) = buf.shiftRegCL32(dst, 4)
+proc shrRegX6432*(buf: var X64AsmBuffer, dst: X64Reg) = buf.shiftRegCL32(dst, 5)
+proc sarRegX6432*(buf: var X64AsmBuffer, dst: X64Reg) = buf.shiftRegCL32(dst, 7)
+proc rolRegX6432*(buf: var X64AsmBuffer, dst: X64Reg) = buf.shiftRegCL32(dst, 0)
+proc rorRegX6432*(buf: var X64AsmBuffer, dst: X64Reg) = buf.shiftRegCL32(dst, 1)
 
 # ---- Prologue / Epilogue helpers ----
 

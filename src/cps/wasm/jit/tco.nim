@@ -47,24 +47,20 @@ proc rewriteTailCalls*(code: var seq[Instr], selfFuncIdx: int): int =
     var hitCall = false
     for j in (i + 2) ..< code.len:
       let op = code[j].op
-      # Match reload from same offset
       if not foundLoad:
         if op in {opI32Load, opI64Load, opF32Load, opF64Load} and
            code[j].imm1.int == spillOffset:
           foundLoad = true
         elif op == opLocalGetI32Load and code[j].imm2.uint32 == spillOffset.uint32:
           foundLoad = true
-      # After reload, look for return
       if foundLoad and op == opReturn:
         foundReturn = true
         break
-      # Abort on another call (not simple tail position)
       if op in {opCall, opCallIndirect, opReturnCall, opReturnCallIndirect}:
         hitCall = true
         break
-      # Abort on store to same offset (result overwritten)
       if op in {opI32Store, opI64Store, opF32Store, opF64Store} and
-         code[j].imm1.int == spillOffset and j > i + 1:
+         code[j].imm1.int == spillOffset:
         break
 
     if foundReturn and foundLoad and not hitCall:
@@ -120,11 +116,11 @@ proc detectTailCalls*(f: IrFunc, selfFuncIdx: int): seq[tuple[bbIdx, instrIdx: i
                 if ti.operands[0].int16 in resultValues: isTail = true
                 break
               if ti.op in {irLoad32, irLoad64} and storedOffset >= 0 and
-                 ti.imm == storedOffset:
+                 ti.imm == storedOffset and ti.operands[0] == storedBaseVal:
                 if ti.result >= 0: resultValues.incl(ti.result.int16)
                 continue
-              if ti.op in {irLocalGet, irNop, irConst32, irConst64,
-                           irAdd32, irStore32, irLocalSet, irLoad32, irTrap}:
+              if ti.op in {irLocalSet, irLocalGet, irConst32, irConst64,
+                           irAdd32, irSub32, irStore32, irStore64, irLoad32, irLoad64, irNop, irTrap}:
                 continue
               break
           break

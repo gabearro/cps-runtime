@@ -201,8 +201,6 @@ proc buildDepDAG*(bb: BasicBlock): DepDAG =
 
   for i in 0 ..< n:
     let instr = bb.instrs[i]
-    let lat = getLatency(instr.op)
-
     # True dependencies: this instruction reads values defined by earlier instructions
     for op in instr.operands:
       if op >= 0 and op.int < lastDef.len:
@@ -230,10 +228,11 @@ proc buildDepDAG*(bb: BasicBlock): DepDAG =
 
     # Memory dependencies (conservative: stores can't be reordered)
     let isStore = instr.op in {irStore32, irStore64, irStore8, irStore16,
-                                irStore32From64, irLocalSet}
+                                irStore32From64, irStoreF32, irStoreF64,
+                                irStoreV128, irLocalSet}
     let isLoad = instr.op in {irLoad32, irLoad64, irLoad8U, irLoad8S,
                                irLoad16U, irLoad16S, irLoad32U, irLoad32S,
-                               irLocalGet}
+                               irLoadF32, irLoadF64, irLoadV128, irLocalGet}
     if isStore:
       if lastStore >= 0:
         result.edges[lastStore].add(DepEdge(
@@ -269,21 +268,22 @@ proc buildDepDAG*(bb: BasicBlock): DepDAG =
 
     # Update tracking
     if instr.result >= 0 and instr.result.int < lastDef.len:
-      lastUse[instr.result.int] = @[]
+      lastUse[instr.result.int].setLen(0)
       lastDef[instr.result.int] = i
     for op in instr.operands:
       if op >= 0 and op.int < lastUse.len:
         lastUse[op.int].add(i)
 
-  # Control flow dependencies: block terminators must execute after all
-  # other instructions to ensure stores/side-effects complete before branches.
+  # Control-flow anchor: the terminator must be scheduled last.
+  # Only add edges from leaf instructions (no outgoing edges) — non-leaf
+  # instructions reach the terminator transitively through their successors.
   let lastIdx = n - 1
   if lastIdx >= 0 and bb.instrs[lastIdx].op in {irBr, irBrIf, irReturn}:
     for i in 0 ..< lastIdx:
-      # Add dependency from every preceding instruction to the terminator
-      result.edges[i].add(DepEdge(
-        source: i, sink: lastIdx, kind: depMemory, latency: 0
-      ))
+      if result.edges[i].len == 0:
+        result.edges[i].add(DepEdge(
+          source: i, sink: lastIdx, kind: depMemory, latency: 0
+        ))
 
 # ---- Priority computation ----
 
@@ -379,7 +379,8 @@ proc scheduleBlock*(bb: BasicBlock, phiHints: seq[PhiCoalescePair] = @[]): seq[i
         bestIdx = i
 
     let chosen = ready[bestIdx]
-    ready.delete(bestIdx)
+    ready[bestIdx] = ready[^1]  # swap-remove: O(1) instead of O(n) shift
+    ready.setLen(ready.len - 1)
     result.add(chosen)
     scheduled[chosen] = true
 

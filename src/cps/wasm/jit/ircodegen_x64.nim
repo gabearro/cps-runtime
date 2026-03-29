@@ -147,22 +147,9 @@ proc emitV128ConstX64(buf: var X64AsmBuffer, dst: X64FReg,
   ## Materialise a 128-bit constant into `dst` using two 64-bit GP loads.
   ## Uses rcx (rax is the return register; rcx is free in JIT bodies).
   ## Emits: mov rcx, low64; movq dst, rcx; mov rcx, hi64; pinsrq dst, rcx, 1
-  let lo = (cast[uint64](constData[0])       or
-            cast[uint64](constData[1]) shl 8  or
-            cast[uint64](constData[2]) shl 16 or
-            cast[uint64](constData[3]) shl 24 or
-            cast[uint64](constData[4]) shl 32 or
-            cast[uint64](constData[5]) shl 40 or
-            cast[uint64](constData[6]) shl 48 or
-            cast[uint64](constData[7]) shl 56)
-  let hi = (cast[uint64](constData[8])        or
-            cast[uint64](constData[9])  shl 8  or
-            cast[uint64](constData[10]) shl 16 or
-            cast[uint64](constData[11]) shl 24 or
-            cast[uint64](constData[12]) shl 32 or
-            cast[uint64](constData[13]) shl 40 or
-            cast[uint64](constData[14]) shl 48 or
-            cast[uint64](constData[15]) shl 56)
+  var lo, hi: uint64
+  copyMem(addr lo, unsafeAddr constData[0], 8)
+  copyMem(addr hi, unsafeAddr constData[8], 8)
   buf.movImmX64(rcx, cast[int64](lo))
   buf.movqToXmm(dst, rcx)
   buf.movImmX64(rcx, cast[int64](hi))
@@ -550,13 +537,13 @@ proc emitIrInstrX64(buf: var X64AsmBuffer, instr: IrInstr, f: IrFunc,
   of irAdd64:
     let a = loadOp(instr.operands[0], rTmpX); let b = loadOp(instr.operands[1], rTmpY)
     if resReg != a: buf.movRegReg(resReg, a)
-    buf.addRegX64(resReg, b)
+    buf.addRegReg(resReg, b)
     if res >= 0 and alloc.isSpilledX64(res): storeRes(res, resReg)
 
   of irSub64:
     let a = loadOp(instr.operands[0], rTmpX); let b = loadOp(instr.operands[1], rTmpY)
     if resReg != a: buf.movRegReg(resReg, a)
-    buf.subRegX64(resReg, b)
+    buf.subRegReg(resReg, b)
     if res >= 0 and alloc.isSpilledX64(res): storeRes(res, resReg)
 
   of irMul64:
@@ -2235,6 +2222,7 @@ proc emitIrFuncX64*(pool: var JitMemPool, f: IrFunc, alloc: RegAllocResult,
     blockLabels[i].offset = -1
   var epiloguePatchList: seq[int]
   var callIndirectSiteIdx = 0
+  var localRelocs: seq[Relocation]
 
   for bbIdx in 0 ..< f.blocks.len:
     let bb = f.blocks[bbIdx]
@@ -2251,7 +2239,6 @@ proc emitIrFuncX64*(pool: var JitMemPool, f: IrFunc, alloc: RegAllocResult,
       blockLabels[bbIdx].patchList.setLen(0)
 
     # Emit instructions
-    var localRelocs: seq[Relocation]   # per-instr scratch (populated for irCallIndirect)
     for instrIdx in 0 ..< bb.instrs.len:
       let instr = bb.instrs[instrIdx]
       # Pre-fill cache paramCount/resultCount for call_indirect sites

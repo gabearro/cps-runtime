@@ -107,23 +107,20 @@ proc bgWorkerProc(worker: ptr BgWorker) {.thread.} =
       # Compilation failed — report failure, function stays at Tier 1
       worker[].resChan.send(BgResult(funcAddr: req.funcAddr, success: false))
 
-proc countLoopDepth(body: seq[Instr]): int =
-  ## Count maximum nesting depth of loop instructions.
-  var depth = 0
-  var maxDepth = 0
+proc countLoops(body: seq[Instr]): int =
+  ## Count the number of loop instructions in a function body.
   for instr in body:
-    case instr.op
-    of opLoop, opBlock, opIf:
-      inc depth
-      if depth > maxDepth: maxDepth = depth
-    of opEnd:
-      if depth > 0: dec depth
-    else: discard
-  # Return number of loops (not just max depth)
-  var loopCount = 0
-  for instr in body:
-    if instr.op == opLoop: inc loopCount
-  result = loopCount
+    if instr.op == opLoop: inc result
+
+proc findCodeIdx(modInst: ModuleInst, module: WasmModule,
+                 funcAddr: int): tuple[codeIdx, selfModuleIdx: int] =
+  ## Map a store function address back to its module code index and
+  ## module-level function index. Returns (-1, -1) on failure.
+  result = (-1, -1)
+  let importFuncCount = modInst.funcAddrs.len - module.codes.len
+  for i in 0 ..< module.codes.len:
+    if modInst.funcAddrs[importFuncCount + i] == funcAddr:
+      return (i, importFuncCount + i)
 
 proc computeJitThreshold*(funcInst: FuncInst, module: WasmModule,
                            codeIdx: int): int =
@@ -165,7 +162,7 @@ proc computeTier2Threshold*(funcInst: FuncInst, module: WasmModule,
 
   let body = module.codes[codeIdx].code.code
   let size = body.len
-  let loopCount = countLoopDepth(body)
+  let loopCount = countLoops(body)
 
   # Base threshold from code size
   result = if size < 20: 500
@@ -214,6 +211,30 @@ proc initTieredVM*(): TieredVM =
   result.bgStarted = false
   when defined(wasmGuardPages):
     installGuardPageHandlers()
+
+proc buildTableElems(tvm: var TieredVM, modInst: ModuleInst,
+                     preferTier2: bool): seq[TableElem] =
+  ## Build pre-resolved table elements for call_indirect (table 0 only).
+  ## When preferTier2 is true, Tier 2 pointers take precedence over Tier 1.
+  if modInst.tableAddrs.len == 0: return
+  let tableAddr = modInst.tableAddrs[0]
+  let tableInst = tvm.vm.store.tables[tableAddr]
+  result = newSeq[TableElem](tableInst.elems.len)
+  for i in 0 ..< tableInst.elems.len:
+    let elem = tableInst.elems[i]
+    if elem.kind == wvkFuncRef and elem.funcRef >= 0:
+      let storeAddr = elem.funcRef.int
+      if storeAddr < tvm.vm.store.funcs.len:
+        let fi = tvm.vm.store.funcs[storeAddr]
+        result[i] = TableElem(
+          paramCount: fi.funcType.params.len.int32,
+          localCount: fi.localTypes.len.int32,
+          resultCount: fi.funcType.results.len.int32,
+        )
+        if preferTier2 and storeAddr < tvm.tier2Ptrs.len and tvm.tier2Ptrs[storeAddr] != nil:
+          result[i].jitAddr = cast[pointer](tvm.tier2Ptrs[storeAddr])
+        elif storeAddr < tvm.jitPtrs.len and tvm.jitPtrs[storeAddr] != nil:
+          result[i].jitAddr = cast[pointer](tvm.jitPtrs[storeAddr])
 
 proc ensureBgThread*(tvm: var TieredVM) =
   ## Start the background compilation thread if it hasn't been started yet.
@@ -324,20 +345,18 @@ proc instantiate*(tvm: var TieredVM, module: WasmModule,
       if modIdx < tvm.modules.len:
         let mod0 = tvm.modules[modIdx]
         let modInst = tvm.vm.store.modules[modIdx]
-        let importFuncCount = modInst.funcAddrs.len - mod0.codes.len
-        for i in 0 ..< mod0.codes.len:
-          if modInst.funcAddrs[importFuncCount + i] == funcAddr:
-            let ft = mod0.types[mod0.funcTypeIdxs[i].int]
-            var totalLocals: int16 = ft.params.len.int16
-            for ld in mod0.codes[i].locals:
-              totalLocals += ld.count.int16
-            let profile = analyzeStatic(
-              mod0.codes[i].code.code, ft.params.len.int16, totalLocals,
-              mod0.codes[i].code.maxStackDepth)
-            let (t1, t2) = computeStaticTierThresholds(profile)
-            threshold = t1.int
-            tier2Threshold = t2.int
-            break
+        let (codeIdx, _) = findCodeIdx(modInst, mod0, funcAddr)
+        if codeIdx >= 0:
+          let ft = mod0.types[mod0.funcTypeIdxs[codeIdx].int]
+          var totalLocals: int16 = ft.params.len.int16
+          for ld in mod0.codes[codeIdx].locals:
+            totalLocals += ld.count.int16
+          let profile = analyzeStatic(
+            mod0.codes[codeIdx].code.code, ft.params.len.int16, totalLocals,
+            mod0.codes[codeIdx].code.maxStackDepth)
+          let (t1, t2) = computeStaticTierThresholds(profile)
+          threshold = t1.int
+          tier2Threshold = t2.int
 
     # Pre-allocate PGO profile slots for this function so the interpreter
     # hot loop never needs to grow the profile arrays.  Reset any stale data
@@ -370,27 +389,19 @@ proc tryJitCompile(tvm: var TieredVM, funcAddr: int): bool =
   if modIdx >= tvm.modules.len:
     return false
 
-  # Find the function's code index within the module
   let module = tvm.modules[modIdx]
   let modInst = tvm.vm.store.modules[modIdx]
 
-  # Map store funcAddr back to module code index
-  var codeIdx = -1
-  let importFuncCount = modInst.funcAddrs.len - module.codes.len
-  for i in 0 ..< module.codes.len:
-    if modInst.funcAddrs[importFuncCount + i] == funcAddr:
-      codeIdx = i
-      break
+  let (codeIdx, _) = findCodeIdx(modInst, module, funcAddr)
   if codeIdx < 0:
     return false
 
   try:
     # Build call targets so the JIT can resolve function calls.
-    # Map module-level function indices (including imports) to CallTargets.
     let numImportFuncs = modInst.funcAddrs.len - module.codes.len
     let totalFuncs = numImportFuncs + module.codes.len
     var callTargets = newSeq[CallTarget](totalFuncs)
-    var selfModuleIdx = -1  # module-level func index of the function being compiled
+    var selfModuleIdx = -1
 
     for i in 0 ..< module.codes.len:
       let storeAddr = modInst.funcAddrs[numImportFuncs + i]
@@ -403,32 +414,12 @@ proc tryJitCompile(tvm: var TieredVM, funcAddr: int): bool =
         resultCount: ft.results.len,
         globalsCount: modInst.globalAddrs.len,
       )
-      # Fill in JIT address if already compiled
       if storeAddr < tvm.jitPtrs.len and tvm.jitPtrs[storeAddr] != nil:
         callTargets[moduleIdx].jitAddr = cast[pointer](tvm.jitPtrs[storeAddr])
-      # Track which module index corresponds to the function being compiled
       if i == codeIdx:
         selfModuleIdx = moduleIdx
 
-    # Build pre-resolved table data for call_indirect (table 0 only)
-    var tableData: seq[TableElem] = @[]
-    if modInst.tableAddrs.len > 0:
-      let tableAddr = modInst.tableAddrs[0]
-      let tableInst = tvm.vm.store.tables[tableAddr]
-      tableData = newSeq[TableElem](tableInst.elems.len)
-      for i in 0 ..< tableInst.elems.len:
-        let elem = tableInst.elems[i]
-        if elem.kind == wvkFuncRef and elem.funcRef >= 0:
-          let storeAddr = elem.funcRef.int
-          if storeAddr < tvm.vm.store.funcs.len:
-            let fi = tvm.vm.store.funcs[storeAddr]
-            tableData[i] = TableElem(
-              paramCount: fi.funcType.params.len.int32,
-              localCount: fi.localTypes.len.int32,
-              resultCount: fi.funcType.results.len.int32,
-            )
-            if storeAddr < tvm.jitPtrs.len and tvm.jitPtrs[storeAddr] != nil:
-              tableData[i].jitAddr = cast[pointer](tvm.jitPtrs[storeAddr])
+    let tableData = tvm.buildTableElems(modInst, preferTier2 = false)
 
     # Pass globalsOffset so the JIT can access globals from the locals array.
     # Globals are stored after the function's locals in the locals array.
@@ -458,54 +449,22 @@ proc tryTier2Compile(tvm: var TieredVM, funcAddr: int): bool =
   let module = tvm.modules[modIdx]
   let modInst = tvm.vm.store.modules[modIdx]
 
-  var codeIdx = -1
-  let importFuncCount = modInst.funcAddrs.len - module.codes.len
-  for i in 0 ..< module.codes.len:
-    if modInst.funcAddrs[importFuncCount + i] == funcAddr:
-      codeIdx = i
-      break
+  let (codeIdx, selfModuleIdx) = findCodeIdx(modInst, module, funcAddr)
   if codeIdx < 0:
     return false
 
-  # Determine selfModuleIdx for Tier 2
-  let numImportFuncs = importFuncCount
-  var selfModuleIdx = -1
-  for i in 0 ..< module.codes.len:
-    if i == codeIdx:
-      selfModuleIdx = numImportFuncs + i
-      break
-
-  # Build pre-resolved table data for call_indirect in Tier 2 (table 0 only).
-  # Heap-allocated and registered with the pool so it lives until the pool is destroyed.
-  # Uses Tier 2 pointers where available, falling back to Tier 1.
+  # Heap-allocate table elements and register with pool so they live
+  # until the pool is destroyed. Uses Tier 2 pointers where available.
+  let tableData = tvm.buildTableElems(modInst, preferTier2 = true)
   var tableElemsPtr: ptr UncheckedArray[TableElem] = nil
   var tableLenI32 = 0.int32
-  if modInst.tableAddrs.len > 0:
-    let tableAddr = modInst.tableAddrs[0]
-    let tableInst = tvm.vm.store.tables[tableAddr]
-    let n = tableInst.elems.len
-    if n > 0:
-      let bytes = n * sizeof(TableElem)
-      let rawPtr = allocShared0(bytes)
-      tvm.pool.sideData.add(rawPtr)
-      tableElemsPtr = cast[ptr UncheckedArray[TableElem]](rawPtr)
-      tableLenI32 = n.int32
-      for i in 0 ..< n:
-        let elem = tableInst.elems[i]
-        if elem.kind == wvkFuncRef and elem.funcRef >= 0:
-          let storeAddr = elem.funcRef.int
-          if storeAddr < tvm.vm.store.funcs.len:
-            let fi = tvm.vm.store.funcs[storeAddr]
-            tableElemsPtr[i] = TableElem(
-              paramCount: fi.funcType.params.len.int32,
-              localCount: fi.localTypes.len.int32,
-              resultCount: fi.funcType.results.len.int32,
-            )
-            # Prefer Tier 2 pointer; fall back to Tier 1
-            if storeAddr < tvm.tier2Ptrs.len and tvm.tier2Ptrs[storeAddr] != nil:
-              tableElemsPtr[i].jitAddr = cast[pointer](tvm.tier2Ptrs[storeAddr])
-            elif storeAddr < tvm.jitPtrs.len and tvm.jitPtrs[storeAddr] != nil:
-              tableElemsPtr[i].jitAddr = cast[pointer](tvm.jitPtrs[storeAddr])
+  if tableData.len > 0:
+    let bytes = tableData.len * sizeof(TableElem)
+    let rawPtr = allocShared0(bytes)
+    tvm.pool.sideData.add(rawPtr)
+    tableElemsPtr = cast[ptr UncheckedArray[TableElem]](rawPtr)
+    tableLenI32 = tableData.len.int32
+    copyMem(tableElemsPtr, tableData[0].unsafeAddr, bytes)
 
   # Look up PGO data collected during interpreter execution for this funcAddr.
   let pgoDataPtr = tvm.profiler.getFuncData(funcAddr)
@@ -583,37 +542,10 @@ proc sendBgTier2Request*(tvm: var TieredVM, funcAddr: int) =
   let module = tvm.modules[modIdx]
   let modInst = tvm.vm.store.modules[modIdx]
 
-  let importFuncCount = modInst.funcAddrs.len - module.codes.len
-  var codeIdx = -1
-  var selfModuleIdx = -1
-  for i in 0 ..< module.codes.len:
-    if modInst.funcAddrs[importFuncCount + i] == funcAddr:
-      codeIdx = i
-      selfModuleIdx = importFuncCount + i
-      break
+  let (codeIdx, selfModuleIdx) = findCodeIdx(modInst, module, funcAddr)
   if codeIdx < 0: return
 
-  # Pre-build table elements (prefer Tier 2 pointers for callee resolution)
-  var tableElems: seq[TableElem]
-  if modInst.tableAddrs.len > 0:
-    let tableAddr = modInst.tableAddrs[0]
-    let tableInst = tvm.vm.store.tables[tableAddr]
-    tableElems = newSeq[TableElem](tableInst.elems.len)
-    for i in 0 ..< tableInst.elems.len:
-      let elem = tableInst.elems[i]
-      if elem.kind == wvkFuncRef and elem.funcRef >= 0:
-        let storeAddr = elem.funcRef.int
-        if storeAddr < tvm.vm.store.funcs.len:
-          let fi = tvm.vm.store.funcs[storeAddr]
-          tableElems[i] = TableElem(
-            paramCount: fi.funcType.params.len.int32,
-            localCount: fi.localTypes.len.int32,
-            resultCount: fi.funcType.results.len.int32,
-          )
-          if storeAddr < tvm.tier2Ptrs.len and tvm.tier2Ptrs[storeAddr] != nil:
-            tableElems[i].jitAddr = cast[pointer](tvm.tier2Ptrs[storeAddr])
-          elif storeAddr < tvm.jitPtrs.len and tvm.jitPtrs[storeAddr] != nil:
-            tableElems[i].jitAddr = cast[pointer](tvm.jitPtrs[storeAddr])
+  let tableElems = tvm.buildTableElems(modInst, preferTier2 = true)
 
   # Snapshot PGO data at request time so the background thread has a stable copy.
   let pgoSnapshot = block:

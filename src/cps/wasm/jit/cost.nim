@@ -360,7 +360,7 @@ proc instrCostDelta*(op: IrOpKind): CostDelta =
     else:
       getLatency(op).latency.int32
 
-  # Estimate native code bytes per IR instruction
+  # Estimate native code bytes per IR instruction (4 = one ARM64 word)
   result.codeSize = case op
     of irConst32, irParam, irNop, irPhi: 0'i32   # eliminated or free
     of irLocalGet, irLocalSet: 0  # eliminated by regalloc
@@ -399,7 +399,30 @@ const
   irStoreOps* = {irStore32, irStore64, irStore8, irStore16, irStore32From64,
                  irStoreF32, irStoreF64, irStoreV128}
   irMemOps* = irLoadOps + irStoreOps
-  boundsCheckedFlag = 0x40000000'i32  ## from optimize.nim
+  ## Ops that produce FP values (for register-pressure classification).
+  irFPProducers = {irAddF32, irSubF32, irMulF32, irDivF32,
+    irAbsF32, irNegF32, irSqrtF32, irMinF32, irMaxF32,
+    irCeilF32, irFloorF32, irTruncF32, irNearestF32,
+    irCopysignF32, irLoadF32,
+    irFmaF32, irFmsF32, irFnmaF32, irFnmsF32,
+    irAddF64, irSubF64, irMulF64, irDivF64,
+    irAbsF64, irNegF64, irSqrtF64, irMinF64, irMaxF64,
+    irCeilF64, irFloorF64, irTruncF64, irNearestF64,
+    irCopysignF64, irLoadF64,
+    irFmaF64, irFmsF64, irFnmaF64, irFnmsF64,
+    irConstF32, irConstF64,
+    irF32ConvertI32S, irF32ConvertI32U, irF32ConvertI64S, irF32ConvertI64U,
+    irF64ConvertI32S, irF64ConvertI32U, irF64ConvertI64S, irF64ConvertI64U,
+    irF32DemoteF64, irF64PromoteF32, irF32ReinterpretI32, irF64ReinterpretI64}
+
+  ## Ops that consume FP values (for register-pressure classification).
+  irFPConsumers = {irAddF32, irSubF32, irMulF32, irDivF32,
+    irStoreF32, irStoreF64,
+    irAddF64, irSubF64, irMulF64, irDivF64,
+    irFmaF32, irFmsF32, irFnmaF32, irFnmsF32,
+    irFmaF64, irFmsF64, irFnmaF64, irFnmsF64,
+    irF32DemoteF64, irF64PromoteF32,
+    irI32ReinterpretF32, irI64ReinterpretF64}
 
 proc memAccessCycleCost(class: MemAccessClass, isStore: bool): int32 =
   case class
@@ -501,16 +524,14 @@ proc classifyMemoryAccesses*(bb: BasicBlock, origins: seq[PtrOrigin]): seq[MemAc
       if result[idx] != macPointerChase:  # don't override pointer chase
         result[idx] = class
 
-# --- Callee cost cache and analyzeBlock are defined after StaticFuncProfile (Part 6) ---
-
 proc analyzeBlock*(bb: BasicBlock, f: IrFunc,
                    origins: seq[PtrOrigin] = @[],
-                   calleeCostCachePtr: pointer = nil,
+                   calleeCostCache: ptr CalleeCostCache = nil,
                    selfFuncIdx: int = -1,
                    pgoData: ptr FuncPgoData = nil): CostVector =
   ## Compute the cost of a single basic block.
   ## With origins: uses memory access pattern classification.
-  ## With calleeCostCachePtr: uses callee body cost for irCall.
+  ## With calleeCostCache: uses callee body cost for irCall.
   ## With pgoData: devirtualizes irCallIndirect using hot callee profile.
   var memClasses: seq[MemAccessClass]
   if origins.len > 0:
@@ -528,21 +549,19 @@ proc analyzeBlock*(bb: BasicBlock, f: IrFunc,
       cycles = memAccessCycleCost(memClasses[i], instr.op in irStoreOps)
 
     # Direct calls: use callee cost if available (skip self-calls)
-    if instr.op == irCall and calleeCostCachePtr != nil and
+    if instr.op == irCall and calleeCostCache != nil and
        instr.imm.int != selfFuncIdx:
-      cycles = lookupCalleeCostRaw(calleeCostCachePtr, instr.imm.int)
+      cycles = lookupCalleeCost(calleeCostCache, instr.imm.int)
 
     # Indirect calls: devirtualize via PGO if hot callee is known
     if instr.op == irCallIndirect:
-      if pgoData != nil and calleeCostCachePtr != nil:
-        # Scan PGO data for call_indirect profiles with recorded targets
+      if pgoData != nil and calleeCostCache != nil:
         if callIndirectSiteIdx < pgoData.callIndirectProfiles.len:
           let prof = addr pgoData.callIndirectProfiles[callIndirectSiteIdx]
           if not isMegamorphic(prof):
             let hotCallee = hotCalleeOf(prof)
             if hotCallee >= 0:
-              # Monomorphic: dispatch overhead + hot callee body cost
-              cycles = 20 + lookupCalleeCostRaw(calleeCostCachePtr, hotCallee.int)
+              cycles = 20 + lookupCalleeCost(calleeCostCache, hotCallee.int)
       inc callIndirectSiteIdx
 
     result.cycles.constant += cycles
@@ -574,26 +593,10 @@ proc estimateBlockPressure*(bb: BasicBlock, isSimd: openArray[bool],
         live[v] = false
         if v < isSimd.len and isSimd[v]:
           discard  # SIMD tracked separately, skip for now
+        elif instr.op in irFPProducers:
+          dec liveFP
         else:
-          # Heuristic: FP ops produce FP values
-          let isFP = instr.op in {irAddF32, irSubF32, irMulF32, irDivF32,
-            irAbsF32, irNegF32, irSqrtF32, irMinF32, irMaxF32,
-            irCeilF32, irFloorF32, irTruncF32, irNearestF32,
-            irCopysignF32, irLoadF32,
-            irFmaF32, irFmsF32, irFnmaF32, irFnmsF32,
-            irAddF64, irSubF64, irMulF64, irDivF64,
-            irAbsF64, irNegF64, irSqrtF64, irMinF64, irMaxF64,
-            irCeilF64, irFloorF64, irTruncF64, irNearestF64,
-            irCopysignF64, irLoadF64,
-            irFmaF64, irFmsF64, irFnmaF64, irFnmsF64,
-            irConstF32, irConstF64,
-            irF32ConvertI32S, irF32ConvertI32U, irF32ConvertI64S, irF32ConvertI64U,
-            irF64ConvertI32S, irF64ConvertI32U, irF64ConvertI64S, irF64ConvertI64U,
-            irF32DemoteF64, irF64PromoteF32, irF32ReinterpretI32, irF64ReinterpretI64}
-          if isFP:
-            dec liveFP
-          else:
-            dec liveInt
+          dec liveInt
 
     # Birth operands (become live at their use)
     for opIdx in 0 ..< 3:
@@ -602,21 +605,10 @@ proc estimateBlockPressure*(bb: BasicBlock, isSimd: openArray[bool],
         live[op.int] = true
         if op.int < isSimd.len and isSimd[op.int]:
           discard
+        elif instr.op in irFPConsumers:
+          inc liveFP
         else:
-          # Check if operand is from an FP-producing instruction
-          # Heuristic: assume same class as the consuming instruction
-          # (accurate enough for pressure estimation)
-          let isFPUse = instr.op in {irAddF32, irSubF32, irMulF32, irDivF32,
-            irStoreF32, irStoreF64,
-            irAddF64, irSubF64, irMulF64, irDivF64,
-            irFmaF32, irFmsF32, irFnmaF32, irFnmsF32,
-            irFmaF64, irFmsF64, irFnmaF64, irFnmsF64,
-            irF32DemoteF64, irF64PromoteF32,
-            irI32ReinterpretF32, irI64ReinterpretF64}
-          if isFPUse:
-            inc liveFP
-          else:
-            inc liveInt
+          inc liveInt
 
     if liveInt > peakInt: peakInt = liveInt
     if liveFP > peakFP: peakFP = liveFP
@@ -781,7 +773,7 @@ proc computeBlockFrequencies*(f: IrFunc): seq[float32] =
       result[i] = 1.0
 
 proc analyzeCost*(f: IrFunc, pgoData: ptr FuncPgoData = nil,
-                  calleeCostCachePtr: pointer = nil,
+                  calleeCostCache: ptr CalleeCostCache = nil,
                   selfFuncIdx: int = -1): CostState =
   ## Abstract interpretation over the function's CFG.
   ## Structured single-pass: compute per-block costs, detect loops,
@@ -801,7 +793,7 @@ proc analyzeCost*(f: IrFunc, pgoData: ptr FuncPgoData = nil,
   result.perBlock = newSeq[CostVector](numBlocks)
   for i in 0 ..< numBlocks:
     result.perBlock[i] = analyzeBlock(f.blocks[i], f, origins,
-                                       calleeCostCachePtr, selfFuncIdx, pgoData)
+                                       calleeCostCache, selfFuncIdx, pgoData)
     let (intP, fpP) = estimateBlockPressure(f.blocks[i], f.isSimd, f.numValues)
     result.perBlock[i].regPressure = intP
     result.perBlock[i].fpRegPressure = fpP
@@ -1160,10 +1152,8 @@ proc buildCallGraph*(module: types.WasmModule): CallGraph =
       elif instr.op == types.opCallIndirect:
         result.isLeaf[funcIdx] = false
 
-# Forward-declared in Part 3 via untyped pointer; actual implementation here.
-proc lookupCalleeCostRaw*(cachePtr: pointer, absoluteFuncIdx: int): int32 =
-  ## Look up callee cost from an untyped pointer to CalleeCostCache.
-  let cache = cast[ptr CalleeCostCache](cachePtr)
+proc lookupCalleeCost*(cache: ptr CalleeCostCache, absoluteFuncIdx: int): int32 =
+  ## Look up callee cost from the module-wide cache.
   let codeIdx = absoluteFuncIdx - cache.importFuncCount
   if codeIdx < 0 or codeIdx >= cache.profiles.len:
     return 5  # import or out-of-range
@@ -1388,5 +1378,3 @@ proc computeStaticTierThresholds*(profile: StaticFuncProfile,
 
   result.tier2 = int32(baseTier2 div optBenefit * pressureFactor)
   result.tier2 = result.tier2.clamp(5, 50000)
-
-  discard  # usesGlobals no longer affects thresholds; both tiers handle globals

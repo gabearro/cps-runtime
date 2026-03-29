@@ -10,7 +10,7 @@
 ##
 ## This implements the full IRC algorithm from Appel & George.
 
-import std/sequtils
+import std/[algorithm, sets]
 import ir
 import codegen
 import optimize  # for isRealBackEdge
@@ -53,25 +53,16 @@ type
     value*: IrValue       # SSA value this represents
     regClass*: RegClass
     state*: NodeState
-    color*: PhysReg       # assigned physical register (-1 if unassigned)
     alias*: int           # if coalesced, index of the node we merged into
     degree*: int          # number of interference edges
     spillWeight*: float   # cost of spilling this node
-    moveList*: seq[int]   # indices of move instructions involving this node
     isRemat*: bool        # can this value be rematerialised? (irConst32/64 only)
     rematImm*: int64      # constant value for rematConst nodes
-
-  MoveInstr* = object
-    src*: int   # node index
-    dst*: int   # node index
-    coalesced*: bool
-    frozen*: bool
 
   InterferenceGraph* = object
     nodes*: seq[AllocNode]
     adjMatrix*: seq[bool]       # flat NxN adjacency matrix
     adjList*: seq[seq[int]]     # adjacency list per node
-    moves*: seq[MoveInstr]
     numNodes*: int
     numRegs*: int               # K (number of available registers)
 
@@ -113,7 +104,6 @@ proc initGraph*(numValues: int, numRegs: int = NumIntRegs): InterferenceGraph =
       value: i.IrValue,
       regClass: rcInt,
       state: nsSimplify,
-      color: PhysReg(-1),
       alias: i,
       degree: 0,
       spillWeight: 1.0
@@ -135,6 +125,26 @@ proc addEdge*(g: var InterferenceGraph, u, v: int) =
 proc interferes*(g: InterferenceGraph, u, v: int): bool =
   g.adjMatrix[u * g.numNodes + v]
 
+proc swapRemove(s: var seq[int], val: int) =
+  for i in 0 ..< s.len:
+    if s[i] == val:
+      s[i] = s[^1]
+      s.setLen(s.len - 1)
+      return
+
+proc removeEdge(g: var InterferenceGraph, u, v: int) =
+  ## Only checks nsCoalesced (not nsColored) because this is called during
+  ## pre-coalescing before any nodes have been simplified/colored.
+  if not g.adjMatrix[u * g.numNodes + v]: return
+  g.adjMatrix[u * g.numNodes + v] = false
+  g.adjMatrix[v * g.numNodes + u] = false
+  g.adjList[u].swapRemove(v)
+  g.adjList[v].swapRemove(u)
+  if g.nodes[u].state != nsCoalesced:
+    dec g.nodes[u].degree
+  if g.nodes[v].state != nsCoalesced:
+    dec g.nodes[v].degree
+
 # ---- Liveness analysis ----
 
 proc computeLiveness*(f: IrFunc, phiCoalesce: PhiCoalesceInfo = PhiCoalesceInfo()): seq[LiveRange] =
@@ -142,6 +152,12 @@ proc computeLiveness*(f: IrFunc, phiCoalesce: PhiCoalesceInfo = PhiCoalesceInfo(
   result = newSeq[LiveRange](f.numValues)
   for i in 0 ..< f.numValues:
     result[i] = LiveRange(start: int.high, stop: -1, weight: 1.0)
+
+  # Pre-build lookup set for feasible phi coalesce pairs: (blockIdx, phiResult)
+  var coalescedPhis: HashSet[(int, int32)]
+  for pair in phiCoalesce.pairs:
+    if pair.feasible:
+      coalescedPhis.incl((pair.blockIdx, pair.phiResult))
 
   # First pass: compute block start/end instruction indices
   var blockStartIdx = newSeq[int](f.blocks.len)
@@ -151,7 +167,6 @@ proc computeLiveness*(f: IrFunc, phiCoalesce: PhiCoalesceInfo = PhiCoalesceInfo(
     blockStartIdx[b] = idx
     idx += f.blocks[b].instrs.len
     blockEndIdx[b] = idx - 1
-  let totalInstrs = idx
 
   var instrIdx = 0
   for b in 0 ..< f.blocks.len:
@@ -207,14 +222,7 @@ proc computeLiveness*(f: IrFunc, phiCoalesce: PhiCoalesceInfo = PhiCoalesceInfo(
     for instr in bb.instrs:
       if instr.op != irPhi:
         continue
-      # Check if this phi is part of a feasible coalescing pair
-      var isCoalesced = false
-      for ci in 0 ..< phiCoalesce.pairs.len:
-        if phiCoalesce.feasible[ci] and
-           phiCoalesce.pairs[ci].phiResult == instr.result and
-           phiCoalesce.pairs[ci].blockIdx == b:
-          isCoalesced = true
-          break
+      let isCoalesced = (b, instr.result) in coalescedPhis
 
       if isCoalesced:
         # For coalesced pairs: DON'T extend the phi result to the full loop end
@@ -245,7 +253,6 @@ proc computeLiveness*(f: IrFunc, phiCoalesce: PhiCoalesceInfo = PhiCoalesceInfo(
 
     # Extend liveness for values defined OUTSIDE the loop but used INSIDE.
     # These values (e.g., hoisted constants) must survive across all iterations.
-    let loopStart = blockStartIdx[b]
     for lb in b .. backEdgeBb:
       for instr in f.blocks[lb].instrs:
         for op in instr.operands:
@@ -271,16 +278,8 @@ proc computeLiveness*(f: IrFunc, phiCoalesce: PhiCoalesceInfo = PhiCoalesceInfo(
   if callPositions.len > 0:
     for v in 0 ..< f.numValues:
       if result[v].stop < 0: continue
-      # Binary search: find first call position strictly > start
-      var lo = 0
-      var hi = callPositions.len - 1
-      while lo <= hi:
-        let mid = (lo + hi) shr 1
-        if callPositions[mid] <= result[v].start:
-          lo = mid + 1
-        else:
-          hi = mid - 1
-      # Check if this call is strictly before stop
+      # Find first call position strictly > start
+      let lo = callPositions.lowerBound(result[v].start + 1)
       if lo < callPositions.len and callPositions[lo] < result[v].stop:
         result[v].acrossCall = true
 
@@ -330,14 +329,20 @@ proc buildInterferenceGraph*(f: IrFunc, liveness: seq[LiveRange],
 
 # ---- Coalescing ----
 
-proc getAlias*(g: InterferenceGraph, n: int): int =
-  ## Find the representative node (following coalescing chains)
+proc getAlias*(g: var InterferenceGraph, n: int): int =
+  ## Find the representative node with path compression
   var node = n
   while g.nodes[node].state == nsCoalesced:
     node = g.nodes[node].alias
+  # Path compression: point intermediate nodes directly to root
+  var cur = n
+  while cur != node:
+    let next = g.nodes[cur].alias
+    g.nodes[cur].alias = node
+    cur = next
   node
 
-proc canCoalesce*(g: InterferenceGraph, u, v: int): bool =
+proc canCoalesce*(g: var InterferenceGraph, u, v: int): bool =
   ## George's conservative coalescing criterion:
   ## Can coalesce u and v if every high-degree neighbor of v
   ## already interferes with u (or has low degree)
@@ -345,22 +350,23 @@ proc canCoalesce*(g: InterferenceGraph, u, v: int): bool =
   for t in g.adjList[v]:
     let tAlias = g.getAlias(t)
     if tAlias == u: continue
-    if g.nodes[tAlias].state == nsCoalesced: continue
     if g.nodes[tAlias].degree < k: continue
     if not g.interferes(tAlias, u):
       return false
   return true
 
+proc decrementDegree(g: var InterferenceGraph, n: int) =
+  let a = g.getAlias(n)
+  if g.nodes[a].state != nsCoalesced and g.nodes[a].state != nsColored:
+    dec g.nodes[a].degree
+
 proc coalesce*(g: var InterferenceGraph, u, v: int) =
   ## Merge node v into node u
   g.nodes[v].state = nsCoalesced
   g.nodes[v].alias = u
-  # Transfer edges from v to u
   for t in g.adjList[v]:
     if g.getAlias(t) != u:
       g.addEdge(u, g.getAlias(t))
-  # Update degree of u (may have increased)
-  # The degree is already maintained by addEdge
 
 # ---- IRC Main Loop ----
 
@@ -372,12 +378,9 @@ proc simplify*(g: var InterferenceGraph): seq[int] =
     changed = false
     for i in 0 ..< g.numNodes:
       if g.nodes[i].state == nsSimplify and g.nodes[i].degree < g.numRegs:
-        # Remove node: decrement neighbors' degrees
         g.nodes[i].state = nsColored  # temporarily mark as removed
         for j in g.adjList[i]:
-          let jAlias = g.getAlias(j)
-          if g.nodes[jAlias].state != nsCoalesced and g.nodes[jAlias].state != nsColored:
-            dec g.nodes[jAlias].degree
+          g.decrementDegree(j)
         stack.add(i)
         changed = true
   stack
@@ -441,7 +444,6 @@ proc assignColors*(g: var InterferenceGraph, stack: seq[int],
         if c notin usedColors:
           result.assignment[nAlias] = PhysReg(c)
           g.nodes[nAlias].state = nsColored
-          g.nodes[nAlias].color = PhysReg(c)
           assigned = true
           if rc == rcInt and c >= calleeSavedStart:
             result.calleeSaved.incl(c)
@@ -481,8 +483,7 @@ proc assignColors*(g: var InterferenceGraph, stack: seq[int],
   result.spillOffsetMap = newSeq[int32](g.numNodes)
   var spillIdx = 0
   for i in 0 ..< g.numNodes:
-    if result.assignment[i].int8 < 0 and
-       (i >= result.rematKind.len or result.rematKind[i] == rematNone):
+    if result.assignment[i].int8 < 0 and result.rematKind[i] == rematNone:
       if spillIdx < result.spillSlots.len:
         result.spillOffsetMap[i] = result.spillSlots[spillIdx].offset.int32
       else:
@@ -506,20 +507,14 @@ proc allocateRegisters*(f: IrFunc, phiCoalesce: PhiCoalesceInfo = PhiCoalesceInf
   # because the scheduler guarantees the phi result's last use is AT (not after)
   # the back-edge definition, and AArch64 reads inputs before writing outputs.
   for i in 0 ..< phiCoalesce.pairs.len:
-    if phiCoalesce.feasible[i]:
+    if phiCoalesce.pairs[i].feasible:
       let u = phiCoalesce.pairs[i].phiResult.int
       let v = phiCoalesce.pairs[i].backEdgeOp.int
       if u >= 0 and v >= 0 and u < graph.numNodes and v < graph.numNodes:
-        # Remove interference between u and v (they share a register)
+        # Remove interference between u and v (they share a register).
         # The union liveness was already applied in computeLiveness,
         # so the interference graph has correct edges for the coalesced node.
-        if graph.interferes(u, v):
-          graph.adjMatrix[u * graph.numNodes + v] = false
-          graph.adjMatrix[v * graph.numNodes + u] = false
-          graph.adjList[u] = graph.adjList[u].filterIt(it != v)
-          graph.adjList[v] = graph.adjList[v].filterIt(it != u)
-          if graph.nodes[u].degree > 0: dec graph.nodes[u].degree
-          if graph.nodes[v].degree > 0: dec graph.nodes[v].degree
+        graph.removeEdge(u, v)
         graph.coalesce(u, v)
 
   # IRC: simplify → spill → select
@@ -533,9 +528,7 @@ proc allocateRegisters*(f: IrFunc, phiCoalesce: PhiCoalesceInfo = PhiCoalesceInf
     if candidate >= 0:
       graph.nodes[candidate].state = nsColored
       for j in graph.adjList[candidate]:
-        let jAlias = graph.getAlias(j)
-        if graph.nodes[jAlias].state != nsCoalesced and graph.nodes[jAlias].state != nsColored:
-          dec graph.nodes[jAlias].degree
+        graph.decrementDegree(j)
       fullStack.add(candidate)
       let extra = graph.simplify()
       fullStack.add(extra)

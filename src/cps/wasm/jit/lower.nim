@@ -37,6 +37,7 @@ type
     f: IrFunc
     module: ptr WasmModule
     funcIdx: int
+    numImportFuncs: int      ## cached count of imported functions in the module
     usePhiLoops: bool        ## true if phi-based loop lowering is safe
     valStack: seq[IrValue]   ## current symbolic value stack
     locals: seq[IrValue]     ## current SSA value for each WASM local
@@ -96,19 +97,80 @@ proc emitTrap(ctx: var LowerCtx) =
   ctx.bb.addInstr(IrInstr(op: irTrap, result: -1.IrValue,
     operands: [-1.IrValue, -1.IrValue, -1.IrValue]))
 
+proc emitSimdUnaryOp(ctx: var LowerCtx, op: IrOpKind) =
+  let a = ctx.pop()
+  let v = ctx.f.newSimdValue()
+  ctx.bb.addInstr(IrInstr(op: op, result: v,
+    operands: [a, -1.IrValue, -1.IrValue]))
+  ctx.push(v)
+
+proc emitSimdBinaryOp(ctx: var LowerCtx, op: IrOpKind) =
+  let b = ctx.pop()
+  let a = ctx.pop()
+  let v = ctx.f.newSimdValue()
+  ctx.bb.addInstr(IrInstr(op: op, result: v,
+    operands: [a, b, -1.IrValue]))
+  ctx.push(v)
+
 # ---------- function type resolution ----------
 
 proc funcType(ctx: LowerCtx): FuncType =
   ## Get the FuncType for the function being lowered
-  let numImports = block:
-    var c = 0
-    for imp in ctx.module[].imports:
-      if imp.kind == ikFunc:
-        inc c
-    c
-  let localFuncIdx = ctx.funcIdx - numImports
+  let localFuncIdx = ctx.funcIdx - ctx.numImportFuncs
   let typeIdx = ctx.module[].funcTypeIdxs[localFuncIdx]
   ctx.module[].types[typeIdx.int]
+
+proc lookupCalleeType(ctx: LowerCtx, calleeIdx: int): (bool, FuncType) =
+  ## Resolve the FuncType for a callee by its absolute function index.
+  ## Returns (found, funcType).
+  if calleeIdx < ctx.numImportFuncs:
+    var importIdx = 0
+    for imp in ctx.module[].imports:
+      if imp.kind == ikFunc:
+        if importIdx == calleeIdx:
+          return (true, ctx.module[].types[imp.funcTypeIdx.int])
+        inc importIdx
+  elif calleeIdx - ctx.numImportFuncs < ctx.module[].funcTypeIdxs.len:
+    let localIdx = calleeIdx - ctx.numImportFuncs
+    let typeIdx = ctx.module[].funcTypeIdxs[localIdx]
+    return (true, ctx.module[].types[typeIdx.int])
+  (false, FuncType())
+
+proc emitCallIndirectImpl(ctx: var LowerCtx, typeIdx: int, elemIdx: IrValue): IrValue =
+  ## Shared implementation for call_indirect / return_call_indirect.
+  ## Returns the result value (or -1.IrValue for void / error).
+  if typeIdx >= ctx.module[].types.len:
+    ctx.emitTrap()
+    return -1.IrValue
+
+  let ft = ctx.module[].types[typeIdx]
+  let paramCount = ft.params.len
+  let resultCount = ft.results.len
+
+  var args: seq[IrValue]
+  for _ in 0 ..< paramCount:
+    args.add(ctx.pop())
+
+  let tempBase = ctx.f.numLocals
+  ctx.f.numLocals += max(paramCount, if resultCount > 0: 1 else: 0)
+
+  for i in 0 ..< paramCount:
+    let argVal = args[paramCount - 1 - i]
+    ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
+      operands: [argVal, -1.IrValue, -1.IrValue],
+      imm: (tempBase + i).int64))
+
+  let res = if resultCount > 0: ctx.f.newValue() else: -1.IrValue
+  ctx.bb.addInstr(IrInstr(
+    op: irCallIndirect,
+    result: res,
+    operands: [elemIdx, -1.IrValue, -1.IrValue],
+    imm: paramCount.int64 or (resultCount.int64 shl 16),
+    imm2: tempBase.int32))
+
+  ctx.f.usesMemory = true
+  inc ctx.f.callIndirectSiteCount
+  result = res
 
 proc padToBlockType(pad: uint16): BlockType =
   ## Decode the Instr.pad field back into a BlockType
@@ -716,104 +778,31 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
 
   # --- Calls (emit trap — would need interpreter trampoline) ---
   of opCall:
-    # For now, emit a call instruction with the function index, but pop/push
-    # based on function signature if available
     let calleeIdx = instr.imm1.int
-    # Try to look up the callee type
-    let numImportFuncs = block:
-      var c = 0
-      for imp in ctx.module[].imports:
-        if imp.kind == ikFunc:
-          inc c
-      c
-    var calleeFt: FuncType
-    var haveType = false
-    if calleeIdx < numImportFuncs:
-      # Import function
-      var importIdx = 0
-      for imp in ctx.module[].imports:
-        if imp.kind == ikFunc:
-          if importIdx == calleeIdx:
-            calleeFt = ctx.module[].types[imp.funcTypeIdx.int]
-            haveType = true
-            break
-          inc importIdx
-    elif calleeIdx - numImportFuncs < ctx.module[].funcTypeIdxs.len:
-      let localIdx = calleeIdx - numImportFuncs
-      let typeIdx = ctx.module[].funcTypeIdxs[localIdx]
-      calleeFt = ctx.module[].types[typeIdx.int]
-      haveType = true
-
+    let (haveType, calleeFt) = ctx.lookupCalleeType(calleeIdx)
     if haveType:
-      # Pop arguments (in reverse order — last arg is on top)
       var args: seq[IrValue]
       for i in 0 ..< calleeFt.params.len:
         args.add(ctx.pop())
-      # Emit call (we store the function index in imm)
       let r = ctx.f.newValue()
       var operands: array[3, IrValue] = [-1.IrValue, -1.IrValue, -1.IrValue]
-      # Store first 3 args in operands
       for i in 0 ..< min(args.len, 3):
         operands[i] = args[i]
       ctx.bb.addInstr(IrInstr(op: irCall, result: r, operands: operands,
         imm: calleeIdx.int64))
-      # Push results
       if calleeFt.results.len > 0:
         ctx.push(r)
     else:
       ctx.emitTrap()
 
   of opCallIndirect:
-    # call_indirect typeIdx tableIdx
-    # Stack before: [arg0, arg1, ..., argN-1, elemIdx]  (elemIdx on top)
     let typeIdx = instr.imm1.int
-    let elemIdx = ctx.pop()  # table element index (i32)
-
-    if typeIdx >= ctx.module[].types.len:
-      # Invalid type index — emit trap
-      ctx.emitTrap()
-    else:
+    let elemIdx = ctx.pop()
+    let res = ctx.emitCallIndirectImpl(typeIdx, elemIdx)
+    if typeIdx < ctx.module[].types.len:
       let ft = ctx.module[].types[typeIdx]
-      let paramCount = ft.params.len
-      let resultCount = ft.results.len
-
-      # Pop arguments in stack order (last pushed = first popped = last arg).
-      # args[0] = argN-1 (top of stack), args[N-1] = arg0 (deepest).
-      var args: seq[IrValue]
-      for _ in 0 ..< paramCount:
-        args.add(ctx.pop())
-
-      # Allocate synthetic temp locals for arg spilling and result collection.
-      # Layout: locals[tempBase+0..tempBase+N-1] = arg0..argN-1 (natural order).
-      let tempBase = ctx.f.numLocals
-      ctx.f.numLocals += max(paramCount, if resultCount > 0: 1 else: 0)
-
-      # Spill args to temp locals in natural order (arg0 at tempBase+0, argN-1 at tempBase+N-1).
-      # args[] is reversed (args[i] = arg_{N-1-i}), so we reverse back.
-      for i in 0 ..< paramCount:
-        let argVal = args[paramCount - 1 - i]   # args[N-1-i] = arg_i
-        ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-          operands: [argVal, -1.IrValue, -1.IrValue],
-          imm: (tempBase + i).int64))
-
-      # Emit irCallIndirect.
-      # imm  = paramCount | (resultCount << 16) — type info from the call-site signature
-      # imm2 = tempBase                         — first temp local index
-      let res = if resultCount > 0: ctx.f.newValue() else: -1.IrValue
-      ctx.bb.addInstr(IrInstr(
-        op: irCallIndirect,
-        result: res,
-        operands: [elemIdx, -1.IrValue, -1.IrValue],
-        imm: paramCount.int64 or (resultCount.int64 shl 16),
-        imm2: tempBase.int32
-      ))
-
-      # Push result onto the symbolic value stack.
-      if resultCount > 0:
+      if ft.results.len > 0:
         ctx.push(res)
-
-      ctx.f.usesMemory = true   # callee may access memory
-      inc ctx.f.callIndirectSiteCount
 
   # --- Memory size/grow ---
   of opMemorySize:
@@ -1348,28 +1337,7 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
       return
 
     # Non-self tail call: lower as call + return
-    let numImportFuncs2 = block:
-      var c = 0
-      for imp in ctx.module[].imports:
-        if imp.kind == ikFunc:
-          inc c
-      c
-    var calleeFt2: FuncType
-    var haveType2 = false
-    if calleeIdx < numImportFuncs2:
-      var importIdx = 0
-      for imp in ctx.module[].imports:
-        if imp.kind == ikFunc:
-          if importIdx == calleeIdx:
-            calleeFt2 = ctx.module[].types[imp.funcTypeIdx.int]
-            haveType2 = true
-            break
-          inc importIdx
-    elif calleeIdx - numImportFuncs2 < ctx.module[].funcTypeIdxs.len:
-      let localIdx2 = calleeIdx - numImportFuncs2
-      let typeIdx2 = ctx.module[].funcTypeIdxs[localIdx2]
-      calleeFt2 = ctx.module[].types[typeIdx2.int]
-      haveType2 = true
+    let (haveType2, calleeFt2) = ctx.lookupCalleeType(calleeIdx)
     if haveType2:
       var args: seq[IrValue]
       for i in 0 ..< calleeFt2.params.len:
@@ -1377,7 +1345,7 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
       let r = ctx.f.newValue()
       var operands: array[3, IrValue] = [-1.IrValue, -1.IrValue, -1.IrValue]
       for i in 0 ..< min(args.len, 3):
-        operands[i] = args[args.len - 1 - i]  # args[] is reversed (top-of-stack = last param)
+        operands[i] = args[args.len - 1 - i]
       ctx.bb.addInstr(IrInstr(op: irCall, result: r, operands: operands,
         imm: calleeIdx.int64))
       inc ctx.f.nonSelfCallSiteCount
@@ -1393,37 +1361,12 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
     ctx.switchBb(deadBb2)
 
   of opReturnCallIndirect:
-    # Lower as call_indirect + irReturn (same as opCallIndirect but tail position).
     let typeIdx3 = instr.imm1.int
-    let elemIdx3 = ctx.pop()  # table element index (i32)
-    if typeIdx3 >= ctx.module[].types.len:
-      ctx.emitTrap()
-    else:
-      let ft3 = ctx.module[].types[typeIdx3]
-      let paramCount3 = ft3.params.len
-      let resultCount3 = ft3.results.len
-      var args3: seq[IrValue]
-      for _ in 0 ..< paramCount3:
-        args3.add(ctx.pop())
-      let tempBase3 = ctx.f.numLocals
-      ctx.f.numLocals += max(paramCount3, if resultCount3 > 0: 1 else: 0)
-      for i in 0 ..< paramCount3:
-        let argVal3 = args3[paramCount3 - 1 - i]
-        ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-          operands: [argVal3, -1.IrValue, -1.IrValue],
-          imm: (tempBase3 + i).int64))
-      let res3 = if resultCount3 > 0: ctx.f.newValue() else: -1.IrValue
-      ctx.bb.addInstr(IrInstr(
-        op: irCallIndirect,
-        result: res3,
-        operands: [elemIdx3, -1.IrValue, -1.IrValue],
-        imm: paramCount3.int64 or (resultCount3.int64 shl 16),
-        imm2: tempBase3.int32))
-      ctx.f.usesMemory = true
-      inc ctx.f.callIndirectSiteCount
-      # Emit irReturn with the call result (tail position)
-      ctx.bb.addInstr(IrInstr(op: irReturn, result: -1.IrValue,
-        operands: [res3, -1.IrValue, -1.IrValue]))
+    let elemIdx3 = ctx.pop()
+    let res3 = ctx.emitCallIndirectImpl(typeIdx3, elemIdx3)
+    # Emit irReturn with the call result (tail position)
+    ctx.bb.addInstr(IrInstr(op: irReturn, result: -1.IrValue,
+      operands: [res3, -1.IrValue, -1.IrValue]))
     let deadBb3 = ctx.newBb()
     ctx.switchBb(deadBb3)
 
@@ -1477,47 +1420,12 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
     ctx.bb.addInstr(IrInstr(op: irConstV128, result: v, imm: instr.imm1.int64))
     ctx.push(v)
 
-  of opI32x4Splat:
-    let scalar = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI32x4Splat, result: v,
-      operands: [scalar, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
-
-  of opF32x4Splat:
-    let scalar = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irF32x4Splat, result: v,
-      operands: [scalar, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
-
-  of opI8x16Splat:
-    let scalar = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI8x16Splat, result: v,
-      operands: [scalar, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
-
-  of opI16x8Splat:
-    let scalar = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI16x8Splat, result: v,
-      operands: [scalar, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
-
-  of opI64x2Splat:
-    let scalar = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI64x2Splat, result: v,
-      operands: [scalar, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
-
-  of opF64x2Splat:
-    let scalar = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irF64x2Splat, result: v,
-      operands: [scalar, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
+  of opI32x4Splat:  ctx.emitSimdUnaryOp(irI32x4Splat)
+  of opF32x4Splat:  ctx.emitSimdUnaryOp(irF32x4Splat)
+  of opI8x16Splat:  ctx.emitSimdUnaryOp(irI8x16Splat)
+  of opI16x8Splat:  ctx.emitSimdUnaryOp(irI16x8Splat)
+  of opI64x2Splat:  ctx.emitSimdUnaryOp(irI64x2Splat)
+  of opF64x2Splat:  ctx.emitSimdUnaryOp(irF64x2Splat)
 
   of opI32x4ExtractLane:
     let vec = ctx.pop()
@@ -1553,75 +1461,19 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
       operands: [vec, scalar, -1.IrValue], imm: lane.int64))
     ctx.push(v)
 
-  of opV128Not:
-    let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irV128Not, result: v,
-      operands: [a, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
+  of opV128Not:  ctx.emitSimdUnaryOp(irV128Not)
+  of opV128And:  ctx.emitSimdBinaryOp(irV128And)
+  of opV128Or:   ctx.emitSimdBinaryOp(irV128Or)
+  of opV128Xor:  ctx.emitSimdBinaryOp(irV128Xor)
 
-  of opV128And:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irV128And, result: v,
-      operands: [a, b, -1.IrValue]))
-    ctx.push(v)
+  of opI32x4Add: ctx.emitSimdBinaryOp(irI32x4Add)
+  of opI32x4Sub: ctx.emitSimdBinaryOp(irI32x4Sub)
+  of opI32x4Mul: ctx.emitSimdBinaryOp(irI32x4Mul)
 
-  of opV128Or:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irV128Or, result: v,
-      operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opV128Xor:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irV128Xor, result: v,
-      operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI32x4Add:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI32x4Add, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI32x4Sub:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI32x4Sub, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI32x4Mul:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI32x4Mul, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opF32x4Add:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irF32x4Add, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opF32x4Sub:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irF32x4Sub, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opF32x4Mul:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irF32x4Mul, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opF32x4Div:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irF32x4Div, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
+  of opF32x4Add: ctx.emitSimdBinaryOp(irF32x4Add)
+  of opF32x4Sub: ctx.emitSimdBinaryOp(irF32x4Sub)
+  of opF32x4Mul: ctx.emitSimdBinaryOp(irF32x4Mul)
+  of opF32x4Div: ctx.emitSimdBinaryOp(irF32x4Div)
 
   # ---- Extended SIMD ----
 
@@ -1695,203 +1547,44 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
       operands: [vec, scalar, -1.IrValue], imm: instr.imm1.int64))
     ctx.push(v)
 
-  of opV128AndNot:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irV128AndNot, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
+  of opV128AndNot:  ctx.emitSimdBinaryOp(irV128AndNot)
 
-  of opI8x16Abs:
-    let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI8x16Abs, result: v, operands: [a, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
+  of opI8x16Abs:   ctx.emitSimdUnaryOp(irI8x16Abs)
+  of opI8x16Neg:   ctx.emitSimdUnaryOp(irI8x16Neg)
+  of opI8x16Add:   ctx.emitSimdBinaryOp(irI8x16Add)
+  of opI8x16Sub:   ctx.emitSimdBinaryOp(irI8x16Sub)
+  of opI8x16MinS:  ctx.emitSimdBinaryOp(irI8x16MinS)
+  of opI8x16MinU:  ctx.emitSimdBinaryOp(irI8x16MinU)
+  of opI8x16MaxS:  ctx.emitSimdBinaryOp(irI8x16MaxS)
+  of opI8x16MaxU:  ctx.emitSimdBinaryOp(irI8x16MaxU)
 
-  of opI8x16Neg:
-    let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI8x16Neg, result: v, operands: [a, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
+  of opI16x8Abs:   ctx.emitSimdUnaryOp(irI16x8Abs)
+  of opI16x8Neg:   ctx.emitSimdUnaryOp(irI16x8Neg)
+  of opI16x8Add:   ctx.emitSimdBinaryOp(irI16x8Add)
+  of opI16x8Sub:   ctx.emitSimdBinaryOp(irI16x8Sub)
+  of opI16x8Mul:   ctx.emitSimdBinaryOp(irI16x8Mul)
 
-  of opI8x16Add:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI8x16Add, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
+  of opI32x4Abs:   ctx.emitSimdUnaryOp(irI32x4Abs)
+  of opI32x4Neg:   ctx.emitSimdUnaryOp(irI32x4Neg)
+  of opI32x4Shl:   ctx.emitSimdBinaryOp(irI32x4Shl)
+  of opI32x4ShrS:  ctx.emitSimdBinaryOp(irI32x4ShrS)
+  of opI32x4ShrU:  ctx.emitSimdBinaryOp(irI32x4ShrU)
+  of opI32x4MinS:  ctx.emitSimdBinaryOp(irI32x4MinS)
+  of opI32x4MinU:  ctx.emitSimdBinaryOp(irI32x4MinU)
+  of opI32x4MaxS:  ctx.emitSimdBinaryOp(irI32x4MaxS)
+  of opI32x4MaxU:  ctx.emitSimdBinaryOp(irI32x4MaxU)
 
-  of opI8x16Sub:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI8x16Sub, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
+  of opI64x2Add:   ctx.emitSimdBinaryOp(irI64x2Add)
+  of opI64x2Sub:   ctx.emitSimdBinaryOp(irI64x2Sub)
 
-  of opI8x16MinS:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI8x16MinS, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI8x16MinU:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI8x16MinU, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI8x16MaxS:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI8x16MaxS, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI8x16MaxU:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI8x16MaxU, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI16x8Abs:
-    let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI16x8Abs, result: v, operands: [a, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
-
-  of opI16x8Neg:
-    let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI16x8Neg, result: v, operands: [a, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
-
-  of opI16x8Add:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI16x8Add, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI16x8Sub:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI16x8Sub, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI16x8Mul:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI16x8Mul, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI32x4Abs:
-    let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI32x4Abs, result: v, operands: [a, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
-
-  of opI32x4Neg:
-    let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI32x4Neg, result: v, operands: [a, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
-
-  of opI32x4Shl:
-    let shift = ctx.pop(); let vec = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI32x4Shl, result: v, operands: [vec, shift, -1.IrValue]))
-    ctx.push(v)
-
-  of opI32x4ShrS:
-    let shift = ctx.pop(); let vec = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI32x4ShrS, result: v, operands: [vec, shift, -1.IrValue]))
-    ctx.push(v)
-
-  of opI32x4ShrU:
-    let shift = ctx.pop(); let vec = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI32x4ShrU, result: v, operands: [vec, shift, -1.IrValue]))
-    ctx.push(v)
-
-  of opI32x4MinS:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI32x4MinS, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI32x4MinU:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI32x4MinU, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI32x4MaxS:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI32x4MaxS, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI32x4MaxU:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI32x4MaxU, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI64x2Add:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI64x2Add, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opI64x2Sub:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irI64x2Sub, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opF32x4Abs:
-    let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irF32x4Abs, result: v, operands: [a, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
-
-  of opF32x4Neg:
-    let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irF32x4Neg, result: v, operands: [a, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
-
-  of opF64x2Add:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irF64x2Add, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opF64x2Sub:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irF64x2Sub, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opF64x2Mul:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irF64x2Mul, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opF64x2Div:
-    let b = ctx.pop(); let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irF64x2Div, result: v, operands: [a, b, -1.IrValue]))
-    ctx.push(v)
-
-  of opF64x2Abs:
-    let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irF64x2Abs, result: v, operands: [a, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
-
-  of opF64x2Neg:
-    let a = ctx.pop()
-    let v = ctx.f.newSimdValue()
-    ctx.bb.addInstr(IrInstr(op: irF64x2Neg, result: v, operands: [a, -1.IrValue, -1.IrValue]))
-    ctx.push(v)
+  of opF32x4Abs:   ctx.emitSimdUnaryOp(irF32x4Abs)
+  of opF32x4Neg:   ctx.emitSimdUnaryOp(irF32x4Neg)
+  of opF64x2Add:   ctx.emitSimdBinaryOp(irF64x2Add)
+  of opF64x2Sub:   ctx.emitSimdBinaryOp(irF64x2Sub)
+  of opF64x2Mul:   ctx.emitSimdBinaryOp(irF64x2Mul)
+  of opF64x2Div:   ctx.emitSimdBinaryOp(irF64x2Div)
+  of opF64x2Abs:   ctx.emitSimdUnaryOp(irF64x2Abs)
+  of opF64x2Neg:   ctx.emitSimdUnaryOp(irF64x2Neg)
 
 
 proc lowerFunction*(module: WasmModule, funcIdx: int,
@@ -1919,19 +1612,6 @@ proc lowerFunction*(module: WasmModule, funcIdx: int,
   let numBodyLocals = countLocals(body)
   let totalLocals = numParams + numBodyLocals
 
-  # Pre-scan bytecode to check if function uses memory (needed for phi loop decision)
-  var hasMemoryOps = false
-  for instr in body.code.code:
-    if instr.op in {opI32Load, opI64Load, opF32Load, opF64Load,
-                     opI32Load8S, opI32Load8U, opI32Load16S, opI32Load16U,
-                     opI64Load8S, opI64Load8U, opI64Load16S, opI64Load16U,
-                     opI64Load32S, opI64Load32U,
-                     opI32Store, opI64Store, opF32Store, opF64Store,
-                     opI32Store8, opI32Store16, opI64Store8, opI64Store16, opI64Store32,
-                     opMemorySize, opMemoryGrow}:
-      hasMemoryOps = true
-      break
-
   var code = body.code.code
 
   # Automatic TCO: detect self-recursive calls in tail position in the bytecode
@@ -1940,7 +1620,6 @@ proc lowerFunction*(module: WasmModule, funcIdx: int,
   let autoTcoRewrites = rewriteTailCalls(code, funcIdx)
 
   # Pre-scan for self-recursive tail calls (enables TCO loop transformation).
-  # This now picks up both explicit opReturnCall AND any auto-TCO rewrites.
   var hasSelfTailCall = false
   var selfTailCallCount = 0
   for instr in code:
@@ -1950,8 +1629,9 @@ proc lowerFunction*(module: WasmModule, funcIdx: int,
 
   var ctx = LowerCtx(
     funcIdx: funcIdx,
+    numImportFuncs: numImportFuncs,
     module: unsafeAddr module,
-    usePhiLoops: true,  # phi loops for all functions
+    usePhiLoops: true,
     restartBb: -1,
     numOrigLocals: totalLocals,
     pgoData: pgoData,

@@ -12,59 +12,28 @@
 ##       - irReturn in callee → irLocalSet(retSlot) + irBr(continuationBb)
 ##       - Continuation BB: irLocalGet(callResult) + post-call instructions
 ##
-## Heuristics:
-##   - Weighted cost budget: constants are free, mul/div are expensive
-##   - Skip callees that themselves contain calls (deep call chains)
-##   - Skip recursive self-calls
-##   - Multi-BB callees have a slightly higher budget and a BB-count cap
+## Heuristics (cost model in cost.nim):
+##   - Skip recursive self-calls and imports
+##   - Multi-BB callees capped at MaxInlineBBs basic blocks
 ##   - Up to MaxInlinePasses transitive passes (inline into inlined code)
 
+import std/tables
 import ../types
 import ir, lower, cost
 
 const
-  MaxInlineCost* = 40     # weighted instruction cost budget per single-BB callee
-  MaxMultiBBInlineCost* = 80   # budget for multi-BB callees (larger since worth unfolding CF)
   MaxInlineBBs* = 8       # max basic blocks a multi-BB callee may have
   MaxInlineExpansion* = 6  # max inline expansions per function per pass
   MaxInlinePasses* = 3    # transitive inlining passes
 
-proc instrCost(op: IrOpKind): int {.inline.} =
-  ## Weighted cost for inlining budget. Free ops don't count against the budget.
-  case op
-  of irConst32, irConst64, irConstF32, irConstF64: 0  # constant-folded away
-  of irParam, irNop: 0
-  of irMul32, irMul64: 3
-  of irDiv32S, irDiv32U, irDiv64S, irDiv64U,
-     irRem32S, irRem32U, irRem64S, irRem64U: 6     # expensive
-  of irDivF32, irDivF64, irSqrtF32, irSqrtF64: 5   # expensive FP
-  of irCall, irCallIndirect, irTrap: 100  # sentinel: reject entire callee
-  of irAddF32, irSubF32, irMulF32, irAddF64, irSubF64, irMulF64,
-     irFmaF32, irFmsF32, irFnmaF32, irFnmsF32,
-     irFmaF64, irFmsF64, irFnmaF64, irFnmsF64: 2   # FP pipeline ops
-  else: 1
-
-proc computeCalleeCost(callee: IrFunc): int =
-  ## Return total weighted cost of the callee, or MaxInlineCost+1 to reject.
-  for bb in callee.blocks:
-    for instr in bb.instrs:
-      let c = instrCost(instr.op)
-      if c >= 100: return MaxInlineCost + 1  # irCall/irTrap rejects
-      result += c
-
-proc shouldInline(callee: IrFunc): bool =
-  ## Inline iff: single basic block, no calls/traps, cost within budget.
-  if callee.blocks.len != 1:
-    return false
-  computeCalleeCost(callee) <= MaxInlineCost
-
-proc shouldInlineMultiBB(callee: IrFunc): bool =
-  ## Inline multi-BB callees that are small, have no nested calls, and few BBs.
-  if callee.blocks.len <= 1:
-    return false  # handled by single-BB path
-  if callee.blocks.len > MaxInlineBBs:
-    return false
-  computeCalleeCost(callee) <= MaxMultiBBInlineCost
+proc reserveCalleeValues(caller: var IrFunc, callee: IrFunc): IrValue =
+  ## Reserve fresh SSA value IDs for all callee values in the caller.
+  ## Returns the base value offset.
+  result = caller.numValues.IrValue
+  caller.numValues += callee.numValues
+  for i in 0 ..< callee.numValues:
+    let simdbit = if i < callee.isSimd.len: callee.isSimd[i] else: false
+    caller.isSimd.add(simdbit)
 
 proc inlineMultiBBCallee(caller: var IrFunc, callee: IrFunc,
                           callInstr: IrInstr, callBbIdx: int,
@@ -92,15 +61,10 @@ proc inlineMultiBBCallee(caller: var IrFunc, callee: IrFunc,
     retLocalIdx = caller.numLocals
     inc caller.numLocals
 
-  # Reserve fresh SSA value IDs for all callee values.
-  let baseValue = caller.numValues
-  caller.numValues += callee.numValues
-  for i in 0 ..< callee.numValues:
-    let simdbit = if i < callee.isSimd.len: callee.isSimd[i] else: false
-    caller.isSimd.add(simdbit)
+  let baseValue = reserveCalleeValues(caller, callee)
 
   proc remapVal(v: IrValue): IrValue {.closure.} =
-    if v < 0: -1.IrValue else: IrValue(baseValue + v.int)
+    if v < 0: -1.IrValue else: IrValue(baseValue.int + v.int)
 
   proc remapBb(bb: int): int {.closure.} =
     callerBaseBBIdx + bb
@@ -217,6 +181,12 @@ proc inlineSinglePass(caller: var IrFunc, module: WasmModule,
     if imp.kind == ikFunc:
       inc numImportFuncs
 
+  # Cache lowered callee IR per function index to avoid redundant lowering.
+  var calleeCache: Table[int, IrFunc]
+  # Cache caller cost state; invalidated after each successful inlining.
+  var callerCostDirty = true
+  var callerCostState: CostState
+
   var totalExpansions = 0
   # Iterate with index because multi-BB inlining may add new blocks.
   # We iterate only over the blocks that existed at the start of this pass
@@ -247,19 +217,23 @@ proc inlineSinglePass(caller: var IrFunc, module: WasmModule,
         inc instrIdx
         continue
 
-      # Lower the callee to IR to check inlinability.
+      # Lower the callee to IR (cached per function index within this pass).
       var calleeIr: IrFunc
-      try:
-        calleeIr = lowerFunction(module, calleeIdx)
-      except:
-        inc instrIdx
-        continue
+      if calleeIdx in calleeCache:
+        calleeIr = calleeCache[calleeIdx]
+      else:
+        try:
+          calleeIr = lowerFunction(module, calleeIdx)
+          calleeCache[calleeIdx] = calleeIr
+        except:
+          inc instrIdx
+          continue
 
       # Cost-model-guided inlining decision.
-      # Analyze callee cost and ask the cost model whether inlining is worthwhile,
-      # factoring in register pressure, code size growth, and loop presence.
       let calleeCostState = analyzeCost(calleeIr)
-      let callerCostState = analyzeCost(caller)
+      if callerCostDirty:
+        callerCostState = analyzeCost(caller)
+        callerCostDirty = false
       let inlineDecision = computeInlineDecision(
         callerCostState, calleeCostState, bbIdx, totalExpansions)
       if not inlineDecision.shouldInline:
@@ -281,11 +255,7 @@ proc inlineSinglePass(caller: var IrFunc, module: WasmModule,
       if isSingleBB:
         # --- Single-BB: inline directly into this block ---
         let callResult = instr.result
-        let baseValue = caller.numValues
-        caller.numValues += calleeIr.numValues
-        for i in 0 ..< calleeIr.numValues:
-          let simdbit = if i < calleeIr.isSimd.len: calleeIr.isSimd[i] else: false
-          caller.isSimd.add(simdbit)
+        let baseValue = reserveCalleeValues(caller, calleeIr)
 
         var valueMap = newSeq[IrValue](calleeIr.numValues)
         for i in 0 ..< calleeIr.numValues:
@@ -326,10 +296,20 @@ proc inlineSinglePass(caller: var IrFunc, module: WasmModule,
           replacements.add(IrInstr(op: irNop, result: callResult,
             operands: [zv, -1.IrValue, -1.IrValue]))
 
-        # Splice: remove the irCall, insert replacements at instrIdx
-        let before = caller.blocks[bbIdx].instrs[0 ..< instrIdx]
-        let after  = caller.blocks[bbIdx].instrs[instrIdx + 1 .. ^1]
-        caller.blocks[bbIdx].instrs = before & replacements & after
+        # Splice: remove the irCall, insert replacements at instrIdx.
+        # In-place: delete 1 element, then insert replacements.
+        let rLen = replacements.len
+        let oldLen = caller.blocks[bbIdx].instrs.len
+        let newLen = oldLen - 1 + rLen
+        caller.blocks[bbIdx].instrs.setLen(newLen)
+        # Shift post-call instructions right to make room for replacements.
+        let tailStart = instrIdx + 1  # first post-call instr in old layout
+        let tailLen = oldLen - tailStart
+        for j in countdown(tailLen - 1, 0):
+          caller.blocks[bbIdx].instrs[instrIdx + rLen + j] = caller.blocks[bbIdx].instrs[tailStart + j]
+        # Copy replacements into the gap.
+        for j in 0 ..< rLen:
+          caller.blocks[bbIdx].instrs[instrIdx + j] = replacements[j]
         # Continue from just after the inlined body (replacements.len positions)
         instrIdx += replacements.len
       else:
@@ -338,10 +318,12 @@ proc inlineSinglePass(caller: var IrFunc, module: WasmModule,
         # After splitting, the pre-call BB (bbIdx) now ends with irBr.
         # Stop processing this BB — move to the next original block.
         inc totalExpansions
+        callerCostDirty = true
         result = true
         break  # Break inner loop; instrIdx-based iteration on bbIdx is done
 
       inc totalExpansions
+      callerCostDirty = true
       result = true
       # Do NOT advance instrIdx — the replacement instructions start at instrIdx.
       # The while loop's instrIdx < len check handles termination.

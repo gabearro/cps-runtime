@@ -227,10 +227,10 @@ type
     defInstrIdx*: int       ## index of the instruction defining backEdgeOp in the loop body
     phiUsers*: seq[int]     ## indices of instructions in the loop body that USE phiResult
     blockIdx*: int          ## the loop header block index
+    feasible*: bool         ## true if scheduling achieved safe ordering
 
   PhiCoalesceInfo* = object
     pairs*: seq[PhiCoalescePair]
-    feasible*: seq[bool]    ## per-pair: true if scheduling achieved safe ordering
 
 proc newValue*(f: var IrFunc): IrValue =
   result = f.numValues.IrValue

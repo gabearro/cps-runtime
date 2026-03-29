@@ -74,13 +74,14 @@ proc evictLRU*(cache: var CodeCache) =
     inc cache.stats.evictions
 
 proc get*(cache: var CodeCache, funcAddr: int): ptr CacheEntry =
-  if funcAddr in cache.entries:
+  cache.entries.withValue(funcAddr, entry):
     inc cache.stats.cacheHits
-    cache.entries[funcAddr].lastUsed = cpuTime()
-    inc cache.entries[funcAddr].callCount
-    return cache.entries[funcAddr].addr
-  inc cache.stats.cacheMisses
-  nil
+    entry.lastUsed = cpuTime()
+    inc entry.callCount
+    return entry
+  do:
+    inc cache.stats.cacheMisses
+    return nil
 
 proc put*(cache: var CodeCache, funcAddr: int, entry: CacheEntry) =
   # Evict if at capacity
@@ -115,9 +116,6 @@ proc formatStats*(stats: JitStats): string =
 # ---------------------------------------------------------------------------
 # Inline caching for call_indirect
 # ---------------------------------------------------------------------------
-
-proc initIcTable*(): IcTable =
-  discard  # Table auto-initializes empty
 
 proc initInlineCache*(): InlineCache =
   result.state = icEmpty
@@ -177,9 +175,7 @@ proc icUpdate*(ic: var InlineCache, elemIdx: int32, funcAddr: int32, typeOk: boo
 
 proc icGetOrCreate*(table: var IcTable, pc: int): var InlineCache =
   ## Get or create an inline cache for a call_indirect site at the given PC.
-  if pc notin table.sites:
-    table.sites[pc] = initInlineCache()
-  table.sites[pc]
+  table.sites.mgetOrPut(pc, initInlineCache())
 
 proc icReset*(ic: var InlineCache) =
   ic.state = icEmpty
