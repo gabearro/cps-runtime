@@ -65,6 +65,7 @@ type
     adjList*: seq[seq[int]]     # adjacency list per node
     numNodes*: int
     numRegs*: int               # K (number of available registers)
+    numSimdRegs*: int           # K for SIMD register-class values
 
   SpillSlot* = object
     offset*: int   # byte offset from stack frame base
@@ -93,9 +94,11 @@ const
 
 # ---- Interference graph construction ----
 
-proc initGraph*(numValues: int, numRegs: int = NumIntRegs): InterferenceGraph =
+proc initGraph*(numValues: int, numRegs: int = NumIntRegs,
+                numSimdRegs: int = NumSimdRegs): InterferenceGraph =
   result.numNodes = numValues
   result.numRegs = numRegs
+  result.numSimdRegs = numSimdRegs
   result.nodes = newSeq[AllocNode](numValues)
   result.adjMatrix = newSeq[bool](numValues * numValues)
   result.adjList = newSeq[seq[int]](numValues)
@@ -284,11 +287,12 @@ proc computeLiveness*(f: IrFunc, phiCoalesce: PhiCoalesceInfo = PhiCoalesceInfo(
         result[v].acrossCall = true
 
 proc buildInterferenceGraph*(f: IrFunc, liveness: seq[LiveRange],
-                              numIntRegs: int = NumIntRegs): InterferenceGraph =
+                              numIntRegs: int = NumIntRegs,
+                              numSimdRegs: int = NumSimdRegs): InterferenceGraph =
   ## Build interference graph: two values interfere if their live ranges overlap.
   ## Also marks rematerialisable values (irConst32/irConst64) with infinite spill
   ## weight so the allocator always prefers to spill something else first.
-  result = initGraph(f.numValues, numIntRegs)
+  result = initGraph(f.numValues, numIntRegs, numSimdRegs)
 
   # Build a per-value map of defining op and immediate so we can classify
   # rematerialisable defs without repeated scans.
@@ -427,7 +431,7 @@ proc assignColors*(g: var InterferenceGraph, stack: seq[int],
     let numAvail = case rc
       of rcInt:   g.numRegs     # NumIntRegs (or platform-specific value)
       of rcFloat: NumFPRegs
-      of rcSimd:  NumSimdRegs
+      of rcSimd:  g.numSimdRegs
 
     # Values live across calls MUST use callee-saved registers (index >= calleeSavedStart for int).
     # SIMD regs v16-v31 are all caller-saved, so no restriction needed.
@@ -494,12 +498,27 @@ proc assignColors*(g: var InterferenceGraph, stack: seq[int],
 
 proc allocateRegisters*(f: IrFunc, phiCoalesce: PhiCoalesceInfo = PhiCoalesceInfo(),
                         numIntRegs: int = NumIntRegs,
-                        calleeSavedStart: int8 = 2): RegAllocResult =
+                        calleeSavedStart: int8 = 2,
+                        numSimdRegs: int = NumSimdRegs): RegAllocResult =
   ## Full register allocation pipeline.
   ## numIntRegs: number of allocatable integer registers (12 for AArch64, 5 for x86_64).
   ## calleeSavedStart: first color index that is callee-saved (2 for AArch64, 4 for x86_64).
+  if numIntRegs <= 0:
+    result.assignment = newSeq[PhysReg](f.numValues)
+    result.rematKind = newSeq[RematKind](f.numValues)
+    result.rematImm = newSeq[int64](f.numValues)
+    result.spillOffsetMap = newSeq[int32](f.numValues)
+    for i in 0 ..< f.numValues:
+      result.assignment[i] = PhysReg(-1)
+      let slotSize = if i < f.isSimd.len and f.isSimd[i]: 16 else: 8
+      let baseOff = (result.totalSpillBytes + slotSize - 1) and (not (slotSize - 1))
+      result.spillSlots.add(SpillSlot(offset: baseOff, size: slotSize))
+      result.spillOffsetMap[i] = baseOff.int32
+      result.totalSpillBytes = baseOff + slotSize
+    return
+
   var liveness = computeLiveness(f, phiCoalesce)
-  var graph = buildInterferenceGraph(f, liveness, numIntRegs)
+  var graph = buildInterferenceGraph(f, liveness, numIntRegs, numSimdRegs)
 
   # Pre-coalesce feasible phi pairs: merge the back-edge operand node
   # into the phi result node so they share the same register.

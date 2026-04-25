@@ -206,7 +206,7 @@ proc linkCachedFunc*(pool: var JitMemPool,
       # else leave the stored 0 — dispatch will see nil cache and trap
 
   pool.enableExecute()
-  when defined(arm64) or defined(aarch64):
+  when not (defined(amd64) or defined(i386)):
     invalidateICache(jc.address, f.code.len)
 
   result = JitCode(address: jc.address, size: f.code.len,

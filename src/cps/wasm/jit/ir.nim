@@ -210,6 +210,9 @@ type
     blocks*: seq[BasicBlock]
     numValues*: int       # total SSA values allocated
     numLocals*: int       # WASM locals count (may include synthetic temp slots for call_indirect)
+    localSlotOffsets*: seq[int32] # local index -> uint64 slot index in the JIT locals array
+    localSlotCount*: int   # total uint64 slots required by locals; v128 uses 2 slots
+    localIsSimd*: seq[bool] # local index -> true when the logical local is a v128
     numParams*: int       # WASM params count
     numResults*: int      # WASM results count
     usesMemory*: bool     # true if any memory load/store/size/grow ops

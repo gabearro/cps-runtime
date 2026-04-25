@@ -58,7 +58,16 @@ proc inlineMultiBBCallee(caller: var IrFunc, callee: IrFunc,
   # Allocate a temp local for multi-path return value passing.
   var retLocalIdx = -1
   if callResult >= 0:
+    while caller.localSlotOffsets.len < caller.numLocals:
+      if caller.localIsSimd.len < caller.localSlotOffsets.len + 1:
+        caller.localIsSimd.add(false)
+      caller.localSlotOffsets.add(caller.localSlotCount.int32)
+      inc caller.localSlotCount
+    let retIsSimd = callResult.int < caller.isSimd.len and caller.isSimd[callResult.int]
     retLocalIdx = caller.numLocals
+    caller.localIsSimd.add(retIsSimd)
+    caller.localSlotOffsets.add(caller.localSlotCount.int32)
+    caller.localSlotCount += (if retIsSimd: 2 else: 1)
     inc caller.numLocals
 
   let baseValue = reserveCalleeValues(caller, callee)

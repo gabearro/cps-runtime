@@ -361,7 +361,7 @@ component NatStatusRow(label: String, value: String, isDark: Bool) {
     Text(value)
       .font(.system(size: 12, design: Font.Design.monospaced))
       .foregroundColor(fg)
-      .textSelection(TextSelectability.enabled)
+      .textSelection(.enabled)
 
     Spacer()
   }

@@ -51,6 +51,8 @@ type
     localCount*: int32   # total locals (params + body locals)
     paramCount*: int32   # number of parameters
     resultCount*: int32  # number of results
+    paramSlotCount*: int32  # runtime uint64 slots used by parameters
+    resultSlotCount*: int32 # runtime uint64 slots used by results
 
   CallIndirectCache* = object
     ## Per-call-site inline cache for call_indirect.
@@ -63,6 +65,8 @@ type
     tableLen*: int32         # number of valid entries
     paramCount*: int32       # expected param count (from call site's typeIdx)
     resultCount*: int32      # expected result count
+    paramSlotCount*: int32   # runtime uint64 slots used by call-site params
+    resultSlotCount*: int32  # runtime uint64 slots used by call-site results
 
   CompilerCtx = object
     buf: AsmBuffer
@@ -174,6 +178,17 @@ proc strhImm(buf: var AsmBuffer, src, base: Reg, offset: int32) =
 # call_indirect runtime dispatch helper
 # ---------------------------------------------------------------------------
 
+proc effectiveParamSlots(elem: TableElem): int {.inline.} =
+  if elem.paramSlotCount > 0: elem.paramSlotCount.int else: elem.paramCount.int
+
+proc effectiveParamSlots(cache: ptr CallIndirectCache): int {.inline.} =
+  if cache != nil and cache.paramSlotCount > 0:
+    cache.paramSlotCount.int
+  elif cache != nil:
+    cache.paramCount.int
+  else:
+    0
+
 proc callIndirectDispatch*(
     cache: ptr CallIndirectCache,
     elemIdx: int32,
@@ -186,7 +201,7 @@ proc callIndirectDispatch*(
   ## Returns the new VSP after the call, or nil to signal a WASM trap.
   var jitAddr: pointer
   var localCount: int
-  let pc = cache.paramCount.int
+  let pc = cache.effectiveParamSlots()
 
   # Monomorphic IC fast path
   if cache.cachedElemIdx == elemIdx and cache.cachedJitAddr != nil:
@@ -240,7 +255,7 @@ proc tier2CallIndirectDispatch*(
   ## On trap (out-of-bounds, null element, or unJIT'd callee), returns 1.
   var jitAddr: pointer
   var localCount: int
-  let pc = cache.paramCount.int
+  let pc = cache.effectiveParamSlots()
 
   # Monomorphic IC fast path
   if cache.cachedElemIdx == elemIdx and cache.cachedJitAddr != nil:
@@ -283,6 +298,41 @@ proc tier2CallIndirectDispatch*(
   # The callee writes its result to argPtr[0] via irReturn (STR, [x8], #8).
   discard cast[JitFuncPtr](jitAddr)(argPtr, calleeLocals, memBase, memSize)
   0  # success
+
+proc tier2DirectDispatch*(
+    target: ptr TableElem,
+    argPtr: ptr uint64,    ## args at [0..pc-1], result written to [0]
+    memBase: ptr byte,
+    memSize: uint64): int32 {.cdecl.} =
+  ## Runtime helper for direct Tier 2 calls on helper-call based backends.
+  ## The caller pre-spills arguments to argPtr[0..pc-1]. On success, the callee
+  ## writes its result back to argPtr[0] and we return 0. A nil/uncompiled
+  ## target returns 1 so generated code can trap rather than running bad code.
+  if target == nil or target.jitAddr == nil:
+    return 1
+
+  let pc = target[].effectiveParamSlots()
+  let localCount = target.localCount.int
+
+  var smallLocals: array[64, uint64]
+  var bigLocals: seq[uint64]
+  let calleeLocals: ptr uint64 =
+    if localCount <= 64:
+      let arr = cast[ptr UncheckedArray[uint64]](argPtr)
+      for i in 0 ..< pc:
+        smallLocals[i] = arr[i]
+      for i in pc ..< localCount:
+        smallLocals[i] = 0
+      smallLocals[0].addr
+    else:
+      bigLocals = newSeq[uint64](localCount)
+      let arr = cast[ptr UncheckedArray[uint64]](argPtr)
+      for i in 0 ..< pc:
+        bigLocals[i] = arr[i]
+      bigLocals[0].addr
+
+  discard cast[JitFuncPtr](target.jitAddr)(argPtr, calleeLocals, memBase, memSize)
+  0
 
 # ---------------------------------------------------------------------------
 # Helpers

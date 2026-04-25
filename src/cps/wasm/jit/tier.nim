@@ -13,7 +13,7 @@
 import ../types
 import ../runtime
 import ../pgo
-import memory, compiler, pipeline, aotcache, cost
+import memory, compiler, pipeline, aotcache, cost, codegen_rv64
 import std/os
 when defined(wasmGuardPages):
   import ../guardmem
@@ -23,6 +23,59 @@ const
   Tier2CallThreshold* = 5000  # Default calls before Tier 2 compilation
   JitPoolSize* = 4 * 1024 * 1024  # 4MB JIT code pool
   BgJitPoolSize* = 2 * 1024 * 1024  # 2MB pool for background Tier 2
+
+proc defaultRv64Target(): Rv64Target =
+  when defined(bl808) or defined(bl808D0) or defined(theadC906) or
+       defined(wasmJitBl808D0) or defined(wasmJitThead):
+    rv64BL808D0Target
+  elif defined(wasmJitRvCommon) or defined(riscvCommonExt):
+    rv64CommonTarget
+  else:
+    rv64GenericTarget
+
+proc defaultRv32Target(): RvTarget =
+  when defined(bl808LP) or defined(bl808Lp) or defined(theadE902) or
+       defined(wasmJitBl808LP) or defined(wasmJitBl808Lp):
+    rv32BL808LPTarget
+  elif defined(bl808) or defined(bl808M0) or defined(theadE907) or
+       defined(wasmJitBl808M0):
+    rv32BL808M0Target
+  elif defined(wasmJitRvCommon) or defined(riscvCommonExt):
+    rv32CommonTarget
+  else:
+    rv32GenericTarget
+
+proc valueSlotCount(vt: ValType): int32 {.inline.} =
+  if vt == vtV128: 2'i32 else: 1'i32
+
+proc slotCount(types: openArray[ValType]): int32 =
+  for vt in types:
+    result += valueSlotCount(vt)
+
+proc storeValueSlots(slots: var seq[uint64], slot: int, value: WasmValue) =
+  if slot < 0 or slot >= slots.len:
+    return
+  if value.kind == wvkV128:
+    var lo, hi: uint64
+    copyMem(addr lo, unsafeAddr value.v128[0], 8)
+    copyMem(addr hi, unsafeAddr value.v128[8], 8)
+    slots[slot] = lo
+    if slot + 1 < slots.len:
+      slots[slot + 1] = hi
+  else:
+    slots[slot] = wasmValueToRaw(value)
+
+proc loadValueSlots(slots: openArray[uint64], slot: int, vt: ValType): WasmValue =
+  if slot < 0 or slot >= slots.len:
+    return defaultValue(vt)
+  if vt == vtV128:
+    if slot + 1 >= slots.len:
+      return defaultValue(vt)
+    result = WasmValue(kind: wvkV128)
+    copyMem(addr result.v128[0], unsafeAddr slots[slot], 8)
+    copyMem(addr result.v128[8], unsafeAddr slots[slot + 1], 8)
+  else:
+    result = rawToWasmValue(slots[slot], vt)
 
 # ---------------------------------------------------------------------------
 # Background JIT compilation types
@@ -36,6 +89,7 @@ type
     codeIdx*: int               # code section index inside the module
     selfModuleIdx*: int         # module-level function index (for TCO)
     tableElems*: seq[TableElem] # pre-built table entries for call_indirect
+    funcElems*: seq[TableElem]  # module-indexed function entries for direct calls
     pgoData*: FuncPgoData       # snapshot of PGO profile at request time
     collectRelocs*: bool        # if true, collect relocation records for AOT cache
 
@@ -76,6 +130,17 @@ proc bgWorkerProc(worker: ptr BgWorker) {.thread.} =
       for i in 0 ..< req.tableElems.len:
         tableElemsPtr[i] = req.tableElems[i]
 
+    var funcElemsPtr: ptr UncheckedArray[TableElem] = nil
+    var numFuncsI32 = 0'i32
+    if req.funcElems.len > 0:
+      let bytes = req.funcElems.len * sizeof(TableElem)
+      let rawPtr = allocShared0(bytes)
+      worker[].pool.sideData.add(rawPtr)
+      funcElemsPtr = cast[ptr UncheckedArray[TableElem]](rawPtr)
+      numFuncsI32 = req.funcElems.len.int32
+      for i in 0 ..< req.funcElems.len:
+        funcElemsPtr[i] = req.funcElems[i]
+
     # Copy PGO snapshot into a local so we can take its address safely.
     var pgoSnapshot = req.pgoData
     let pgoPtr = if pgoSnapshot.branchProfiles.len > 0 or
@@ -86,11 +151,33 @@ proc bgWorkerProc(worker: ptr BgWorker) {.thread.} =
     try:
       var relocs: seq[Relocation]
       let relocPtr = if req.collectRelocs: addr relocs else: nil
-      let t2code = worker[].pool.compileTier2(req.module, req.codeIdx,
-                                              req.selfModuleIdx,
-                                              tableElemsPtr, tableLenI32,
-                                              pgoData = pgoPtr,
-                                              relocSites = relocPtr)
+      let t2code =
+        when defined(riscv64):
+          worker[].pool.compileTier2Rv64(req.module, req.selfModuleIdx,
+                                         req.selfModuleIdx,
+                                         tableElemsPtr, tableLenI32,
+                                         funcElemsPtr, numFuncsI32,
+                                         pgoData = pgoPtr,
+                                         target = defaultRv64Target())
+        elif defined(riscv32):
+          worker[].pool.compileTier2Rv32(req.module, req.selfModuleIdx,
+                                         req.selfModuleIdx,
+                                         tableElemsPtr, tableLenI32,
+                                         funcElemsPtr, numFuncsI32,
+                                         pgoData = pgoPtr,
+                                         target = defaultRv32Target())
+        elif defined(amd64):
+          worker[].pool.compileTier2X64(req.module, req.codeIdx,
+                                        req.selfModuleIdx,
+                                        tableElemsPtr, tableLenI32,
+                                        pgoData = pgoPtr,
+                                        relocSites = relocPtr)
+        else:
+          worker[].pool.compileTier2(req.module, req.codeIdx,
+                                     req.selfModuleIdx,
+                                     tableElemsPtr, tableLenI32,
+                                     pgoData = pgoPtr,
+                                     relocSites = relocPtr)
       var codeBytes: seq[byte]
       if req.collectRelocs and t2code.address != nil and t2code.size > 0:
         codeBytes = newSeq[byte](t2code.size)
@@ -189,10 +276,12 @@ type
     callCounts*: seq[int]           # call counter per store func index
     jitThresholds*: seq[int]        # adaptive Tier 1 threshold per store func index
     tier2Thresholds*: seq[int]      # adaptive Tier 2 threshold (frequency-weighted)
+    jitDisabled*: seq[bool]         # true after a foreground JIT compile fails
     jitCode*: seq[JitCompiledFunc]  # JIT'd code (one per store func, nil if not JIT'd)
     jitPtrs*: seq[JitFuncPtr]       # Function pointers (nil if not JIT'd)
     tier2Code*: seq[JitCode]        # Tier 2 optimized code per store func
     tier2Ptrs*: seq[JitFuncPtr]     # Tier 2 function pointers (nil if not compiled)
+    tier2Disabled*: seq[bool]       # true after Tier 2 compile fails for this function
     modules*: seq[WasmModule]       # Keep module refs for JIT compilation
     # Background Tier 2 compilation
     bgWorker*: ptr BgWorker         # nil if background thread not started
@@ -212,6 +301,14 @@ proc initTieredVM*(): TieredVM =
   when defined(wasmGuardPages):
     installGuardPageHandlers()
 
+proc localSlotCount(tvm: TieredVM, storeAddr: int, localTypes: openArray[ValType],
+                    preferTier2: bool): int32 =
+  if preferTier2 and storeAddr < tvm.tier2Code.len and
+     tvm.tier2Code[storeAddr].numLocals > 0:
+    tvm.tier2Code[storeAddr].numLocals.int32
+  else:
+    slotCount(localTypes)
+
 proc buildTableElems(tvm: var TieredVM, modInst: ModuleInst,
                      preferTier2: bool): seq[TableElem] =
   ## Build pre-resolved table elements for call_indirect (table 0 only).
@@ -228,13 +325,40 @@ proc buildTableElems(tvm: var TieredVM, modInst: ModuleInst,
         let fi = tvm.vm.store.funcs[storeAddr]
         result[i] = TableElem(
           paramCount: fi.funcType.params.len.int32,
-          localCount: fi.localTypes.len.int32,
+          localCount: tvm.localSlotCount(storeAddr, fi.localTypes, preferTier2),
           resultCount: fi.funcType.results.len.int32,
+          paramSlotCount: slotCount(fi.funcType.params),
+          resultSlotCount: slotCount(fi.funcType.results),
         )
         if preferTier2 and storeAddr < tvm.tier2Ptrs.len and tvm.tier2Ptrs[storeAddr] != nil:
           result[i].jitAddr = cast[pointer](tvm.tier2Ptrs[storeAddr])
         elif storeAddr < tvm.jitPtrs.len and tvm.jitPtrs[storeAddr] != nil:
           result[i].jitAddr = cast[pointer](tvm.jitPtrs[storeAddr])
+
+proc buildFuncElems(tvm: var TieredVM, modInst: ModuleInst,
+                    preferTier2: bool): seq[TableElem] =
+  ## Build module-indexed function entries for direct calls.
+  ## When preferTier2 is true, Tier 2 pointers take precedence over Tier 1.
+  result = newSeq[TableElem](modInst.funcAddrs.len)
+  for moduleIdx in 0 ..< modInst.funcAddrs.len:
+    let storeAddr = modInst.funcAddrs[moduleIdx]
+    if storeAddr < 0 or storeAddr >= tvm.vm.store.funcs.len:
+      continue
+    let fi = tvm.vm.store.funcs[storeAddr]
+    result[moduleIdx] = TableElem(
+      paramCount: fi.funcType.params.len.int32,
+      resultCount: fi.funcType.results.len.int32,
+      paramSlotCount: slotCount(fi.funcType.params),
+      resultSlotCount: slotCount(fi.funcType.results),
+    )
+    if fi.isHost:
+      result[moduleIdx].localCount = result[moduleIdx].paramSlotCount
+    else:
+      result[moduleIdx].localCount = tvm.localSlotCount(storeAddr, fi.localTypes, preferTier2)
+    if preferTier2 and storeAddr < tvm.tier2Ptrs.len and tvm.tier2Ptrs[storeAddr] != nil:
+      result[moduleIdx].jitAddr = cast[pointer](tvm.tier2Ptrs[storeAddr])
+    elif storeAddr < tvm.jitPtrs.len and tvm.jitPtrs[storeAddr] != nil:
+      result[moduleIdx].jitAddr = cast[pointer](tvm.jitPtrs[storeAddr])
 
 proc ensureBgThread*(tvm: var TieredVM) =
   ## Start the background compilation thread if it hasn't been started yet.
@@ -370,69 +494,78 @@ proc instantiate*(tvm: var TieredVM, module: WasmModule,
     tvm.callCounts.add(0)
     tvm.jitThresholds.add(threshold)
     tvm.tier2Thresholds.add(tier2Threshold)
+    tvm.jitDisabled.add(false)
     tvm.jitCode.add(JitCompiledFunc())
     tvm.jitPtrs.add(nil)
     tvm.tier2Code.add(JitCode())
     tvm.tier2Ptrs.add(nil)
+    tvm.tier2Disabled.add(false)
     tvm.tier2Pending.add(false)
+
+proc tryTier2Compile(tvm: var TieredVM, funcAddr: int): bool
 
 proc tryJitCompile(tvm: var TieredVM, funcAddr: int): bool =
   ## Try to JIT compile a function. Returns true if successful.
-  let funcInst = tvm.vm.store.funcs[funcAddr]
-  if funcInst.isHost:
-    return false
-  if funcInst.code == nil:
-    return false
+  when defined(riscv64) or defined(riscv32):
+    # Tier 1 is currently AArch64-only. On RISC-V, promote directly to the
+    # native Tier 2 backend so we never install wrong-ISA code.
+    return tvm.tryTier2Compile(funcAddr)
+  else:
+    let funcInst = tvm.vm.store.funcs[funcAddr]
+    if funcInst.isHost:
+      return false
+    if funcInst.code == nil:
+      return false
 
-  # Find the module this function belongs to
-  let modIdx = funcInst.moduleIdx
-  if modIdx >= tvm.modules.len:
-    return false
+    # Find the module this function belongs to
+    let modIdx = funcInst.moduleIdx
+    if modIdx >= tvm.modules.len:
+      return false
 
-  let module = tvm.modules[modIdx]
-  let modInst = tvm.vm.store.modules[modIdx]
+    let module = tvm.modules[modIdx]
+    let modInst = tvm.vm.store.modules[modIdx]
 
-  let (codeIdx, _) = findCodeIdx(modInst, module, funcAddr)
-  if codeIdx < 0:
-    return false
+    let (codeIdx, _) = findCodeIdx(modInst, module, funcAddr)
+    if codeIdx < 0:
+      return false
 
-  try:
-    # Build call targets so the JIT can resolve function calls.
-    let numImportFuncs = modInst.funcAddrs.len - module.codes.len
-    let totalFuncs = numImportFuncs + module.codes.len
-    var callTargets = newSeq[CallTarget](totalFuncs)
-    var selfModuleIdx = -1
+    try:
+      # Build call targets so the JIT can resolve function calls.
+      let numImportFuncs = modInst.funcAddrs.len - module.codes.len
+      let totalFuncs = numImportFuncs + module.codes.len
+      var callTargets = newSeq[CallTarget](totalFuncs)
+      var selfModuleIdx = -1
 
-    for i in 0 ..< module.codes.len:
-      let storeAddr = modInst.funcAddrs[numImportFuncs + i]
-      let fi = tvm.vm.store.funcs[storeAddr]
-      let ft = fi.funcType
-      let moduleIdx = numImportFuncs + i
-      callTargets[moduleIdx] = CallTarget(
-        paramCount: ft.params.len,
-        localCount: fi.localTypes.len,
-        resultCount: ft.results.len,
-        globalsCount: modInst.globalAddrs.len,
-      )
-      if storeAddr < tvm.jitPtrs.len and tvm.jitPtrs[storeAddr] != nil:
-        callTargets[moduleIdx].jitAddr = cast[pointer](tvm.jitPtrs[storeAddr])
-      if i == codeIdx:
-        selfModuleIdx = moduleIdx
+      for i in 0 ..< module.codes.len:
+        let storeAddr = modInst.funcAddrs[numImportFuncs + i]
+        let fi = tvm.vm.store.funcs[storeAddr]
+        let ft = fi.funcType
+        let moduleIdx = numImportFuncs + i
+        callTargets[moduleIdx] = CallTarget(
+          paramCount: ft.params.len,
+          localCount: fi.localTypes.len,
+          resultCount: ft.results.len,
+          globalsCount: modInst.globalAddrs.len,
+        )
+        if storeAddr < tvm.jitPtrs.len and tvm.jitPtrs[storeAddr] != nil:
+          callTargets[moduleIdx].jitAddr = cast[pointer](tvm.jitPtrs[storeAddr])
+        if i == codeIdx:
+          selfModuleIdx = moduleIdx
 
-    let tableData = tvm.buildTableElems(modInst, preferTier2 = false)
+      let tableData = tvm.buildTableElems(modInst, preferTier2 = false)
 
-    # Pass globalsOffset so the JIT can access globals from the locals array.
-    # Globals are stored after the function's locals in the locals array.
-    let globOff = funcInst.localTypes.len * 8
-    let compiled = tvm.pool.compileFunction(module, codeIdx,
-                                            callTargets, tableData,
-                                            globalsOffset = globOff,
-                                            selfIdx = selfModuleIdx)
-    tvm.jitCode[funcAddr] = compiled
-    tvm.jitPtrs[funcAddr] = cast[JitFuncPtr](compiled.code.address)
-    return true
-  except Exception:
-    return false  # Compilation failed, stay in interpreter
+      # Pass globalsOffset so the JIT can access globals from the locals array.
+      # Globals are stored after the function's locals in the locals array.
+      let globOff = funcInst.localTypes.len * 8
+      let compiled = tvm.pool.compileFunction(module, codeIdx,
+                                              callTargets, tableData,
+                                              globalsOffset = globOff,
+                                              selfIdx = selfModuleIdx)
+      tvm.jitCode[funcAddr] = compiled
+      tvm.jitPtrs[funcAddr] = cast[JitFuncPtr](compiled.code.address)
+      return true
+    except Exception:
+      return false  # Compilation failed, stay in interpreter
 
 proc tryTier2Compile(tvm: var TieredVM, funcAddr: int): bool =
   ## Try to compile a function with Tier 2 optimizations. Returns true if successful.
@@ -466,6 +599,17 @@ proc tryTier2Compile(tvm: var TieredVM, funcAddr: int): bool =
     tableLenI32 = tableData.len.int32
     copyMem(tableElemsPtr, tableData[0].unsafeAddr, bytes)
 
+  let funcData = tvm.buildFuncElems(modInst, preferTier2 = true)
+  var funcElemsPtr: ptr UncheckedArray[TableElem] = nil
+  var numFuncsI32 = 0.int32
+  if funcData.len > 0:
+    let bytes = funcData.len * sizeof(TableElem)
+    let rawPtr = allocShared0(bytes)
+    tvm.pool.sideData.add(rawPtr)
+    funcElemsPtr = cast[ptr UncheckedArray[TableElem]](rawPtr)
+    numFuncsI32 = funcData.len.int32
+    copyMem(funcElemsPtr, funcData[0].unsafeAddr, bytes)
+
   # Look up PGO data collected during interpreter execution for this funcAddr.
   let pgoDataPtr = tvm.profiler.getFuncData(funcAddr)
 
@@ -473,7 +617,19 @@ proc tryTier2Compile(tvm: var TieredVM, funcAddr: int): bool =
     var relocs: seq[Relocation]
     let relocPtr = if tvm.aotCacheDir.len > 0: addr relocs else: nil
     let t2code =
-      when defined(amd64):
+      when defined(riscv64):
+        tvm.pool.compileTier2Rv64(module, selfModuleIdx, selfModuleIdx,
+                                  tableElemsPtr, tableLenI32,
+                                  funcElemsPtr, numFuncsI32,
+                                  pgoData = pgoDataPtr,
+                                  target = defaultRv64Target())
+      elif defined(riscv32):
+        tvm.pool.compileTier2Rv32(module, selfModuleIdx, selfModuleIdx,
+                                  tableElemsPtr, tableLenI32,
+                                  funcElemsPtr, numFuncsI32,
+                                  pgoData = pgoDataPtr,
+                                  target = defaultRv32Target())
+      elif defined(amd64):
         tvm.pool.compileTier2X64(module, codeIdx, selfModuleIdx,
                                  tableElemsPtr, tableLenI32,
                                  pgoData = pgoDataPtr,
@@ -500,6 +656,8 @@ proc tryTier2Compile(tvm: var TieredVM, funcAddr: int): bool =
 
     return true
   except Exception:
+    if funcAddr >= 0 and funcAddr < tvm.tier2Disabled.len:
+      tvm.tier2Disabled[funcAddr] = true
     return false  # Tier 2 compilation failed, stay in Tier 1
 
 proc pollBgResults*(tvm: var TieredVM) =
@@ -529,10 +687,14 @@ proc pollBgResults*(tvm: var TieredVM) =
           numLocals: res.numLocals.uint32,
           code:      res.codeBytes,
           relocs:    res.relocSites))
+    elif fa < tvm.tier2Disabled.len:
+      tvm.tier2Disabled[fa] = true
 
 proc sendBgTier2Request*(tvm: var TieredVM, funcAddr: int) =
   ## Build a background Tier 2 compile request and send it to the worker thread.
   ## Returns immediately; the result will appear in the next pollBgResults().
+  if funcAddr < tvm.tier2Disabled.len and tvm.tier2Disabled[funcAddr]:
+    return
   let funcInst = tvm.vm.store.funcs[funcAddr]
   if funcInst.isHost or funcInst.code == nil: return
 
@@ -546,6 +708,7 @@ proc sendBgTier2Request*(tvm: var TieredVM, funcAddr: int) =
   if codeIdx < 0: return
 
   let tableElems = tvm.buildTableElems(modInst, preferTier2 = true)
+  let funcElems = tvm.buildFuncElems(modInst, preferTier2 = true)
 
   # Snapshot PGO data at request time so the background thread has a stable copy.
   let pgoSnapshot = block:
@@ -561,6 +724,7 @@ proc sendBgTier2Request*(tvm: var TieredVM, funcAddr: int) =
     codeIdx: codeIdx,
     selfModuleIdx: selfModuleIdx,
     tableElems: tableElems,
+    funcElems: funcElems,
     pgoData: pgoSnapshot,
     collectRelocs: tvm.aotCacheDir.len > 0,
   ))
@@ -590,9 +754,10 @@ proc invokeJit(tvm: var TieredVM, funcAddr: int,
           else:
             tvm.jitPtrs[funcAddr]
 
-  # Set up locals. Use max(WASM locals, IR locals) to accommodate synthetic
-  # temp slots added by the Tier 2 compiler (e.g., call_indirect arg buffers).
-  var irLocals = funcInst.localTypes.len
+  # Set up locals. Runtime local storage is counted in uint64 slots; v128 uses
+  # two slots even though it is one logical Wasm local.
+  let origLocalSlots = slotCount(funcInst.localTypes).int
+  var irLocals = origLocalSlots
   if funcAddr < tvm.tier2Code.len and tvm.tier2Code[funcAddr].numLocals > irLocals:
     irLocals = tvm.tier2Code[funcAddr].numLocals
 
@@ -602,19 +767,28 @@ proc invokeJit(tvm: var TieredVM, funcAddr: int,
   let modIdx = funcInst.moduleIdx
   let numGlobals = tvm.vm.store.modules[modIdx].globalAddrs.len
 
-  # Ensure the locals array is large enough to hold both locals and globals
-  let totalLocals = max(irLocals, funcInst.localTypes.len + numGlobals)
+  var globalSlots = 0
+  for i in 0 ..< numGlobals:
+    let globalAddr = tvm.vm.store.modules[modIdx].globalAddrs[i]
+    globalSlots += valueSlotCount(tvm.vm.store.globals[globalAddr].globalType.valType).int
+
+  # Ensure the locals array is large enough to hold both locals and globals.
+  let totalLocals = max(irLocals, origLocalSlots + globalSlots)
   var locals = newSeq[uint64](totalLocals)
+  var paramSlot = 0
   for i in 0 ..< ft.params.len:
-    locals[i] = wasmValueToRaw(args[i])
+    locals.storeValueSlots(paramSlot, args[i])
+    paramSlot += valueSlotCount(ft.params[i]).int
   # Remaining locals are already 0
 
   # Copy globals into the locals array after the function's original locals.
-  # Both Tier 1 and Tier 2 access them at locals[origLocalCount + globalIdx].
-  let origLocalCount = funcInst.localTypes.len
+  # Both Tier 1 and Tier 2 access them after the original local slots.
+  var globalSlot = origLocalSlots
   for i in 0 ..< numGlobals:
     let globalAddr = tvm.vm.store.modules[modIdx].globalAddrs[i]
-    locals[origLocalCount + i] = wasmValueToRaw(tvm.vm.store.globals[globalAddr].value)
+    let globalVal = tvm.vm.store.globals[globalAddr].value
+    locals.storeValueSlots(globalSlot, globalVal)
+    globalSlot += valueSlotCount(tvm.vm.store.globals[globalAddr].globalType.valType).int
 
   # Set up value stack
   var vstack = newSeq[uint64](1024)
@@ -650,19 +824,24 @@ proc invokeJit(tvm: var TieredVM, funcAddr: int,
     resultVsp = f(vstack[0].addr, locals[0].addr, memBase, memSize)
 
   # Write globals back to the store (JIT may have modified them via global.set)
+  globalSlot = origLocalSlots
   for i in 0 ..< numGlobals:
     let globalAddr = tvm.vm.store.modules[modIdx].globalAddrs[i]
-    tvm.vm.store.globals[globalAddr].value = rawToWasmValue(
-      locals[origLocalCount + i], tvm.vm.store.globals[globalAddr].globalType.valType)
+    let vt = tvm.vm.store.globals[globalAddr].globalType.valType
+    tvm.vm.store.globals[globalAddr].value = loadValueSlots(locals, globalSlot, vt)
+    globalSlot += valueSlotCount(vt).int
 
   # Collect results
   let resultCount = (cast[uint](resultVsp) - cast[uint](vstack[0].addr)) div 8
   result = newSeq[WasmValue](ft.results.len)
+  var resultSlot = 0
   for i in 0 ..< ft.results.len:
-    if i < resultCount.int:
-      result[i] = rawToWasmValue(vstack[i], ft.results[i])
+    let needSlots = valueSlotCount(ft.results[i]).int
+    if resultSlot + needSlots <= resultCount.int:
+      result[i] = loadValueSlots(vstack, resultSlot, ft.results[i])
     else:
       result[i] = defaultValue(ft.results[i])
+    resultSlot += needSlots
 
 proc invoke*(tvm: var TieredVM, moduleIdx: int, name: string,
              args: openArray[WasmValue]): seq[WasmValue] =
@@ -687,7 +866,8 @@ proc invoke*(tvm: var TieredVM, moduleIdx: int, name: string,
   # Already JIT compiled — track call count for Tier 2 and execute
   if funcAddr < tvm.jitPtrs.len and tvm.jitPtrs[funcAddr] != nil:
     if funcAddr < tvm.callCounts.len and
-       funcAddr < tvm.tier2Ptrs.len and tvm.tier2Ptrs[funcAddr] == nil:
+       funcAddr < tvm.tier2Ptrs.len and tvm.tier2Ptrs[funcAddr] == nil and
+       (funcAddr >= tvm.tier2Disabled.len or not tvm.tier2Disabled[funcAddr]):
       # Only queue once — avoid spamming the background thread
       let alreadyPending = funcAddr < tvm.tier2Pending.len and
                            tvm.tier2Pending[funcAddr]
@@ -705,9 +885,12 @@ proc invoke*(tvm: var TieredVM, moduleIdx: int, name: string,
   # Increment call counter and check for Tier 1 promotion
   if funcAddr < tvm.callCounts.len:
     inc tvm.callCounts[funcAddr]
-    if tvm.callCounts[funcAddr] >= tvm.jitThresholds[funcAddr]:
+    if tvm.callCounts[funcAddr] >= tvm.jitThresholds[funcAddr] and
+       (funcAddr >= tvm.jitDisabled.len or not tvm.jitDisabled[funcAddr]):
       if tvm.tryJitCompile(funcAddr):
         return tvm.invokeJit(funcAddr, args)
+      if funcAddr < tvm.jitDisabled.len:
+        tvm.jitDisabled[funcAddr] = true
 
   # Fall back to interpreter — pass profiler so branch/call_indirect data is collected.
   # Also pass an OsrTrigger so that if the function's inner loops are hot,
@@ -718,11 +901,14 @@ proc invoke*(tvm: var TieredVM, moduleIdx: int, name: string,
   if osrTrigger.triggered:
     let hotFunc = osrTrigger.funcAddr
     # Synchronously compile Tier 1 so the very next invocation runs in JIT.
-    if hotFunc < tvm.jitPtrs.len and tvm.jitPtrs[hotFunc] == nil:
-      discard tvm.tryJitCompile(hotFunc)
+    if hotFunc < tvm.jitPtrs.len and tvm.jitPtrs[hotFunc] == nil and
+       (hotFunc >= tvm.jitDisabled.len or not tvm.jitDisabled[hotFunc]):
+      if not tvm.tryJitCompile(hotFunc) and hotFunc < tvm.jitDisabled.len:
+        tvm.jitDisabled[hotFunc] = true
     # Queue Tier 2 in background as well; if the function is called again
     # we want optimized code waiting.
-    if hotFunc < tvm.tier2Ptrs.len and tvm.tier2Ptrs[hotFunc] == nil:
+    if hotFunc < tvm.tier2Ptrs.len and tvm.tier2Ptrs[hotFunc] == nil and
+       (hotFunc >= tvm.tier2Disabled.len or not tvm.tier2Disabled[hotFunc]):
       let alreadyPending = hotFunc < tvm.tier2Pending.len and tvm.tier2Pending[hotFunc]
       if not alreadyPending:
         tvm.sendBgTier2Request(hotFunc)

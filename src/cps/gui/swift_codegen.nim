@@ -1233,8 +1233,9 @@ proc emitBridgeStateHelpers(ir: GuiIrProgram, outLines: var seq[string]) =
   outLines.add "  var out: [GUIBridgeFieldValue] = []"
 
   for i, field in storageFields:
-    if not isBridgeRequestCandidate(field.name):
-      continue
+    # Send all scalar state fields to the bridge for non-poll actions.
+    # Array/complex types are skipped by the "json" kind fallthrough below.
+    # Poll actions already return [] above, so this doesn't affect idle overhead.
     let fName = swiftIdent(field.name)
     let kind = bridgeWireKind(field.typ)
     let fieldId = i + 1
@@ -1575,19 +1576,21 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
   outLines.add "    runtime.enqueue(effects)"
   outLines.add "  }"
   outLines.add ""
-  outLines.add "  func shutdown(completion: @escaping () -> Void) {"
+  outLines.add "  func shutdown(completion: @escaping @Sendable () -> Void) {"
   # If the app declares an AppShutdown action, dispatch it to the bridge
   # then wait for the Nim event loop to finish on a background thread.
   # This allows the bridge to send graceful disconnect messages (e.g., IRC QUIT)
   # before the process exits, without blocking the main thread.
+  var hasAppShutdown = false
   for i, action in ir.actions:
     if action.name == "AppShutdown":
       outLines.add "    runtime.dispatchShutdownAction(actionTag: " & $i & ", state: state)"
       outLines.add "    runtime.awaitShutdownComplete(timeoutMs: 3000, completion: completion)"
-      outLines.add "    return"
+      hasAppShutdown = true
       break
-  outLines.add "    runtime.shutdown()"
-  outLines.add "    completion()"
+  if not hasAppShutdown:
+    outLines.add "    runtime.shutdown()"
+    outLines.add "    completion()"
   outLines.add "  }"
   outLines.add "}"
   outLines.add ""
@@ -1852,7 +1855,7 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
     outLines.add "#if os(macOS)"
     outLines.add "@MainActor"
     outLines.add "final class GUILifecycleDelegate: NSObject, NSApplicationDelegate {"
-    outLines.add "  static var onShutdown: ((@escaping () -> Void) -> Void)?"
+    outLines.add "  static var onShutdown: ((@escaping @Sendable () -> Void) -> Void)?"
     outLines.add ""
     outLines.add "  func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {"
     outLines.add "    true"
@@ -2125,12 +2128,13 @@ final class GUIRuntime {
     _ = bridgeRuntime.dispatch(payload: payload)
   }
 
-  func awaitShutdownComplete(timeoutMs: Int32, completion: @escaping () -> Void) {
+  func awaitShutdownComplete(timeoutMs: Int32, completion: @escaping @Sendable () -> Void) {
     // Wait for the Nim event loop to finish graceful shutdown on a background
     // thread, then clean up and call completion on the main thread.
-    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-      _ = self?.bridgeRuntime.waitShutdown(timeoutMs: timeoutMs)
-      DispatchQueue.main.async {
+    nonisolated(unsafe) let runtime = self.bridgeRuntime
+    Task.detached { [weak self] in
+      _ = runtime.waitShutdown(timeoutMs: timeoutMs)
+      await MainActor.run {
         self?.shutdown()
         completion()
       }
@@ -2364,7 +2368,7 @@ final class GUIRuntime {
     ws.resume()
     sendAction(args["onOpen"])
 
-    func receiveLoop() {
+    @Sendable func receiveLoop() {
       ws.receive { [weak self] result in
         guard let self else { return }
         switch result {

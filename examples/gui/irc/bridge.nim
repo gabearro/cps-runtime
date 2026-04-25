@@ -4,10 +4,11 @@
 ## The bridge runs a background CPS event loop thread for IRC networking,
 ## communicating with the main (Swift) thread via locked queues.
 ##
-## Payload contract (same as todo bridge):
-## - 4 bytes: action tag (u32 little-endian)
-## - 4 bytes: state blob length (u32 little-endian)
-## - N bytes: UTF-8 JSON for state snapshot
+## Binary wire protocol (shared with Swift codegen):
+## Request:  [u32 actionTag][u16 fieldCount][u16 reserved][fields...]
+## Response: [u16 fieldCount][u16 reserved][fields...]
+## Field:    [u16 fieldId][u8 valueType][u8 reserved][u32 payloadLen][payload...]
+## Value types: 1=bool, 2=int64, 3=double, 4=string, 5=json
 
 import cps/runtime
 import cps/transform
@@ -120,6 +121,97 @@ const
   tagDuplicateServer = 89'u32
   tagMoveServer = 90'u32
   tagMoveChannel = 91'u32
+
+# ============================================================
+# Binary field IDs (1-based index of non-computed state fields in app.gui)
+# ============================================================
+
+const
+  fldServers = 1'u16
+  fldActiveServerId = 2'u16
+  fldChannels = 3'u16
+  fldActiveChannelName = 4'u16
+  fldMessages = 5'u16
+  fldUsers = 6'u16
+  fldInputText = 7'u16
+  fldShowConnectForm = 8'u16
+  fldConnectHost = 9'u16
+  fldConnectPort = 10'u16
+  fldConnectNick = 11'u16
+  fldConnectUseTls = 12'u16
+  fldConnectPassword = 13'u16
+  fldConnectSaslUser = 14'u16
+  fldConnectSaslPass = 15'u16
+  fldShowUserList = 16'u16
+  fldCompletionSuggestions = 17'u16
+  fldCompletionActive = 18'u16
+  fldCompletionIndex = 19'u16
+  fldCompletionSelectIndex = 20'u16
+  fldStatusText = 21'u16
+  fldPollActive = 22'u16
+  fldCurrentTopic = 23'u16
+  fldCurrentUserCount = 24'u16
+  fldTypingText = 25'u16
+  fldLastMessageId = 26'u16
+  fldActionServerId = 27'u16
+  fldActionNick = 28'u16
+  fldActionColor = 29'u16
+  fldActionChannelName = 30'u16
+  fldNickColors = 31'u16
+  fldActiveChannelIsChannel = 32'u16
+  fldActiveChannelIsDm = 33'u16
+  fldDccTransfers = 34'u16
+  fldShowTransfers = 35'u16
+  fldPendingTransferCount = 36'u16
+  fldActionTransferId = 37'u16
+  fldShowJoinChannel = 38'u16
+  fldJoinChannelText = 39'u16
+  fldSelectedUserNick = 40'u16
+  fldShowWhois = 41'u16
+  fldWhoisNick = 42'u16
+  fldWhoisInfo = 43'u16
+  fldShowSettings = 44'u16
+  fldFontSize = 45'u16
+  fldMessageDensity = 46'u16
+  fldTimestampFormat = 47'u16
+  fldSidebarFilter = 48'u16
+  fldShowChannelInfo = 49'u16
+  fldChannelModes = 50'u16
+  fldChannelCreated = 51'u16
+  fldSearchText = 52'u16
+  fldSearchActive = 53'u16
+  fldSmartFilterEnabled = 54'u16
+  fldSmartFilterTimeout = 55'u16
+  fldQuitMessage = 56'u16
+  fldShowChannelSwitcher = 57'u16
+  fldChannelSwitcherText = 58'u16
+  fldKeybinds = 59'u16
+  fldShowKeybindSheet = 60'u16
+  fldSettingsTab = 61'u16
+  fldLoggingEnabled = 62'u16
+  fldLogDir = 63'u16
+  fldIgnoreListJson = 64'u16
+  fldHighlightWordsJson = 65'u16
+  fldJoinPartMuteListJson = 66'u16
+  fldBouncerPassword = 67'u16
+  fldShowServerEditor = 68'u16
+  fldEditingServerId = 69'u16
+  fldEditServerJson = 70'u16
+  fldNatProtocol = 71'u16
+  fldNatExternalIp = 72'u16
+  fldNatGatewayIp = 73'u16
+  fldNatLocalIp = 74'u16
+  fldNatDoubleNat = 75'u16
+  fldNatOuterProtocol = 76'u16
+  fldNatOuterGatewayIp = 77'u16
+  fldNatActiveMappings = 78'u16
+
+# Binary wire value types
+const
+  vtBool = 1'u8
+  vtInt64 = 2'u8
+  vtString = 4'u8
+  vtJson = 5'u8
 
 # ============================================================
 # Bridge types
@@ -273,7 +365,7 @@ type
     actionTag: uint32
 
 const
-  guiBridgeAbiVersion = 4'u32
+  guiBridgeAbiVersion = 5'u32
   MaxMessagesPerChannel = 500
   ServerChannel = "*server*"
 
@@ -816,8 +908,71 @@ proc toBytes(text: string): seq[byte] =
     copyMem(addr result[0], unsafeAddr text[0], text.len)
 
 # ============================================================
-# Payload decoding
+# Binary wire encoding/decoding
 # ============================================================
+
+proc appendLeU16(dst: var seq[byte], value: uint16) =
+  dst.add byte(value and 0xFF'u16)
+  dst.add byte((value shr 8) and 0xFF'u16)
+
+proc appendLeU32(dst: var seq[byte], value: uint32) =
+  dst.add byte(value and 0xFF'u32)
+  dst.add byte((value shr 8) and 0xFF'u32)
+  dst.add byte((value shr 16) and 0xFF'u32)
+  dst.add byte((value shr 24) and 0xFF'u32)
+
+proc appendLeI64(dst: var seq[byte], value: int64) =
+  let v = cast[uint64](value)
+  for i in 0 ..< 8:
+    dst.add byte((v shr (i * 8)) and 0xFF'u64)
+
+proc addFieldBool(dst: var seq[byte], fieldId: uint16, value: bool) =
+  dst.appendLeU16(fieldId)
+  dst.add vtBool      # valueType
+  dst.add 0'u8        # reserved
+  dst.appendLeU32(1)  # payloadLen
+  dst.add(if value: 1'u8 else: 0'u8)
+
+proc addFieldInt(dst: var seq[byte], fieldId: uint16, value: int) =
+  dst.appendLeU16(fieldId)
+  dst.add vtInt64
+  dst.add 0'u8
+  dst.appendLeU32(8)
+  dst.appendLeI64(value.int64)
+
+proc addFieldString(dst: var seq[byte], fieldId: uint16, value: string) =
+  dst.appendLeU16(fieldId)
+  dst.add vtString
+  dst.add 0'u8
+  dst.appendLeU32(value.len.uint32)
+  if value.len > 0:
+    let start = dst.len
+    dst.setLen(start + value.len)
+    copyMem(addr dst[start], unsafeAddr value[0], value.len)
+
+proc addFieldJson(dst: var seq[byte], fieldId: uint16, node: JsonNode) =
+  let text = $node
+  dst.appendLeU16(fieldId)
+  dst.add vtJson
+  dst.add 0'u8
+  dst.appendLeU32(text.len.uint32)
+  if text.len > 0:
+    let start = dst.len
+    dst.setLen(start + text.len)
+    copyMem(addr dst[start], unsafeAddr text[0], text.len)
+
+proc finalizePatch(fields: seq[byte], fieldCount: uint16): seq[byte] =
+  ## Wrap field records with binary header: [u16 count][u16 reserved]
+  result = newSeq[byte](4 + fields.len)
+  result[0] = byte(fieldCount and 0xFF'u16)
+  result[1] = byte((fieldCount shr 8) and 0xFF'u16)
+  result[2] = 0
+  result[3] = 0
+  if fields.len > 0:
+    copyMem(addr result[4], unsafeAddr fields[0], fields.len)
+
+proc decodeLeU16(data: ptr UncheckedArray[uint8], offset: int): uint16 =
+  uint16(data[offset]) or (uint16(data[offset + 1]) shl 8)
 
 proc decodeLeU32(data: ptr UncheckedArray[uint8], offset: int): uint32 =
   uint32(data[offset]) or
@@ -825,25 +980,17 @@ proc decodeLeU32(data: ptr UncheckedArray[uint8], offset: int): uint32 =
   (uint32(data[offset + 2]) shl 16) or
   (uint32(data[offset + 3]) shl 24)
 
+proc decodeLeI64(data: ptr UncheckedArray[uint8], offset: int): int64 =
+  var v: uint64
+  for i in 0 ..< 8:
+    v = v or (uint64(data[offset + i]) shl (i * 8))
+  cast[int64](v)
+
 proc decodeActionTag(payload: ptr uint8, payloadLen: uint32): uint32 =
   if payload == nil or payloadLen < 4:
     return high(uint32)
   let bytes = cast[ptr UncheckedArray[uint8]](payload)
   decodeLeU32(bytes, 0)
-
-proc decodeStateJson(payload: ptr uint8, payloadLen: uint32): string =
-  if payload == nil or payloadLen < 8:
-    return ""
-  let bytes = cast[ptr UncheckedArray[uint8]](payload)
-  let declaredLen = int(decodeLeU32(bytes, 4))
-  if declaredLen <= 0:
-    return ""
-  let availableLen = int(payloadLen) - 8
-  if availableLen <= 0:
-    return ""
-  let takeLen = min(declaredLen, availableLen)
-  result = newString(takeLen)
-  copyMem(addr result[0], addr bytes[8], takeLen)
 
 proc jsonString(node: JsonNode, key: string, defaultValue: string): string =
   if node.kind != JObject or key notin node:
@@ -3128,13 +3275,10 @@ proc waitForCommandNotify(): CpsVoidFuture =
     )
     result = fut
 
-proc commandProcessor(): CpsVoidFuture {.cps.} =
-  ## Runs on event loop thread. Wakes when commands are enqueued via pipe notification.
-
-  # Try to connect to bouncer at startup
-  await connectToBouncerGui()
-
-  # Discover NAT gateway for DCC port forwarding (best-effort, non-blocking)
+proc discoverNatBackground(): CpsVoidFuture {.cps.} =
+  ## Discover NAT gateway in the background (best-effort, non-blocking).
+  ## Runs concurrently with the command processor so it doesn't delay
+  ## initial IRC connections.
   try:
     gNatMgr = newNatManager()
     await discover(gNatMgr)
@@ -3148,6 +3292,15 @@ proc commandProcessor(): CpsVoidFuture {.cps.} =
       stderr.writeLine "[NAT] No NAT gateway found (DCC will use direct IP)"
   except CatchableError as natErr:
     stderr.writeLine "[NAT] Discovery failed: " & natErr.msg
+
+proc commandProcessor(): CpsVoidFuture {.cps.} =
+  ## Runs on event loop thread. Wakes when commands are enqueued via pipe notification.
+
+  # Try to connect to bouncer at startup
+  await connectToBouncerGui()
+
+  # Spawn NAT discovery as a background task so it doesn't block command processing
+  discard spawn discoverNatBackground()
 
   while true:
     var commands: seq[BridgeCommand]
@@ -4165,14 +4318,27 @@ proc keybindsToJson(): string =
   $arr
 
 proc buildPatch(includeEditableFields: bool): seq[byte] =
-  ## Build JSON state patch. When includeEditableFields is false (Poll),
+  ## Build binary state patch. When includeEditableFields is false (Poll),
   ## user-editable text fields are excluded to avoid overwriting in-progress typing.
   ##
   ## Incremental optimization: expensive array fields (messages, users, channels,
   ## servers) are only included when their content has changed since the last patch.
-  ## Swift's JSON merge preserves existing keys when they're absent from the patch,
-  ## so omitting unchanged arrays keeps the previous values.
-  var patch = newJObject()
+  ## Swift's binary patch skips fields not present, preserving previous values.
+  var fields: seq[byte] = @[]
+  var fieldCount: uint16 = 0
+
+  template addBool(fid: uint16, val: bool) =
+    fields.addFieldBool(fid, val)
+    inc fieldCount
+  template addInt(fid: uint16, val: int) =
+    fields.addFieldInt(fid, val)
+    inc fieldCount
+  template addStr(fid: uint16, val: string) =
+    fields.addFieldString(fid, val)
+    inc fieldCount
+  template addJson(fid: uint16, node: JsonNode) =
+    fields.addFieldJson(fid, node)
+    inc fieldCount
 
   let ck = channelKey(gActiveServerId, gActiveChannelName)
   let sk = serverKey(gActiveServerId)
@@ -4218,7 +4384,7 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
       obj["lagMs"] = %s.lagMs
       obj["isAway"] = %s.isAway
       serversArr.add(obj)
-    patch["servers"] = serversArr
+    addJson(fldServers, serversArr)
     gServersDirty = false
 
   # Channels for active server
@@ -4237,7 +4403,7 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
         obj["isChannel"] = %ch.isChannel
         obj["isDm"] = %ch.isDm
         channelsArr.add(obj)
-    patch["channels"] = channelsArr
+    addJson(fldChannels, channelsArr)
     gChannelsDirty = false
     gLastSentChannelCount = curChannelCount
 
@@ -4257,7 +4423,7 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
         obj["isOwn"] = %m.isOwn
         obj["spans"] = %m.spans
         messagesArr.add(obj)
-    patch["messages"] = messagesArr
+    addJson(fldMessages, messagesArr)
     gMessagesDirty = false
     gLastSentMsgId = curLastMsgId
     gLastSentMsgCount = curMsgCount
@@ -4289,7 +4455,7 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
         obj["prefix"] = %sanitizeUtf8(u.prefix)
         obj["isAway"] = %u.isAway
         usersArr.add(obj)
-    patch["users"] = usersArr
+    addJson(fldUsers, usersArr)
     gUsersDirty = false
     gLastSentUserCount = curUserCount
 
@@ -4298,23 +4464,23 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
   gLastSentActiveChannel = gActiveChannelName
 
   # Scalar state (non-editable — always included)
-  patch["showUserList"] = %gShowUserList
-  patch["statusText"] = %sanitizeUtf8(gStatusText)
-  patch["typingText"] = %sanitizeUtf8(gTypingText)
-  patch["currentTopic"] = %sanitizeUtf8(gCurrentTopic)
-  patch["currentUserCount"] = %gCurrentUserCount
-  patch["activeChannelIsChannel"] = %(gActiveChannelName.len > 0 and gActiveChannelName[0] == '#')
-  patch["activeChannelIsDm"] = %(gActiveChannelName.len > 0 and gActiveChannelName[0] != '#' and gActiveChannelName != ServerChannel)
-  patch["lastMessageId"] = %(gNextMessageId - 1)
-  patch["pollActive"] = %gPollActive
+  addBool(fldShowUserList, gShowUserList)
+  addStr(fldStatusText, sanitizeUtf8(gStatusText))
+  addStr(fldTypingText, sanitizeUtf8(gTypingText))
+  addStr(fldCurrentTopic, sanitizeUtf8(gCurrentTopic))
+  addInt(fldCurrentUserCount, gCurrentUserCount)
+  addBool(fldActiveChannelIsChannel, gActiveChannelName.len > 0 and gActiveChannelName[0] == '#')
+  addBool(fldActiveChannelIsDm, gActiveChannelName.len > 0 and gActiveChannelName[0] != '#' and gActiveChannelName != ServerChannel)
+  addInt(fldLastMessageId, gNextMessageId - 1)
+  addBool(fldPollActive, gPollActive)
 
   # Completion state
   var compArr = newJArray()
   for s in gCompletionSuggestions:
     compArr.add(%s)
-  patch["completionSuggestions"] = compArr
-  patch["completionActive"] = %gCompletionActive
-  patch["completionIndex"] = %gCompletionIndex
+  addJson(fldCompletionSuggestions, compArr)
+  addBool(fldCompletionActive, gCompletionActive)
+  addInt(fldCompletionIndex, gCompletionIndex)
 
   # DCC transfers
   var dccArr = newJArray()
@@ -4345,164 +4511,198 @@ proc buildPatch(includeEditableFields: bool): seq[byte] =
     obj["outputPath"] = %t.outputPath
     dccArr.add(obj)
     if t.state == dccPending: inc pendingCount
-  patch["dccTransfers"] = dccArr
-  patch["pendingTransferCount"] = %pendingCount
+  addJson(fldDccTransfers, dccArr)
+  addInt(fldPendingTransferCount, pendingCount)
 
   # WHOIS (sanitize — IRC data may not be valid UTF-8)
-  patch["whoisNick"] = %sanitizeUtf8(gWhoisNick)
-  patch["whoisInfo"] = %sanitizeUtf8(gWhoisInfo)
-  patch["selectedUserNick"] = %sanitizeUtf8(gSelectedUserNick)
+  addStr(fldWhoisNick, sanitizeUtf8(gWhoisNick))
+  addStr(fldWhoisInfo, sanitizeUtf8(gWhoisInfo))
+  addStr(fldSelectedUserNick, sanitizeUtf8(gSelectedUserNick))
 
   # Action param fields
-  patch["actionServerId"] = %gActionServerId
-  patch["actionNick"] = %gActionNick
-  patch["actionColor"] = %gActionColor
-  patch["actionChannelName"] = %gActionChannelName
-  patch["actionTransferId"] = %gActionTransferId
+  addInt(fldActionServerId, gActionServerId)
+  addStr(fldActionNick, gActionNick)
+  addStr(fldActionColor, gActionColor)
+  addStr(fldActionChannelName, gActionChannelName)
+  addInt(fldActionTransferId, gActionTransferId)
 
   # Nick color overrides (serialized as JSON string for Swift)
   var nickColorsObj = newJObject()
   for nick, color in gNickColors:
     nickColorsObj[nick] = %color
-  patch["nickColors"] = %($nickColorsObj)
+  addStr(fldNickColors, $nickColorsObj)
 
   # Keybinds (serialized as JSON string for Swift shortcut monitor)
-  patch["keybinds"] = %keybindsToJson()
+  addStr(fldKeybinds, keybindsToJson())
 
   # Settings state (always included so Swift shows current values)
-  patch["loggingEnabled"] = %gLoggingEnabled
-  patch["logDir"] = %gLogDir
-  patch["bouncerPassword"] = %gBouncerPassword
+  addBool(fldLoggingEnabled, gLoggingEnabled)
+  addStr(fldLogDir, gLogDir)
+  addStr(fldBouncerPassword, gBouncerPassword)
   # Serialize lists as JSON strings for Swift
   var ignArr = newJArray()
   for n in gIgnoreList: ignArr.add(%n)
-  patch["ignoreListJson"] = %($ignArr)
+  addStr(fldIgnoreListJson, $ignArr)
   var hlArr = newJArray()
   for w in gHighlightWords: hlArr.add(%w)
-  patch["highlightWordsJson"] = %($hlArr)
+  addStr(fldHighlightWordsJson, $hlArr)
   var jpmArr = newJArray()
   for n in gJoinPartMuteList: jpmArr.add(%n)
-  patch["joinPartMuteListJson"] = %($jpmArr)
+  addStr(fldJoinPartMuteListJson, $jpmArr)
 
   # Server editor JSON (always included so Swift form sees Nim-populated data)
-  patch["editServerJson"] = %gEditServerJson
+  addStr(fldEditServerJson, gEditServerJson)
 
   # NAT status
   if gNatMgr != nil:
-    patch["natProtocol"] = %(case gNatMgr.protocol
+    addStr(fldNatProtocol, case gNatMgr.protocol
       of npNone: "Not available"
       of npNatPmp: "NAT-PMP"
       of npPcp: "PCP"
       of npUpnpIgd: "UPnP IGD")
-    patch["natExternalIp"] = %gNatMgr.externalIp
-    patch["natGatewayIp"] = %gNatMgr.gatewayIp
-    patch["natLocalIp"] = %gNatMgr.localIp
-    patch["natDoubleNat"] = %gNatMgr.doubleNat
+    addStr(fldNatExternalIp, gNatMgr.externalIp)
+    addStr(fldNatGatewayIp, gNatMgr.gatewayIp)
+    addStr(fldNatLocalIp, gNatMgr.localIp)
+    addBool(fldNatDoubleNat, gNatMgr.doubleNat)
     if gNatMgr.outerMgr != nil:
-      patch["natOuterProtocol"] = %(case gNatMgr.outerMgr.protocol
+      addStr(fldNatOuterProtocol, case gNatMgr.outerMgr.protocol
         of npNone: "Not available"
         of npNatPmp: "NAT-PMP"
         of npPcp: "PCP"
         of npUpnpIgd: "UPnP IGD")
-      patch["natOuterGatewayIp"] = %gNatMgr.outerMgr.gatewayIp
+      addStr(fldNatOuterGatewayIp, gNatMgr.outerMgr.gatewayIp)
     else:
-      patch["natOuterProtocol"] = %""
-      patch["natOuterGatewayIp"] = %""
-    patch["natActiveMappings"] = %gNatMgr.mappings.len
+      addStr(fldNatOuterProtocol, "")
+      addStr(fldNatOuterGatewayIp, "")
+    addInt(fldNatActiveMappings, gNatMgr.mappings.len)
   else:
-    patch["natProtocol"] = %"Discovering..."
-    patch["natExternalIp"] = %""
-    patch["natGatewayIp"] = %""
-    patch["natLocalIp"] = %""
-    patch["natDoubleNat"] = %false
-    patch["natOuterProtocol"] = %""
-    patch["natOuterGatewayIp"] = %""
-    patch["natActiveMappings"] = %0
+    addStr(fldNatProtocol, "Discovering...")
+    addStr(fldNatExternalIp, "")
+    addStr(fldNatGatewayIp, "")
+    addStr(fldNatLocalIp, "")
+    addBool(fldNatDoubleNat, false)
+    addStr(fldNatOuterProtocol, "")
+    addStr(fldNatOuterGatewayIp, "")
+    addInt(fldNatActiveMappings, 0)
 
   # Fields only included when the bridge explicitly modifies them
   # (not during Poll, to avoid overwriting in-progress typing, sheet state,
   # or active channel/server selection which flickers on stale poll patches)
   if includeEditableFields:
-    patch["activeServerId"] = %gActiveServerId
-    patch["activeChannelName"] = %gActiveChannelName
-    patch["inputText"] = %gInputText
-    patch["connectHost"] = %gConnectHost
-    patch["connectPort"] = %gConnectPort
-    patch["connectNick"] = %gConnectNick
-    patch["connectUseTls"] = %gConnectUseTls
-    patch["connectPassword"] = %gConnectPassword
-    patch["connectSaslUser"] = %gConnectSaslUser
-    patch["connectSaslPass"] = %gConnectSaslPass
-    patch["showConnectForm"] = %gShowConnectForm
-    patch["showTransfers"] = %gShowTransfers
-    patch["smartFilterEnabled"] = %gSmartFilterEnabled
-    patch["smartFilterTimeout"] = %gSmartFilterTimeout
-    patch["quitMessage"] = %gQuitMessage
-    patch["fontSize"] = %gFontSize
-    patch["messageDensity"] = %gMessageDensity
-    patch["timestampFormat"] = %gTimestampFormat
+    addInt(fldActiveServerId, gActiveServerId)
+    addStr(fldActiveChannelName, gActiveChannelName)
+    addStr(fldInputText, gInputText)
+    addStr(fldConnectHost, gConnectHost)
+    addStr(fldConnectPort, gConnectPort)
+    addStr(fldConnectNick, gConnectNick)
+    addBool(fldConnectUseTls, gConnectUseTls)
+    addStr(fldConnectPassword, gConnectPassword)
+    addStr(fldConnectSaslUser, gConnectSaslUser)
+    addStr(fldConnectSaslPass, gConnectSaslPass)
+    addBool(fldShowConnectForm, gShowConnectForm)
+    addBool(fldShowTransfers, gShowTransfers)
+    addBool(fldSmartFilterEnabled, gSmartFilterEnabled)
+    addInt(fldSmartFilterTimeout, gSmartFilterTimeout)
+    addStr(fldQuitMessage, gQuitMessage)
+    addInt(fldFontSize, gFontSize)
+    addStr(fldMessageDensity, gMessageDensity)
+    addStr(fldTimestampFormat, gTimestampFormat)
 
-  toBytes($patch)
+  finalizePatch(fields, fieldCount)
 
 # ============================================================
 # Snapshot decoding
 # ============================================================
 
 proc syncFromSnapshot(payload: ptr uint8, payloadLen: uint32) =
-  let stateJson = decodeStateJson(payload, payloadLen)
-  if stateJson.len == 0:
+  ## Decode binary fields from Swift request payload and sync editable state.
+  ## Format: [u32 actionTag][u16 fieldCount][u16 reserved][fields...]
+  if payload == nil or payloadLen < 8:
     return
-  try:
-    let node = parseJson(stateJson)
-    gInputText = jsonString(node, "inputText", gInputText)
-    gConnectHost = jsonString(node, "connectHost", gConnectHost)
-    gConnectPort = jsonString(node, "connectPort", gConnectPort)
-    gConnectNick = jsonString(node, "connectNick", gConnectNick)
-    gConnectUseTls = jsonBool(node, "connectUseTls", gConnectUseTls)
-    gConnectPassword = jsonString(node, "connectPassword", gConnectPassword)
-    gConnectSaslUser = jsonString(node, "connectSaslUser", gConnectSaslUser)
-    gConnectSaslPass = jsonString(node, "connectSaslPass", gConnectSaslPass)
-    gActionServerId = jsonInt(node, "actionServerId", gActionServerId)
-    gActionNick = jsonString(node, "actionNick", gActionNick)
-    gActionColor = jsonString(node, "actionColor", gActionColor)
-    gActionChannelName = jsonString(node, "actionChannelName", gActionChannelName)
-    gActionTransferId = jsonInt(node, "actionTransferId", gActionTransferId)
-    gJoinChannelText = jsonString(node, "joinChannelText", gJoinChannelText)
-    gChannelSwitcherText = jsonString(node, "channelSwitcherText", gChannelSwitcherText)
-    gCompletionSelectIndex = jsonInt(node, "completionSelectIndex", gCompletionSelectIndex)
-    gSmartFilterEnabled = jsonBool(node, "smartFilterEnabled", gSmartFilterEnabled)
-    gSmartFilterTimeout = jsonInt(node, "smartFilterTimeout", gSmartFilterTimeout)
-    gQuitMessage = jsonString(node, "quitMessage", gQuitMessage)
-    gFontSize = jsonInt(node, "fontSize", gFontSize)
-    gMessageDensity = jsonString(node, "messageDensity", gMessageDensity)
-    gTimestampFormat = jsonString(node, "timestampFormat", gTimestampFormat)
-    gLoggingEnabled = jsonBool(node, "loggingEnabled", gLoggingEnabled)
-    gLogDir = jsonString(node, "logDir", gLogDir)
-    gBouncerPassword = jsonString(node, "bouncerPassword", gBouncerPassword)
-    gIgnoreListJson = jsonString(node, "ignoreListJson", gIgnoreListJson)
-    gHighlightWordsJson = jsonString(node, "highlightWordsJson", gHighlightWordsJson)
-    gJoinPartMuteListJson = jsonString(node, "joinPartMuteListJson", gJoinPartMuteListJson)
-    gShowUserList = jsonBool(node, "showUserList", gShowUserList)
-    gEditingServerId = jsonInt(node, "editingServerId", gEditingServerId)
-    gEditServerJson = jsonString(node, "editServerJson", gEditServerJson)
+  let bytes = cast[ptr UncheckedArray[uint8]](payload)
+  let fieldCount = int(decodeLeU16(bytes, 4))
+  if fieldCount == 0:
+    return
 
-    # Sync activeServerId and activeChannelName if provided
-    let snapServerId = jsonInt(node, "activeServerId", gActiveServerId)
-    if snapServerId >= 0 and findServerIdx(snapServerId) >= 0:
-      # Save current channel for old server before switching (skip *server*)
-      if gActiveServerId >= 0 and gActiveChannelName.len > 0 and
-         gActiveChannelName != ServerChannel and snapServerId != gActiveServerId:
-        gLastChannelPerServer[gActiveServerId] = gActiveChannelName
-      gActiveServerId = snapServerId
-    let snapChannel = jsonString(node, "activeChannelName", "")
-    # Only update channel from snapshot if Swift sends a non-empty value.
-    # Swift resets activeChannelName to "" on server switch, but Nim
-    # restores the correct channel in tagSwitchServer. We must not
-    # overwrite it on subsequent tagPoll dispatches.
-    if snapChannel.len > 0:
-      gActiveChannelName = snapChannel
-  except CatchableError:
-    discard
+  var offset = 8  # skip action tag (4) + field count (2) + reserved (2)
+  var snapServerId = gActiveServerId
+  var snapChannel = ""
+  var hasServerId = false
+
+  var i = 0
+  while i < fieldCount and offset + 7 < int(payloadLen):
+    let fieldId = decodeLeU16(bytes, offset)
+    let valueType = bytes[offset + 2]
+    let valueLen = int(decodeLeU32(bytes, offset + 4))
+    offset += 8
+    if offset + valueLen > int(payloadLen):
+      break
+
+    template readBool(): bool =
+      valueType == vtBool and valueLen >= 1 and bytes[offset] != 0
+    template readInt(): int =
+      if valueType == vtInt64 and valueLen >= 8: int(decodeLeI64(bytes, offset)) else: 0
+    template readStr(): string =
+      if valueType == vtString and valueLen > 0:
+        var s = newString(valueLen)
+        copyMem(addr s[0], addr bytes[offset], valueLen)
+        s
+      else:
+        ""
+
+    case fieldId
+    of fldInputText: gInputText = readStr()
+    of fldConnectHost: gConnectHost = readStr()
+    of fldConnectPort: gConnectPort = readStr()
+    of fldConnectNick: gConnectNick = readStr()
+    of fldConnectUseTls: gConnectUseTls = readBool()
+    of fldConnectPassword: gConnectPassword = readStr()
+    of fldConnectSaslUser: gConnectSaslUser = readStr()
+    of fldConnectSaslPass: gConnectSaslPass = readStr()
+    of fldActionServerId: gActionServerId = readInt()
+    of fldActionNick: gActionNick = readStr()
+    of fldActionColor: gActionColor = readStr()
+    of fldActionChannelName: gActionChannelName = readStr()
+    of fldActionTransferId: gActionTransferId = readInt()
+    of fldJoinChannelText: gJoinChannelText = readStr()
+    of fldChannelSwitcherText: gChannelSwitcherText = readStr()
+    of fldCompletionSelectIndex: gCompletionSelectIndex = readInt()
+    of fldSmartFilterEnabled: gSmartFilterEnabled = readBool()
+    of fldSmartFilterTimeout: gSmartFilterTimeout = readInt()
+    of fldQuitMessage: gQuitMessage = readStr()
+    of fldFontSize: gFontSize = readInt()
+    of fldMessageDensity: gMessageDensity = readStr()
+    of fldTimestampFormat: gTimestampFormat = readStr()
+    of fldLoggingEnabled: gLoggingEnabled = readBool()
+    of fldLogDir: gLogDir = readStr()
+    of fldBouncerPassword: gBouncerPassword = readStr()
+    of fldIgnoreListJson: gIgnoreListJson = readStr()
+    of fldHighlightWordsJson: gHighlightWordsJson = readStr()
+    of fldJoinPartMuteListJson: gJoinPartMuteListJson = readStr()
+    of fldShowUserList: gShowUserList = readBool()
+    of fldEditingServerId: gEditingServerId = readInt()
+    of fldEditServerJson: gEditServerJson = readStr()
+    of fldActiveServerId:
+      snapServerId = readInt()
+      hasServerId = true
+    of fldActiveChannelName:
+      snapChannel = readStr()
+    of fldPollActive: gPollActive = readBool()
+    else:
+      discard
+
+    offset += valueLen
+    inc i
+
+  # Sync activeServerId and activeChannelName if provided
+  if hasServerId and snapServerId >= 0 and findServerIdx(snapServerId) >= 0:
+    if gActiveServerId >= 0 and gActiveChannelName.len > 0 and
+       gActiveChannelName != ServerChannel and snapServerId != gActiveServerId:
+      gLastChannelPerServer[gActiveServerId] = gActiveChannelName
+    gActiveServerId = snapServerId
+  # Only update channel from snapshot if Swift sends a non-empty value.
+  if snapChannel.len > 0:
+    gActiveChannelName = snapChannel
 
 # ============================================================
 # Init
@@ -5854,7 +6054,7 @@ proc bridgeDispatch(payload: ptr uint8, payloadLen: uint32,
       patchBlob = buildPatch(includeEditable)
     except CatchableError as e:
       stderr.writeLine "[BRIDGE] buildPatch failed: " & e.msg
-      patchBlob = toBytes("{}")
+      patchBlob = finalizePatch(@[], 0)
   let diagBlob = toBytes("nim.irc action=" & actionName(actionTag))
 
   if outp != nil:

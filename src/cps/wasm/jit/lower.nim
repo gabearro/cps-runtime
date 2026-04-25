@@ -46,6 +46,7 @@ type
     restartBb: int           ## -1 normally; loop-back BB for self tail call TCO
     restartPhis: seq[PhiInfo] ## phi nodes at restartBb for phi-based TCO (empty = memory-based)
     numOrigLocals: int       ## numParams + body locals (before lowering adds extra slots)
+    localTypes: seq[ValType] ## function params + body locals, indexed by WASM local
     pgoData: ptr FuncPgoData ## PGO profile for this function (nil = no data)
     instrPc: int             ## current instruction index within body.code.code
 
@@ -81,6 +82,60 @@ proc emitConst32(ctx: var LowerCtx, val: int32): IrValue =
 
 proc emitConst64(ctx: var LowerCtx, val: int64): IrValue =
   result = ctx.f.makeConst64(ctx.bb, val)
+
+proc valueSlotCount(vt: ValType): int32 {.inline.} =
+  if vt == vtV128: 2'i32 else: 1'i32
+
+proc totalSlotCount(types: openArray[ValType]): int32 =
+  for vt in types:
+    result += valueSlotCount(vt)
+
+proc appendLocalLayout(f: var IrFunc, vt: ValType): int =
+  result = f.numLocals
+  f.localIsSimd.add(vt == vtV128)
+  f.localSlotOffsets.add(f.localSlotCount.int32)
+  f.localSlotCount += valueSlotCount(vt).int
+  inc f.numLocals
+
+proc allocLocal(ctx: var LowerCtx, vt: ValType): int =
+  ctx.f.appendLocalLayout(vt)
+
+proc localIsSimd(ctx: LowerCtx, idx: int): bool {.inline.} =
+  idx >= 0 and idx < ctx.f.localIsSimd.len and ctx.f.localIsSimd[idx]
+
+proc newValueForType(ctx: var LowerCtx, vt: ValType): IrValue =
+  if vt == vtV128: ctx.f.newSimdValue() else: ctx.f.newValue()
+
+proc newValueForLocal(ctx: var LowerCtx, idx: int): IrValue =
+  if ctx.localIsSimd(idx): ctx.f.newSimdValue() else: ctx.f.newValue()
+
+proc isSimdValue(ctx: LowerCtx, v: IrValue): bool {.inline.} =
+  v >= 0 and v.int < ctx.f.isSimd.len and ctx.f.isSimd[v.int]
+
+proc newValueLike(ctx: var LowerCtx, v: IrValue): IrValue =
+  if ctx.isSimdValue(v): ctx.f.newSimdValue() else: ctx.f.newValue()
+
+proc emitZeroForType(ctx: var LowerCtx, vt: ValType): IrValue =
+  if vt == vtV128:
+    let idx = ctx.f.v128Consts.len
+    ctx.f.v128Consts.add(default(array[16, byte]))
+    result = ctx.f.newSimdValue()
+    ctx.bb.addInstr(IrInstr(op: irConstV128, result: result, imm: idx.int64))
+  else:
+    result = ctx.emitConst32(0)
+
+proc emitParamValue(ctx: var LowerCtx, idx: int, vt: ValType): IrValue =
+  result = ctx.newValueForType(vt)
+  ctx.bb.addInstr(IrInstr(op: irParam, result: result, imm: idx.int64))
+
+proc emitLocalGetValue(ctx: var LowerCtx, idx: int): IrValue =
+  result = ctx.newValueForLocal(idx)
+  ctx.bb.addInstr(IrInstr(op: irLocalGet, result: result,
+    operands: [-1.IrValue, -1.IrValue, -1.IrValue], imm: idx.int64))
+
+proc emitLocalSetValue(ctx: var LowerCtx, idx: int, v: IrValue) =
+  ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
+    operands: [v, -1.IrValue, -1.IrValue], imm: idx.int64))
 
 proc emitBinOp(ctx: var LowerCtx, op: IrOpKind) =
   let b = ctx.pop()
@@ -136,6 +191,13 @@ proc lookupCalleeType(ctx: LowerCtx, calleeIdx: int): (bool, FuncType) =
     return (true, ctx.module[].types[typeIdx.int])
   (false, FuncType())
 
+proc packedCallIndirectCounts(paramCount, resultCount: int,
+                              paramSlotCount, resultSlotCount: int32): int64 =
+  paramCount.int64 or
+    (resultCount.int64 shl 16) or
+    (paramSlotCount.int64 shl 32) or
+    (resultSlotCount.int64 shl 48)
+
 proc emitCallIndirectImpl(ctx: var LowerCtx, typeIdx: int, elemIdx: IrValue): IrValue =
   ## Shared implementation for call_indirect / return_call_indirect.
   ## Returns the result value (or -1.IrValue for void / error).
@@ -146,26 +208,32 @@ proc emitCallIndirectImpl(ctx: var LowerCtx, typeIdx: int, elemIdx: IrValue): Ir
   let ft = ctx.module[].types[typeIdx]
   let paramCount = ft.params.len
   let resultCount = ft.results.len
+  let paramSlotCount = totalSlotCount(ft.params)
+  let resultSlotCount = totalSlotCount(ft.results)
 
   var args: seq[IrValue]
   for _ in 0 ..< paramCount:
     args.add(ctx.pop())
 
   let tempBase = ctx.f.numLocals
-  ctx.f.numLocals += max(paramCount, if resultCount > 0: 1 else: 0)
+  for vt in ft.params:
+    discard ctx.allocLocal(vt)
+  var tempSlotCapacity = paramSlotCount
+  while tempSlotCapacity < resultSlotCount:
+    discard ctx.allocLocal(vtI64)
+    inc tempSlotCapacity
 
   for i in 0 ..< paramCount:
     let argVal = args[paramCount - 1 - i]
-    ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-      operands: [argVal, -1.IrValue, -1.IrValue],
-      imm: (tempBase + i).int64))
+    ctx.emitLocalSetValue(tempBase + i, argVal)
 
-  let res = if resultCount > 0: ctx.f.newValue() else: -1.IrValue
+  let res = if resultCount > 0: ctx.newValueForType(ft.results[0]) else: -1.IrValue
   ctx.bb.addInstr(IrInstr(
     op: irCallIndirect,
     result: res,
     operands: [elemIdx, -1.IrValue, -1.IrValue],
-    imm: paramCount.int64 or (resultCount.int64 shl 16),
+    imm: packedCallIndirectCounts(paramCount, resultCount,
+                                  paramSlotCount, resultSlotCount),
     imm2: tempBase.int32))
 
   ctx.f.usesMemory = true
@@ -211,6 +279,18 @@ proc countLocals(body: FuncBody): int =
   for decl in body.locals:
     result += decl.count.int
 
+proc appendBodyLocalTypes(dst: var seq[ValType], body: FuncBody) =
+  for decl in body.locals:
+    for _ in 0 ..< decl.count.int:
+      dst.add(decl.valType)
+
+proc moduleGlobalTypes(module: WasmModule): seq[ValType] =
+  for imp in module.imports:
+    if imp.kind == ikGlobal:
+      result.add(imp.globalType.valType)
+  for g in module.globals:
+    result.add(g.globalType.valType)
+
 # ---------- br_if helper ----------
 
 proc lowerBrIfCond(ctx: var LowerCtx, cond: IrValue, depth: int,
@@ -244,9 +324,7 @@ proc lowerBrIfCond(ctx: var LowerCtx, cond: IrValue, depth: int,
   else:
     if target.kind == lbkLoop:
       for i in 0 ..< ctx.locals.len:
-        ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-          operands: [ctx.locals[i], -1.IrValue, -1.IrValue],
-          imm: i.int64))
+        ctx.emitLocalSetValue(i, ctx.locals[i])
       let contBb = ctx.newBb()
       ctx.bb.addInstr(IrInstr(op: irBrIf, result: -1.IrValue,
         operands: [cond, -1.IrValue, -1.IrValue],
@@ -271,9 +349,7 @@ proc lowerBrIfCond(ctx: var LowerCtx, cond: IrValue, depth: int,
       ctx.switchBb(spillBb)
       ctx.addEdge(ctx.curBb, target.bb)
       for j in 0 ..< ctx.locals.len:
-        ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-          operands: [ctx.locals[j], -1.IrValue, -1.IrValue],
-          imm: j.int64))
+        ctx.emitLocalSetValue(j, ctx.locals[j])
       ctx.bb.addInstr(IrInstr(op: irBr, result: -1.IrValue,
         operands: [-1.IrValue, -1.IrValue, -1.IrValue],
         imm: target.bb.int64))
@@ -327,16 +403,13 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
   of opGlobalGet:
     let globalIdx = instr.imm1.int
     let localIdx = ctx.numOrigLocals + globalIdx
-    let v = ctx.f.newValue()
-    ctx.bb.addInstr(IrInstr(op: irLocalGet, result: v,
-      operands: [-1.IrValue, -1.IrValue, -1.IrValue], imm: localIdx.int64))
+    let v = ctx.emitLocalGetValue(localIdx)
     ctx.push(v)
   of opGlobalSet:
     let globalIdx = instr.imm1.int
     let localIdx = ctx.numOrigLocals + globalIdx
     let val = ctx.pop()
-    ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-      operands: [val, -1.IrValue, -1.IrValue], imm: localIdx.int64))
+    ctx.emitLocalSetValue(localIdx, val)
 
   # --- Parametric ---
   of opDrop:
@@ -346,7 +419,7 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
     let cond = ctx.pop()
     let b = ctx.pop()
     let a = ctx.pop()
-    let r = ctx.f.newValue()
+    let r = ctx.newValueLike(a)
     ctx.bb.addInstr(IrInstr(op: irSelect, result: r,
       operands: [cond, a, b]))
     ctx.push(r)
@@ -534,7 +607,7 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
     let bt = padToBlockType(instr.pad)
     let (hasRes, resType) = ctx.blockResultType(bt)
     # Allocate a local slot for the block result (if needed)
-    let resSlot = if hasRes: (let s = ctx.f.numLocals; inc ctx.f.numLocals; s) else: -1
+    let resSlot = if hasRes: ctx.allocLocal(resType) else: -1
     ctx.blockStack.add(BlockState(
       bb: mergeBb,
       valStack: ctx.valStack,
@@ -559,7 +632,7 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
       var loopPhis: seq[PhiInfo]
       var loopLocals = newSeq[IrValue](ctx.locals.len)
       for i in 0 ..< ctx.locals.len:
-        let phiVal = ctx.f.newValue()
+        let phiVal = ctx.newValueForLocal(i)
         let instrIdx = ctx.bb.instrs.len
         ctx.bb.addInstr(IrInstr(op: irPhi, result: phiVal,
           operands: [preheaderLocals[i], -1.IrValue, -1.IrValue],
@@ -574,16 +647,13 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
     else:
       # Memory-spill loop: spill all locals to memory, reload at header
       for i in 0 ..< ctx.locals.len:
-        ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-          operands: [ctx.locals[i], -1.IrValue, -1.IrValue], imm: i.int64))
+        ctx.emitLocalSetValue(i, ctx.locals[i])
       ctx.bb.addInstr(IrInstr(op: irBr, result: -1.IrValue,
         operands: [-1.IrValue, -1.IrValue, -1.IrValue], imm: loopBb.int64))
       ctx.switchBb(loopBb)
       var loopLocals = newSeq[IrValue](ctx.locals.len)
       for i in 0 ..< ctx.locals.len:
-        let v = ctx.f.newValue()
-        ctx.bb.addInstr(IrInstr(op: irLocalGet, result: v,
-          operands: [-1.IrValue, -1.IrValue, -1.IrValue], imm: i.int64))
+        let v = ctx.emitLocalGetValue(i)
         loopLocals[i] = v
       ctx.locals = loopLocals
       ctx.blockStack.add(BlockState(
@@ -598,9 +668,7 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
     let mergeBb = ctx.newBb()
     # Spill locals before the branch so both paths have valid locals in memory
     for i in 0 ..< ctx.locals.len:
-      ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-        operands: [ctx.locals[i], -1.IrValue, -1.IrValue],
-        imm: i.int64))
+      ctx.emitLocalSetValue(i, ctx.locals[i])
     # Conditional branch: if cond != 0, go to thenBb; else, go to mergeBb (patched to elseBb by opElse)
     ctx.bb.addInstr(IrInstr(op: irBrIf, result: -1.IrValue,
       operands: [cond, -1.IrValue, -1.IrValue],
@@ -610,7 +678,7 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
     ctx.switchBb(thenBb)
     let bt = padToBlockType(instr.pad)
     let (hasRes, resType) = ctx.blockResultType(bt)
-    let resSlot = if hasRes: (let s = ctx.f.numLocals; inc ctx.f.numLocals; s) else: -1
+    let resSlot = if hasRes: ctx.allocLocal(resType) else: -1
     ctx.blockStack.add(BlockState(
       bb: mergeBb,
       valStack: ctx.valStack,
@@ -631,9 +699,7 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
       # Spill the then-branch result to the result slot before branching
       if ctx.blockStack[bsIdx].hasResult and ctx.blockStack[bsIdx].resultSlot >= 0:
         let resultVal = ctx.pop()
-        ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-          operands: [resultVal, -1.IrValue, -1.IrValue],
-          imm: ctx.blockStack[bsIdx].resultSlot.int64))
+        ctx.emitLocalSetValue(ctx.blockStack[bsIdx].resultSlot, resultVal)
       # Branch from then-block to merge
       ctx.bb.addInstr(IrInstr(op: irBr, result: -1.IrValue,
         operands: [-1.IrValue, -1.IrValue, -1.IrValue],
@@ -663,14 +729,10 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
         # Spill block result before branching to merge
         if bs.hasResult and bs.resultSlot >= 0 and ctx.valStack.len > bs.valStack.len:
           let resultVal = ctx.pop()
-          ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-            operands: [resultVal, -1.IrValue, -1.IrValue],
-            imm: bs.resultSlot.int64))
+          ctx.emitLocalSetValue(bs.resultSlot, resultVal)
         # Spill all locals before branching to merge (so merge can reload them)
         for i in 0 ..< ctx.locals.len:
-          ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-            operands: [ctx.locals[i], -1.IrValue, -1.IrValue],
-            imm: i.int64))
+          ctx.emitLocalSetValue(i, ctx.locals[i])
         # Branch from current block to merge block
         ctx.addEdge(ctx.curBb, bs.bb)
         ctx.bb.addInstr(IrInstr(op: irBr, result: -1.IrValue,
@@ -681,25 +743,17 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
         ctx.valStack = bs.valStack
         # Reload all locals at merge point (values may differ per path)
         for i in 0 ..< ctx.locals.len:
-          let v = ctx.f.newValue()
-          ctx.bb.addInstr(IrInstr(op: irLocalGet, result: v,
-            operands: [-1.IrValue, -1.IrValue, -1.IrValue],
-            imm: i.int64))
+          let v = ctx.emitLocalGetValue(i)
           ctx.locals[i] = v
         # If block has a result, reload from the result slot
         if bs.hasResult and bs.resultSlot >= 0:
-          let v = ctx.f.newValue()
-          ctx.bb.addInstr(IrInstr(op: irLocalGet, result: v,
-            operands: [-1.IrValue, -1.IrValue, -1.IrValue],
-            imm: bs.resultSlot.int64))
+          let v = ctx.emitLocalGetValue(bs.resultSlot)
           ctx.push(v)
       else:
         # Loop: end just closes the loop body; continue in a new block
         # Spill locals before exiting loop
         for i in 0 ..< ctx.locals.len:
-          ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-            operands: [ctx.locals[i], -1.IrValue, -1.IrValue],
-            imm: i.int64))
+          ctx.emitLocalSetValue(i, ctx.locals[i])
         let afterBb = ctx.newBb()
         ctx.addEdge(ctx.curBb, afterBb)
         ctx.bb.addInstr(IrInstr(op: irBr, result: -1.IrValue,
@@ -709,10 +763,7 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
         ctx.valStack = bs.valStack
         # Reload locals from memory in after-loop block
         for i in 0 ..< ctx.locals.len:
-          let v = ctx.f.newValue()
-          ctx.bb.addInstr(IrInstr(op: irLocalGet, result: v,
-            operands: [-1.IrValue, -1.IrValue, -1.IrValue],
-            imm: i.int64))
+          let v = ctx.emitLocalGetValue(i)
           ctx.locals[i] = v
     # else: this is the final `end` of the function — handled after the loop
 
@@ -729,9 +780,7 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
       elif target.kind == lbkLoop:
         # Fallback: spill to memory
         for i in 0 ..< ctx.locals.len:
-          ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-            operands: [ctx.locals[i], -1.IrValue, -1.IrValue],
-            imm: i.int64))
+          ctx.emitLocalSetValue(i, ctx.locals[i])
       else:
         # Branching to a non-loop target (block continuation).
         # If we're inside any phi-based loop, the phi-tracked locals live in
@@ -741,9 +790,7 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
         for i in targetIdx + 1 ..< ctx.blockStack.len:
           if ctx.blockStack[i].kind == lbkLoop and ctx.blockStack[i].phis.len > 0:
             for j in 0 ..< ctx.locals.len:
-              ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-                operands: [ctx.locals[j], -1.IrValue, -1.IrValue],
-                imm: j.int64))
+              ctx.emitLocalSetValue(j, ctx.locals[j])
             break
       ctx.addEdge(ctx.curBb, target.bb)
       ctx.bb.addInstr(IrInstr(op: irBr, result: -1.IrValue,
@@ -784,7 +831,7 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
       var args: seq[IrValue]
       for i in 0 ..< calleeFt.params.len:
         args.add(ctx.pop())
-      let r = ctx.f.newValue()
+      let r = if calleeFt.results.len > 0: ctx.newValueForType(calleeFt.results[0]) else: -1.IrValue
       var operands: array[3, IrValue] = [-1.IrValue, -1.IrValue, -1.IrValue]
       for i in 0 ..< min(args.len, 3):
         operands[i] = args[i]
@@ -1313,20 +1360,16 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
             ctx.f.blocks[ctx.restartBb].instrs[ctx.restartPhis[i].instrIdx].operands[1] = argVal
         # Non-param locals reset to 0 each iteration (patch their phi back-edges too)
         for i in numParams ..< ctx.numOrigLocals:
-          let z = ctx.f.makeConst32(ctx.bb, 0)
+          let z = ctx.emitZeroForType(ctx.localTypes[i])
           if i < ctx.restartPhis.len:
             ctx.f.blocks[ctx.restartBb].instrs[ctx.restartPhis[i].instrIdx].operands[1] = z
       else:
         # Memory-based TCO fallback: spill new arg values and zeros to memory slots
         for i in 0 ..< numParams:
-          ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-            operands: [args[numParams - 1 - i], -1.IrValue, -1.IrValue],
-            imm: i.int64))
+          ctx.emitLocalSetValue(i, args[numParams - 1 - i])
         for i in numParams ..< ctx.numOrigLocals:
-          let z = ctx.f.makeConst32(ctx.bb, 0)
-          ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-            operands: [z, -1.IrValue, -1.IrValue],
-            imm: i.int64))
+          let z = ctx.emitZeroForType(ctx.localTypes[i])
+          ctx.emitLocalSetValue(i, z)
       # Loop back to restart BB
       ctx.addEdge(ctx.curBb, ctx.restartBb)
       ctx.bb.addInstr(IrInstr(op: irBr, result: -1.IrValue,
@@ -1342,7 +1385,7 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
       var args: seq[IrValue]
       for i in 0 ..< calleeFt2.params.len:
         args.add(ctx.pop())
-      let r = ctx.f.newValue()
+      let r = if calleeFt2.results.len > 0: ctx.newValueForType(calleeFt2.results[0]) else: -1.IrValue
       var operands: array[3, IrValue] = [-1.IrValue, -1.IrValue, -1.IrValue]
       for i in 0 ..< min(args.len, 3):
         operands[i] = args[args.len - 1 - i]
@@ -1387,7 +1430,7 @@ proc lowerInstr(ctx: var LowerCtx, instr: Instr) =
     let mergeBb = ctx.newBb()
     let bt = padToBlockType(instr.pad)
     let (hasRes, resType) = ctx.blockResultType(bt)
-    let resSlot = if hasRes: (let s = ctx.f.numLocals; inc ctx.f.numLocals; s) else: -1
+    let resSlot = if hasRes: ctx.allocLocal(resType) else: -1
     ctx.blockStack.add(BlockState(
       bb: mergeBb,
       valStack: ctx.valStack,
@@ -1611,6 +1654,9 @@ proc lowerFunction*(module: WasmModule, funcIdx: int,
   let numParams = funcType.params.len
   let numBodyLocals = countLocals(body)
   let totalLocals = numParams + numBodyLocals
+  var localTypes = funcType.params
+  localTypes.appendBodyLocalTypes(body)
+  let globalTypes = moduleGlobalTypes(module)
 
   var code = body.code.code
 
@@ -1634,19 +1680,17 @@ proc lowerFunction*(module: WasmModule, funcIdx: int,
     usePhiLoops: true,
     restartBb: -1,
     numOrigLocals: totalLocals,
+    localTypes: localTypes,
     pgoData: pgoData,
   )
-  # Count module globals — they're mapped to locals after the function's locals.
-  # Add them to numLocals so the codegen allocates enough stack frame space
-  # for irLocalGet/Set to access global-mapped slots.
-  var numModuleGlobals = 0
-  for imp in module.imports:
-    if imp.kind == ikGlobal: inc numModuleGlobals
-  numModuleGlobals += module.globals.len
 
   ctx.f.numParams = numParams
-  ctx.f.numLocals = totalLocals + numModuleGlobals
   ctx.f.numResults = funcType.results.len
+  ctx.f.v128Consts = body.code.v128Consts
+  for vt in localTypes:
+    discard ctx.f.appendLocalLayout(vt)
+  for vt in globalTypes:
+    discard ctx.f.appendLocalLayout(vt)
 
   # Create entry basic block
   let entryBb = ctx.newBb()
@@ -1655,12 +1699,12 @@ proc lowerFunction*(module: WasmModule, funcIdx: int,
   # Create IrValues for parameters
   ctx.locals = newSeq[IrValue](totalLocals)
   for i in 0 ..< numParams:
-    let paramVal = ctx.f.makeParam(ctx.bb, i)
+    let paramVal = ctx.emitParamValue(i, funcType.params[i])
     ctx.locals[i] = paramVal
 
   # Initialize non-param locals to const 0
   for i in numParams ..< totalLocals:
-    let zeroVal = ctx.emitConst32(0)
+    let zeroVal = ctx.emitZeroForType(localTypes[i])
     ctx.locals[i] = zeroVal
 
   # TCO: if function has self tail calls, set up a memory-spill restart BB.
@@ -1682,7 +1726,7 @@ proc lowerFunction*(module: WasmModule, funcIdx: int,
       ctx.switchBb(restartBb)
       var restartLocals = newSeq[IrValue](totalLocals)
       for i in 0 ..< totalLocals:
-        let phiVal = ctx.f.newValue()
+        let phiVal = ctx.newValueForLocal(i)
         let instrIdx = ctx.bb.instrs.len
         ctx.bb.addInstr(IrInstr(op: irPhi, result: phiVal,
           operands: [preheaderLocals[i], -1.IrValue, -1.IrValue], imm: i.int64))
@@ -1692,23 +1736,17 @@ proc lowerFunction*(module: WasmModule, funcIdx: int,
     else:
       # Multiple back-edges: memory-spill fallback (spill to memory before branch, reload at header)
       for i in 0 ..< totalLocals:
-        ctx.bb.addInstr(IrInstr(op: irLocalSet, result: -1.IrValue,
-          operands: [ctx.locals[i], -1.IrValue, -1.IrValue], imm: i.int64))
+        ctx.emitLocalSetValue(i, ctx.locals[i])
       ctx.addEdge(ctx.curBb, restartBb)
       ctx.bb.addInstr(IrInstr(op: irBr, result: -1.IrValue,
         operands: [-1.IrValue, -1.IrValue, -1.IrValue], imm: restartBb.int64))
       ctx.switchBb(restartBb)
       var loopLocals = newSeq[IrValue](totalLocals)
       for i in 0 ..< totalLocals:
-        let v = ctx.f.newValue()
-        ctx.bb.addInstr(IrInstr(op: irLocalGet, result: v,
-          operands: [-1.IrValue, -1.IrValue, -1.IrValue], imm: i.int64))
+        let v = ctx.emitLocalGetValue(i)
         loopLocals[i] = v
       ctx.locals = loopLocals
     ctx.restartBb = restartBb
-
-  # Copy v128 constants from WASM expression into IrFunc
-  ctx.f.v128Consts = body.code.v128Consts
 
   # When auto-TCO rewrote opCall→opReturnCall AND the function has a shadow-stack
   # prologue (-O0 pattern: global.get sp; sub frameSize; global.set sp; store params),

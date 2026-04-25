@@ -191,7 +191,7 @@ proc emitBridgeSwiftWrapper*(irProgram: GuiIrProgram): string =
   lines.add "  }"
   lines.add ""
   lines.add "  func dispatch(payload: Data) -> GUIBridgeDispatchResult {"
-  lines.add "    guard var t = table, let dispatchFn = t.dispatch else {"
+  lines.add "    guard let t = table, let dispatchFn = t.dispatch else {"
   lines.add "      return .empty"
   lines.add "    }"
   lines.add ""
