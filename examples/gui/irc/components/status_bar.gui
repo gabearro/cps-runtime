@@ -13,9 +13,9 @@ component StatusBar(isDark: Bool) {
     HStack(spacing: 6) {
       Circle()
         .fill(
-          statusText == "Disconnected"
+          connectionState == "disconnected"
             ? disconnectedDot
-            : statusText == "Connected"
+            : connectionState == "connected"
               ? token.color.success
               : token.color.warning
         )

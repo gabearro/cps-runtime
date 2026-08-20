@@ -23,6 +23,7 @@ type LoopStats* = object
   totalCallbacksRun*: int64   ## Total ready-queue callbacks executed
   totalTimersFired*: int64    ## Total timers that fired
   totalIoEvents*: int64       ## Total I/O events processed
+  callbackErrors*: int64      ## Callback exceptions isolated by the loop
   wakeSignalsSent*: int64     ## Wake callbacks processed on the reactor thread
   wakeSignalErrors*: int64    ## Wake-pipe write failures (best-effort, optional)
   maxTickDurationUs*: int64   ## Maximum tick duration in microseconds
@@ -154,6 +155,20 @@ proc pruneCancelledTimerRoots(loop: EventLoop) =
     loop.timers[0].state = nil
     discard loop.timerHeapPop()
 
+proc recordCallbackError(loop: EventLoop) {.inline.} =
+  loop.stats.callbackErrors += 1
+
+proc runLoopCallback(loop: EventLoop, cb: proc() {.closure.}): bool {.inline.} =
+  ## Run a user/runtime callback without allowing its exception to stop the
+  ## reactor. The callback's own future should carry task failure semantics.
+  if cb == nil:
+    return false
+  try:
+    cb()
+  except Exception:
+    loop.recordCallbackError()
+  true
+
 proc processTimersCount(loop: EventLoop): int =
   ## Process due timers, returning the number of timers that fired.
   when defined(debugTimers):
@@ -173,9 +188,8 @@ proc processTimersCount(loop: EventLoop): int =
       discard loop.timerHeapPop()
     else:
       let fired = loop.timerHeapPop()
-      if fired.callback != nil:
-        fired.callback()
-      inc result
+      if loop.runLoopCallback(fired.callback):
+        inc result
     loop.pruneCancelledTimerRoots()
 
 proc getEventLoopForRuntime*(rt: CpsRuntime): EventLoop =
@@ -406,8 +420,8 @@ proc drainCrossThreadQueue*(loop: EventLoop) =
       break
     let cb = node.payload
     freeNode(node)
-    inc drained
-    cb()
+    if loop.runLoopCallback(cb):
+      inc drained
   when defined(debugMtIo):
     if drained > 0:
       debugEcho "[MT-IO] drainCrossThreadQueue: drained ", drained, " callbacks, selector.count=", loop.selector.count
@@ -444,6 +458,7 @@ proc processIo(loop: EventLoop, timeoutMs: int): int {.warning[ProveInit]: off.}
       try:
         cb()
       except Exception:
+        loop.recordCallbackError()
         # Callback error — unregister the fd to prevent repeated failures
         try: loop.selector.unregister(ev.fd)
         except Exception: discard
@@ -456,8 +471,7 @@ proc processReady(loop: EventLoop): int =
   let ready = loop.readyQueue
   loop.readyQueue = @[]
   for cb in ready:
-    if cb != nil:
-      cb()
+    if loop.runLoopCallback(cb):
       inc result
 
 proc tick*(loop: EventLoop) =

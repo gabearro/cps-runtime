@@ -97,6 +97,8 @@ app CpsIrc {
     status: String
     progress: Double
     bytesReceived: Int
+    speedText: String
+    etaText: String
     errorText: String
     outputPath: String
   }
@@ -209,6 +211,10 @@ app CpsIrc {
     natOuterGatewayIp: String = ""
     natActiveMappings: Int = 0
 
+    connectionState: String = "disconnected"
+    searchMatchCount: Int = 0
+    searchCurrentIndex: Int = -1
+
     computed hasActiveServer: Bool = activeServerId >= 0
     computed hasActiveChannel: Bool = activeChannelName != ""
   }
@@ -263,10 +269,10 @@ app CpsIrc {
   action SetTimestampFormat(format: String) owner both
   action UpdateSidebarFilter owner both
   action ToggleAway owner nim
-  action ShowChannelInfo owner swift
+  action ShowChannelInfo owner both
   action HideChannelInfo owner swift
-  action ToggleSearch owner swift
-  action ClearSearch owner swift
+  action ToggleSearch owner both
+  action ClearSearch owner both
   action UpdateSearch owner both
   action SelectNetwork(host: String, port: String, useTls: Bool) owner swift
   action HistoryUp owner nim
@@ -307,6 +313,11 @@ app CpsIrc {
   action DuplicateServer(serverId: Int) owner both
   action MoveServer(fromIndex: Int, toIndex: Int) owner both
   action MoveChannel(fromIndex: Int, toIndex: Int) owner both
+  action DismissCompletion owner nim
+  action NextSearchResult owner both
+  action PrevSearchResult owner both
+  action RevealTransfer(transferId: Int) owner both
+  action SearchArchives owner nim
 
   reducer {
     on StartPoll {
@@ -395,6 +406,10 @@ app CpsIrc {
       set actionTransferId = transferId
     }
 
+    on RevealTransfer(transferId) {
+      set actionTransferId = transferId
+    }
+
     on ShowJoinChannel {
       set showJoinChannel = true
       set joinChannelText = "#"
@@ -452,6 +467,10 @@ app CpsIrc {
       set timestampFormat = format
     }
 
+    on UpdateSidebarFilter {
+      set sidebarFilter = ""
+    }
+
     on ShowChannelInfo {
       set showChannelInfo = true
     }
@@ -468,6 +487,16 @@ app CpsIrc {
     on ClearSearch {
       set searchActive = false
       set searchText = ""
+      set searchMatchCount = 0
+      set searchCurrentIndex = -1
+    }
+
+    on NextSearchResult {
+      set searchCurrentIndex = searchMatchCount > 0 ? (searchCurrentIndex + 1 >= searchMatchCount ? 0 : searchCurrentIndex + 1) : -1
+    }
+
+    on PrevSearchResult {
+      set searchCurrentIndex = searchMatchCount > 0 ? (searchCurrentIndex <= 0 ? searchMatchCount - 1 : searchCurrentIndex - 1) : -1
     }
 
     on SelectNetwork(host, port, useTls) {

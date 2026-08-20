@@ -240,6 +240,42 @@ component ChatArea(isDark: Bool) {
             .onChange(of: searchText, perform: UpdateSearch)
 
           if searchText != "" {
+            Text(searchMatchCount == 0 ? "0" : "\(searchCurrentIndex + 1)/\(searchMatchCount)")
+              .font(.system(size: 11, design: Font.Design.monospaced))
+              .foregroundColor(fgTertiary)
+              .lineLimit(1)
+
+            Button(action: PrevSearchResult) {
+              Image(systemName: "chevron.up")
+                .font(.system(size: 10, weight: Font.Weight.semibold))
+                .foregroundColor(searchMatchCount > 0 ? fgSecondary : fgTertiary)
+                .frame(width: 22, height: 22)
+            }
+            .buttonStyle(BorderlessButtonStyle())
+            .disabled(searchMatchCount == 0)
+            .help("Previous match")
+
+            Button(action: NextSearchResult) {
+              Image(systemName: "chevron.down")
+                .font(.system(size: 10, weight: Font.Weight.semibold))
+                .foregroundColor(searchMatchCount > 0 ? fgSecondary : fgTertiary)
+                .frame(width: 22, height: 22)
+            }
+            .buttonStyle(BorderlessButtonStyle())
+            .disabled(searchMatchCount == 0)
+            .help("Next match")
+
+            Button(action: SearchArchives) {
+              Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 11, weight: Font.Weight.medium))
+                .foregroundColor(fgSecondary)
+                .frame(width: 24, height: 22)
+            }
+            .buttonStyle(BorderlessButtonStyle())
+            .help("Search logs and request history")
+          }
+
+          if searchText != "" {
             Button(action: ClearSearch) {
               Image(systemName: "xmark.circle.fill")
                 .font(.system(size: 11))

@@ -76,11 +76,19 @@ component TransferRow(transfer: DccTransfer, isDark: Bool) {
           .buttonStyle(BorderlessButtonStyle())
         }
       } else if transfer.status == "active" {
-        Text("Transferring...")
-          .font(.system(size: 11))
-          .foregroundColor(token.color.accent)
+        VStack(alignment: HorizontalAlignment.trailing, spacing: 2) {
+          Text("Transferring...")
+            .font(.system(size: 11))
+            .foregroundColor(token.color.accent)
+
+          if transfer.speedText != "" {
+            Text(transfer.etaText != "" ? transfer.speedText + " - " + transfer.etaText : transfer.speedText)
+              .font(.system(size: 10))
+              .foregroundColor(fgTertiary)
+          }
+        }
       } else if transfer.status == "done" {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
           Image(systemName: "checkmark.circle.fill")
             .font(.system(size: 14))
             .foregroundColor(token.color.success)
@@ -91,6 +99,15 @@ component TransferRow(transfer: DccTransfer, isDark: Bool) {
               .foregroundColor(fgTertiary)
               .lineLimit(1)
               .truncationMode(Text.TruncationMode.middle)
+
+            Button(action: RevealTransfer(transferId: transfer.id)) {
+              Image(systemName: "folder")
+                .font(.system(size: 12, weight: Font.Weight.medium))
+                .foregroundColor(fgSecondary)
+                .frame(width: 24, height: 24)
+            }
+            .buttonStyle(BorderlessButtonStyle())
+            .help("Reveal in Finder")
           }
         }
       } else if transfer.status == "failed" {

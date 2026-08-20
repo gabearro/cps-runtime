@@ -1,0 +1,1215 @@
+app ClipBook {
+  window {
+    title: "ClipBook"
+    width: 1180
+    height: 760
+    minWidth: 900
+    minHeight: 560
+    showTitleBar: false
+    closeAppOnLastWindowClose: false
+    suppressDefaultMenus: false
+  }
+
+  tokens {
+    color.accent = "#0A84FF"
+    color.success = "#2FB344"
+    color.warning = "#B7791F"
+    color.danger = "#D92D20"
+    color.pink = "#D63384"
+    color.orange = "#F97316"
+    color.teal = "#0D9488"
+
+    color.textPrimary = "#202124"
+    color.textSecondary = "#4B5563"
+    color.textMuted = "#73777F"
+    color.textSubtle = "#9AA0A6"
+
+    color.surface = "#FFFFFF"
+    color.surfaceSecondary = "#F6F7F9"
+    color.surfaceElevated = "#FBFBFC"
+    color.border = "#DADCE0"
+    color.borderSubtle = "#ECEFF3"
+    color.rowSelected = "#E8F0FE"
+  }
+
+  model ClipboardItem {
+    id: Int,
+    kind: String,
+    title: String,
+    subtitle: String,
+    preview: String,
+    sourceApp: String,
+    timestamp: String,
+    sizeText: String,
+    favorite: Bool,
+    tagsText: String,
+    colorHex: String,
+    active: Bool
+  }
+
+  model ClipboardFormat {
+    id: Int,
+    name: String,
+    count: Int,
+    active: Bool
+  }
+
+  model ClipboardTag {
+    id: Int,
+    name: String,
+    color: String,
+    count: Int,
+    selected: Bool
+  }
+
+  model SourceApp {
+    id: Int,
+    name: String,
+    count: Int,
+    ignored: Bool
+  }
+
+  model HistoryStats {
+    total: Int,
+    text: Int,
+    images: Int,
+    files: Int,
+    favorites: Int
+  }
+
+  state {
+    history: ClipboardItem[] = []
+    formats: ClipboardFormat[] = []
+    tags: ClipboardTag[] = []
+    sourceApps: SourceApp[] = []
+    stats: HistoryStats[] = []
+
+    selectedItemId: Int = -1
+    selectedKind: String = ""
+    selectedTitle: String = "No item selected"
+    selectedPreviewText: String = ""
+    selectedDetailText: String = ""
+    selectedTagsText: String = ""
+    selectedSourceApp: String = ""
+    selectedTimestamp: String = ""
+    selectedPayloadPath: String = ""
+    selectedColorHex: String = ""
+    selectedOcrText: String = ""
+    selectedIsFavorite: Bool = false
+
+    searchQuery: String = ""
+    activeFormatFilter: String = "All"
+    selectedTagFilter: String = ""
+    activeSourceApp: String = "All Apps"
+    editTitle: String = ""
+    editText: String = ""
+    tagDraft: String = ""
+
+    showPreview: Bool = true
+    showDetails: Bool = true
+    showSettings: Bool = false
+    showEditSheet: Bool = false
+    showMergeConfirm: Bool = false
+    showDeleteConfirm: Bool = false
+    showClearHistoryConfirm: Bool = false
+    showSaveEditConfirm: Bool = false
+    showAddTagConfirm: Bool = false
+    showFavoriteConfirm: Bool = false
+    showOcrConfirm: Bool = false
+    pausedCapture: Bool = false
+    preserveFavoritesOnClear: Bool = true
+    clearOnQuit: Bool = false
+    clearOnRestart: Bool = false
+    captureImages: Bool = true
+    captureFiles: Bool = true
+    captureSensitiveApps: Bool = false
+    retainDays: String = "30"
+    maxItems: String = "500"
+    appearanceMode: String = "System"
+    ignoredAppsText: String = ""
+
+    multiPasteCount: Int = 3
+    statusText: String = "Ready"
+    pollActive: Bool = false
+    accessibilityTrusted: Bool = false
+    incomingClipboardKind: String = ""
+    incomingClipboardText: String = ""
+    incomingClipboardPath: String = ""
+    incomingClipboardSource: String = ""
+    storagePath: String = ""
+    actionItemId: Int = -1
+    restoreClipboardItemId: Int = -1
+    revealInFinderItemId: Int = -1
+    pendingDeleteItemId: Int = -1
+    pendingFavoriteItemId: Int = -1
+    historyCountText: String = "0 clips"
+    copyAsItemId: Int = -1
+    shareItemId: Int = -1
+
+    computed hasSelection: Bool = selectedItemId >= 0
+    computed canMerge: Bool = selectedItemId >= 0
+  }
+
+  action Poll owner nim
+  action StartCapture owner both
+  action CaptureClipboard owner nim
+  action SelectItem(itemId: Int) owner both
+  action SearchChanged owner nim
+  action ClearSearch owner both
+  action SetFilterAll owner both
+  action SetFilterText owner both
+  action SetFilterImages owner both
+  action SetFilterFiles owner both
+  action SetFilterLinks owner both
+  action SetFilterColors owner both
+  action SetFilterEmails owner both
+  action ToggleFavorite(itemId: Int) owner both
+  action AddTag owner both
+  action RemoveTag owner nim
+  action SelectTag(tag: String) owner both
+  action ClearTagFilter owner both
+  action CopyItem(itemId: Int) owner both
+  action CopyItemAs(itemId: Int) owner both
+  action PasteItem(itemId: Int) owner both
+  action ShareItem(itemId: Int) owner both
+  action PinItem(itemId: Int) owner both
+  action PasteSelectedRange owner nim
+  action MergeTextItems owner nim
+  action ShowMergeConfirm owner swift
+  action HideMergeConfirm owner swift
+  action EditItem(itemId: Int) owner both
+  action SaveEdit owner both
+  action HideEditSheet owner swift
+  action DeleteItem(itemId: Int) owner both
+  action ClearHistory owner both
+  action CopyOcrText owner nim
+  action RunOcr owner both
+  action SaveImage owner nim
+  action ShowFileInFinder owner both
+  action OpenUrl owner nim
+  action TogglePause owner both
+  action ShowSettings owner swift
+  action HideSettings owner swift
+  action SaveSettings owner both
+  action SetAppearanceSystem owner both
+  action SetAppearanceLight owner both
+  action SetAppearanceDark owner both
+  action SetCaptureImages(enabled: Bool) owner both
+  action SetCaptureFiles(enabled: Bool) owner both
+  action SetCaptureSensitiveApps(enabled: Bool) owner both
+  action SetPreserveFavorites(enabled: Bool) owner both
+  action SetClearOnQuit(enabled: Bool) owner both
+  action SetClearOnRestart(enabled: Bool) owner both
+  action TogglePreviewPane owner both
+  action ToggleDetailsPane owner both
+  action RestoreWindow owner nim
+  action PersistWindow owner nim
+  action PasteSlot(slot: Int) owner nim
+  action SettingsChanged owner nim
+  action AppShutdown owner nim
+  action RequestDeleteItem(itemId: Int) owner swift
+  action CancelDeleteItem owner swift
+  action RequestClearHistory owner swift
+  action CancelClearHistory owner swift
+  action RequestSaveEdit owner swift
+  action CancelSaveEdit owner swift
+  action RequestAddTag owner swift
+  action CancelAddTag owner swift
+  action RequestToggleFavorite(itemId: Int) owner swift
+  action CancelToggleFavorite owner swift
+  action RequestRunOcr owner swift
+  action CancelRunOcr owner swift
+  action SetFilterFavorites owner both
+  action SetFilterRichText owner both
+
+  reducer {
+    on StartCapture {
+      set pollActive = true
+      emit timer.once(id: "clipbook_init", ms: 0, action: Poll)
+      emit timer.interval(id: "clipbook_poll", ms: 900, action: Poll)
+    }
+    on SelectItem(itemId) {
+      set selectedItemId = itemId
+      set actionItemId = itemId
+    }
+    on ClearSearch {
+      set searchQuery = ""
+    }
+    on SetFilterAll {
+      set activeFormatFilter = "All"
+    }
+    on SetFilterText {
+      set activeFormatFilter = "Text"
+    }
+    on SetFilterImages {
+      set activeFormatFilter = "Image"
+    }
+    on SetFilterFiles {
+      set activeFormatFilter = "File"
+    }
+    on SetFilterLinks {
+      set activeFormatFilter = "Link"
+    }
+    on SetFilterColors {
+      set activeFormatFilter = "Color"
+    }
+    on SetFilterEmails {
+      set activeFormatFilter = "Email"
+    }
+    on SetFilterFavorites {
+      set activeFormatFilter = "Favorites"
+    }
+    on SetFilterRichText {
+      set activeFormatFilter = "Rich Text"
+    }
+    on ToggleFavorite(itemId) {
+      set selectedItemId = itemId
+      set actionItemId = itemId
+      set showFavoriteConfirm = false
+      set pendingFavoriteItemId = -1
+    }
+    on CopyItem(itemId) {
+      set selectedItemId = itemId
+      set actionItemId = itemId
+      set restoreClipboardItemId = itemId
+    }
+    on CopyItemAs(itemId) {
+      set selectedItemId = itemId
+      set actionItemId = itemId
+      set copyAsItemId = itemId
+    }
+    on PasteItem(itemId) {
+      set selectedItemId = itemId
+      set actionItemId = itemId
+      set restoreClipboardItemId = itemId
+    }
+    on ShareItem(itemId) {
+      set selectedItemId = itemId
+      set actionItemId = itemId
+      set shareItemId = itemId
+    }
+    on PinItem(itemId) {
+      set selectedItemId = itemId
+      set actionItemId = itemId
+    }
+    on SelectTag(tag) {
+      set selectedTagFilter = tag
+    }
+    on ClearTagFilter {
+      set selectedTagFilter = ""
+    }
+    on ShowMergeConfirm {
+      set showMergeConfirm = true
+    }
+    on HideMergeConfirm {
+      set showMergeConfirm = false
+    }
+    on EditItem(itemId) {
+      set selectedItemId = itemId
+      set actionItemId = itemId
+      set showEditSheet = true
+    }
+    on HideEditSheet {
+      set showEditSheet = false
+    }
+    on DeleteItem(itemId) {
+      set selectedItemId = itemId
+      set actionItemId = itemId
+      set showDeleteConfirm = false
+      set pendingDeleteItemId = -1
+    }
+    on ClearHistory {
+      set showClearHistoryConfirm = false
+    }
+    on SaveEdit {
+      set showSaveEditConfirm = false
+      set showEditSheet = false
+    }
+    on AddTag {
+      set showAddTagConfirm = false
+    }
+    on RunOcr {
+      set showOcrConfirm = false
+    }
+    on ShowFileInFinder {
+      set revealInFinderItemId = selectedItemId
+    }
+    on TogglePause {
+      set pausedCapture = !pausedCapture
+    }
+    on ShowSettings {
+      set showSettings = true
+    }
+    on HideSettings {
+      set showSettings = false
+    }
+    on SetAppearanceSystem {
+      set appearanceMode = "System"
+    }
+    on SetAppearanceLight {
+      set appearanceMode = "Light"
+    }
+    on SetAppearanceDark {
+      set appearanceMode = "Dark"
+    }
+    on SetCaptureImages(enabled) {
+      set captureImages = enabled
+    }
+    on SetCaptureFiles(enabled) {
+      set captureFiles = enabled
+    }
+    on SetCaptureSensitiveApps(enabled) {
+      set captureSensitiveApps = enabled
+    }
+    on SetPreserveFavorites(enabled) {
+      set preserveFavoritesOnClear = enabled
+    }
+    on SetClearOnQuit(enabled) {
+      set clearOnQuit = enabled
+    }
+    on SetClearOnRestart(enabled) {
+      set clearOnRestart = enabled
+    }
+    on TogglePreviewPane {
+      set showPreview = !showPreview
+    }
+    on ToggleDetailsPane {
+      set showDetails = !showDetails
+    }
+    on PasteSlot(slot) {
+      set multiPasteCount = slot
+    }
+    on SaveSettings {
+      set showSettings = false
+    }
+    on RequestDeleteItem(itemId) {
+      set pendingDeleteItemId = itemId
+      set showDeleteConfirm = true
+    }
+    on CancelDeleteItem {
+      set showDeleteConfirm = false
+      set pendingDeleteItemId = -1
+    }
+    on RequestClearHistory {
+      set showClearHistoryConfirm = true
+    }
+    on CancelClearHistory {
+      set showClearHistoryConfirm = false
+    }
+    on RequestSaveEdit {
+      set showSaveEditConfirm = true
+    }
+    on CancelSaveEdit {
+      set showSaveEditConfirm = false
+    }
+    on RequestAddTag {
+      set showAddTagConfirm = true
+    }
+    on CancelAddTag {
+      set showAddTagConfirm = false
+    }
+    on RequestToggleFavorite(itemId) {
+      set pendingFavoriteItemId = itemId
+      set showFavoriteConfirm = true
+    }
+    on CancelToggleFavorite {
+      set showFavoriteConfirm = false
+      set pendingFavoriteItemId = -1
+    }
+    on RequestRunOcr {
+      set showOcrConfirm = true
+    }
+    on CancelRunOcr {
+      set showOcrConfirm = false
+    }
+  }
+
+  escape swiftFile "swift/ClipboardNativeService.swift"
+  escape swiftFile "swift/ClipboardPreviewViews.swift"
+  escape swiftFile "swift/ClipboardHotkeys.swift"
+  escape swiftFile "swift/ClipboardPasteController.swift"
+  escape swiftFile "swift/ClipboardOCR.swift"
+  escape swiftFile "swift/ClipboardWindowController.swift"
+  escape swiftFile "swift/ClipBookRuntimeModifier.swift"
+
+  bridge {
+    nimEntry: "bridge.nim"
+  }
+}
+
+component ClipBookApp {
+  @Environment(.colorScheme) colorScheme: ColorScheme
+  let isDark = colorScheme == ColorScheme.dark
+  let divider = isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.075)
+
+  HStack(spacing: 0) {
+    ClipRail(isDark: isDark)
+      .frame(width: 52)
+    Rectangle()
+      .fill(divider)
+      .frame(width: 1)
+    ClipSourceList(isDark: isDark)
+      .frame(width: 205)
+    Rectangle()
+      .fill(divider)
+      .frame(width: 1)
+    ClipHistoryPane(isDark: isDark)
+      .frame(minWidth: 365, idealWidth: 385, maxWidth: 395)
+    Rectangle()
+      .fill(divider)
+      .frame(width: 1)
+    ClipPreviewPane(isDark: isDark)
+  }
+  .background(isDark ? Color(red: 0.125, green: 0.128, blue: 0.136) : Color(red: 0.965, green: 0.968, blue: 0.972))
+  .ignoresSafeArea(.container, edges: .top)
+  .modifier(ClipBookRuntimeModifier(store: store))
+  .sheet(isPresented: showSettings) {
+    ClipSettingsSheet(isDark: isDark)
+  }
+  .sheet(isPresented: showEditSheet) {
+    ClipEditSheet(isDark: isDark)
+  }
+  .alert("Merge selected text items?", isPresented: showMergeConfirm) {
+    Button("Cancel", role: ButtonRole.cancel, action: HideMergeConfirm) {}
+    Button("Merge", action: MergeTextItems) {}
+  }
+  .alert("Delete this clipboard item?", isPresented: showDeleteConfirm) {
+    Button("Cancel", role: ButtonRole.cancel, action: CancelDeleteItem) {}
+    Button("Delete", role: ButtonRole.destructive, action: DeleteItem(itemId: pendingDeleteItemId)) {}
+  }
+  .alert("Clear clipboard history?", isPresented: showClearHistoryConfirm) {
+    Button("Cancel", role: ButtonRole.cancel, action: CancelClearHistory) {}
+    Button("Clear", role: ButtonRole.destructive, action: ClearHistory) {}
+  }
+  .alert("Save changes to this item?", isPresented: showSaveEditConfirm) {
+    Button("Cancel", role: ButtonRole.cancel, action: CancelSaveEdit) {}
+    Button("Save", action: SaveEdit) {}
+  }
+  .alert("Add this tag?", isPresented: showAddTagConfirm) {
+    Button("Cancel", role: ButtonRole.cancel, action: CancelAddTag) {}
+    Button("Add Tag", action: AddTag) {}
+  }
+  .alert("Change favorite status?", isPresented: showFavoriteConfirm) {
+    Button("Cancel", role: ButtonRole.cancel, action: CancelToggleFavorite) {}
+    Button("Confirm", action: ToggleFavorite(itemId: pendingFavoriteItemId)) {}
+  }
+  .alert("Run OCR on this item?", isPresented: showOcrConfirm) {
+    Button("Cancel", role: ButtonRole.cancel, action: CancelRunOcr) {}
+    Button("Run OCR", action: RunOcr) {}
+  }
+  .onAppear(perform: RestoreWindow)
+  .onAppear(perform: StartCapture)
+  .onChange(of: appearanceMode, perform: SettingsChanged)
+  .onChange(of: captureImages, perform: SettingsChanged)
+  .onChange(of: captureFiles, perform: SettingsChanged)
+  .onChange(of: captureSensitiveApps, perform: SettingsChanged)
+  .onChange(of: preserveFavoritesOnClear, perform: SettingsChanged)
+  .onChange(of: clearOnQuit, perform: SettingsChanged)
+  .onChange(of: clearOnRestart, perform: SettingsChanged)
+  .onChange(of: retainDays, perform: SettingsChanged)
+  .onChange(of: maxItems, perform: SettingsChanged)
+  .onChange(of: ignoredAppsText, perform: SettingsChanged)
+}
+
+component ClipRailButton(icon: String, active: Bool, isDark: Bool) {
+  Image(systemName: icon)
+    .font(.system(size: 18, weight: Font.Weight.regular))
+    .foregroundColor(active ? Color(token.color.accent) : isDark ? Color.white.opacity(0.62) : Color.black.opacity(0.55))
+    .frame(width: 36, height: 34)
+    .background(
+      RoundedRectangle(cornerRadius: 7)
+        .fill(active ? (isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.055)) : Color.clear)
+    )
+}
+
+component ClipRail(isDark: Bool) {
+  let bg = isDark ? Color(red: 0.125, green: 0.128, blue: 0.136) : Color(red: 0.94, green: 0.943, blue: 0.948)
+  VStack(spacing: 14) {
+    Button(action: SetFilterAll) {
+      ClipRailButton(icon: "doc.on.clipboard", active: activeFormatFilter == "All", isDark: isDark)
+    }
+    .buttonStyle(PlainButtonStyle())
+    .focusable(false)
+    .help("All clips")
+    Button(action: SetFilterFavorites) {
+      ClipRailButton(icon: "star", active: activeFormatFilter == "Favorites", isDark: isDark)
+    }
+    .buttonStyle(PlainButtonStyle())
+    .focusable(false)
+    .help("Favorites")
+    Button(action: ClearTagFilter) {
+      ClipRailButton(icon: "tag", active: selectedTagFilter != "", isDark: isDark)
+    }
+    .buttonStyle(PlainButtonStyle())
+    .focusable(false)
+    .help("Clear tag filter")
+    Button(action: SetFilterImages) {
+      ClipRailButton(icon: "photo", active: activeFormatFilter == "Image", isDark: isDark)
+    }
+    .buttonStyle(PlainButtonStyle())
+    .focusable(false)
+    .help("Images")
+    Button(action: SetFilterLinks) {
+      ClipRailButton(icon: "link", active: activeFormatFilter == "Link", isDark: isDark)
+    }
+    .buttonStyle(PlainButtonStyle())
+    .focusable(false)
+    .help("Links")
+    Spacer()
+    Button(action: TogglePause) {
+      ClipRailButton(icon: pausedCapture ? "play.fill" : "pause.fill", active: pausedCapture, isDark: isDark)
+    }
+    .buttonStyle(PlainButtonStyle())
+    .focusable(false)
+    .help(pausedCapture ? "Resume capture" : "Pause capture")
+    Button(action: ShowSettings) {
+      ClipRailButton(icon: "gearshape", active: showSettings, isDark: isDark)
+    }
+    .buttonStyle(PlainButtonStyle())
+    .focusable(false)
+    .help("Settings")
+  }
+  .padding(top: 48, bottom: 14)
+  .background(bg)
+}
+
+component SourceRow(label: String, icon: String, count: String, active: Bool, isDark: Bool) {
+  let fg = isDark ? Color.white.opacity(0.88) : Color(red: 0.18, green: 0.18, blue: 0.20)
+  let muted = isDark ? Color.white.opacity(0.52) : Color(token.color.textMuted)
+  let selectedBg = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.075)
+
+  HStack(spacing: 9) {
+    Image(systemName: icon)
+      .font(.system(size: 14, weight: Font.Weight.regular))
+      .foregroundColor(active ? Color(token.color.accent) : muted)
+      .frame(width: 18)
+    Text(label)
+      .font(.system(size: 13, weight: active ? Font.Weight.semibold : Font.Weight.regular))
+      .foregroundColor(fg)
+      .lineLimit(1)
+    Spacer()
+    Text(count)
+      .font(.system(size: 12))
+      .foregroundColor(muted)
+      .monospacedDigit()
+  }
+  .padding(vertical: 6, horizontal: 9)
+  .background(RoundedRectangle(cornerRadius: 6).fill(active ? selectedBg : Color.clear))
+  .contentShape(Rectangle())
+}
+
+component ClipSourceList(isDark: Bool) {
+  let bg = isDark ? Color(red: 0.125, green: 0.128, blue: 0.136) : Color(red: 0.965, green: 0.968, blue: 0.972)
+  let label = isDark ? Color.white.opacity(0.42) : Color(token.color.textMuted)
+  let title = isDark ? Color.white.opacity(0.86) : Color(red: 0.22, green: 0.22, blue: 0.24)
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 0) {
+    VStack(alignment: HorizontalAlignment.leading, spacing: 4) {
+      Text("Clipboard")
+        .font(.system(size: 13, weight: Font.Weight.semibold))
+        .foregroundColor(title)
+      Text(pausedCapture ? "Capture paused" : "Listening")
+        .font(.system(size: 10))
+        .foregroundColor(pausedCapture ? Color(token.color.warning) : label)
+    }
+    .padding(top: 34, leading: 14, bottom: 12, trailing: 12)
+
+    Text("COLLECTIONS")
+      .font(.system(size: 10, weight: Font.Weight.semibold))
+      .foregroundColor(label)
+      .padding(top: 2, leading: 14, bottom: 6, trailing: 12)
+
+    VStack(spacing: 2) {
+      Button(action: SetFilterAll) {
+        SourceRow(label: "All Clips", icon: "doc.on.clipboard", count: "", active: activeFormatFilter == "All", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      Button(action: SetFilterText) {
+        SourceRow(label: "Plain Text", icon: "text.alignleft", count: "", active: activeFormatFilter == "Text", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      Button(action: SetFilterRichText) {
+        SourceRow(label: "Rich Text", icon: "doc.richtext", count: "", active: activeFormatFilter == "Rich Text", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      Button(action: SetFilterLinks) {
+        SourceRow(label: "Links", icon: "link", count: "", active: activeFormatFilter == "Link", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      Button(action: SetFilterImages) {
+        SourceRow(label: "Images", icon: "photo", count: "", active: activeFormatFilter == "Image", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      Button(action: SetFilterFiles) {
+        SourceRow(label: "Files", icon: "doc", count: "", active: activeFormatFilter == "File", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      Button(action: SetFilterColors) {
+        SourceRow(label: "Colors", icon: "paintpalette", count: "", active: activeFormatFilter == "Color", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      Button(action: SetFilterEmails) {
+        SourceRow(label: "Emails", icon: "envelope", count: "", active: activeFormatFilter == "Email", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+    }
+    .padding(horizontal: 8)
+
+    Text("FILTERS")
+      .font(.system(size: 10, weight: Font.Weight.semibold))
+      .foregroundColor(label)
+      .padding(top: 24, leading: 14, bottom: 6, trailing: 12)
+
+    VStack(spacing: 2) {
+      Button(action: SetFilterFavorites) {
+        SourceRow(label: "Favorites", icon: "star", count: "", active: activeFormatFilter == "Favorites", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      Button(action: SetFilterText) {
+        SourceRow(label: "Plain Text", icon: "text.alignleft", count: "", active: activeFormatFilter == "Text", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      Button(action: SetFilterRichText) {
+        SourceRow(label: "Rich Text", icon: "doc.richtext", count: "", active: activeFormatFilter == "Rich Text", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      Button(action: SetFilterImages) {
+        SourceRow(label: "Images", icon: "photo", count: "", active: activeFormatFilter == "Image", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      Button(action: SetFilterLinks) {
+        SourceRow(label: "Links", icon: "link", count: "", active: activeFormatFilter == "Link", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+    }
+    .padding(horizontal: 8)
+
+    Spacer()
+  }
+  .background(bg)
+}
+
+component ClipItemRow(item: ClipboardItem, isDark: Bool) {
+  let rowBg = item.active ? Color(token.color.accent) : Color.clear
+  let fg = isDark ? Color.white.opacity(0.92) : Color(token.color.textPrimary)
+  let muted = isDark ? Color.white.opacity(0.58) : Color(token.color.textMuted)
+  let activeText = Color.white
+  let activeMuted = Color.white.opacity(0.78)
+  let kindColor = item.kind == "Image" ? Color(token.color.teal)
+    : item.kind == "File" ? Color(token.color.orange)
+    : item.kind == "Link" ? Color(token.color.accent)
+    : item.kind == "Color" ? Color(token.color.pink)
+    : item.kind == "Email" ? Color(token.color.success)
+    : muted
+
+  HStack(spacing: 10) {
+    ZStack {
+      RoundedRectangle(cornerRadius: 7)
+        .fill(item.active ? Color.white.opacity(0.18) : kindColor.opacity(isDark ? 0.18 : 0.10))
+      if item.kind == "Color" {
+        RoundedRectangle(cornerRadius: 5)
+          .fill(Color(hex: item.colorHex))
+          .padding(5)
+      } else {
+        Image(systemName: item.kind == "Image" ? "photo"
+          : item.kind == "File" ? "doc"
+          : item.kind == "Link" ? "link"
+          : item.kind == "Email" ? "envelope"
+          : item.kind == "Color" ? "paintpalette"
+          : "text.alignleft")
+          .font(.system(size: 13, weight: Font.Weight.semibold))
+          .foregroundColor(item.active ? Color.white : kindColor)
+      }
+    }
+    .frame(width: 34, height: 34)
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 4) {
+      HStack(spacing: 6) {
+        Text(item.title)
+          .font(.system(size: 13, weight: item.active ? Font.Weight.semibold : Font.Weight.medium))
+          .foregroundColor(item.active ? activeText : fg)
+          .lineLimit(1)
+        if item.favorite {
+          Image(systemName: "star.fill")
+            .font(.system(size: 9))
+            .foregroundColor(item.active ? Color.white : Color(token.color.warning))
+        }
+      }
+      Text(item.subtitle)
+        .font(.system(size: 11))
+        .foregroundColor(item.active ? activeMuted : muted)
+        .lineLimit(1)
+      HStack(spacing: 6) {
+        Text(item.kind)
+          .font(.system(size: 10, weight: Font.Weight.semibold))
+          .foregroundColor(item.active ? activeMuted : kindColor)
+        Text(item.timestamp)
+          .font(.system(size: 10))
+          .foregroundColor(item.active ? activeMuted : muted)
+        Spacer()
+        Text(item.sizeText)
+          .font(.system(size: 10))
+          .foregroundColor(item.active ? activeMuted : muted)
+      }
+    }
+  }
+  .padding(vertical: 9, horizontal: 10)
+  .background(RoundedRectangle(cornerRadius: 8).fill(rowBg))
+  .contentShape(Rectangle())
+  .contextMenu {
+    Button(action: CopyItem(itemId: item.id)) {
+      Label("Copy", systemImage: "doc.on.doc")
+    }
+    Button(action: PasteItem(itemId: item.id)) {
+      Label("Paste", systemImage: "arrowshape.turn.up.right")
+    }
+    Button(action: RequestToggleFavorite(itemId: item.id)) {
+      Label(item.favorite ? "Unfavorite" : "Favorite", systemImage: item.favorite ? "star.slash" : "star")
+    }
+    Divider()
+    Button(action: EditItem(itemId: item.id)) {
+      Label("Edit", systemImage: "pencil")
+    }
+    Button(action: RequestDeleteItem(itemId: item.id)) {
+      Label("Delete", systemImage: "trash")
+    }
+  }
+}
+
+component FilterChip(label: String, active: Bool, isDark: Bool) {
+  Text(label)
+    .font(.system(size: 11, weight: Font.Weight.medium))
+    .foregroundColor(active ? Color(token.color.accent) : isDark ? Color.white.opacity(0.68) : Color(token.color.textSecondary))
+    .padding(vertical: 5, horizontal: 10)
+    .background(RoundedRectangle(cornerRadius: 7).fill(active ? (isDark ? Color.white.opacity(0.12) : Color.white) : Color.clear))
+}
+
+component HeaderIconButton(icon: String, active: Bool, isDark: Bool) {
+  Image(systemName: icon)
+    .font(.system(size: 13, weight: Font.Weight.medium))
+    .foregroundColor(active ? Color(token.color.accent) : isDark ? Color.white.opacity(0.68) : Color(token.color.textMuted))
+    .frame(width: 28, height: 26)
+    .background(RoundedRectangle(cornerRadius: 7).fill(active ? (isDark ? Color.white.opacity(0.10) : Color.white.opacity(0.80)) : Color.clear))
+}
+
+component ToolbarActionButton(icon: String, label: String, isDark: Bool) {
+  VStack(spacing: 4) {
+    Image(systemName: icon)
+      .font(.system(size: 17, weight: Font.Weight.regular))
+      .frame(width: 38, height: 22)
+    Text(label)
+      .font(.system(size: 10))
+      .lineLimit(1)
+      .minimumScaleFactor(0.82)
+  }
+  .foregroundColor(isDark ? Color.white.opacity(0.72) : Color.black.opacity(0.62))
+  .frame(width: 68, height: 48)
+}
+
+component DetailField(label: String, value: String, isDark: Bool) {
+  HStack(alignment: VerticalAlignment.top, spacing: 10) {
+    Text(label)
+      .font(.system(size: 11))
+      .foregroundColor(isDark ? Color.white.opacity(0.50) : Color(token.color.textMuted))
+      .frame(width: 74, alignment: Alignment.leading)
+    Text(value)
+      .font(.system(size: 11))
+      .foregroundColor(isDark ? Color.white.opacity(0.82) : Color(token.color.textPrimary))
+      .lineLimit(1)
+    Spacer()
+  }
+}
+
+component PillText(label: String, isDark: Bool) {
+  Text(label)
+    .font(.system(size: 11))
+    .foregroundColor(isDark ? Color.white.opacity(0.78) : Color.black.opacity(0.70))
+    .padding(vertical: 3, horizontal: 9)
+    .background(Capsule().fill(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.055)))
+}
+
+component ClipHistoryPane(isDark: Bool) {
+  let bg = isDark ? Color(red: 0.135, green: 0.138, blue: 0.146) : Color(red: 0.985, green: 0.986, blue: 0.989)
+  let muted = isDark ? Color.white.opacity(0.58) : Color(token.color.textMuted)
+  let fg = isDark ? Color.white.opacity(0.90) : Color(token.color.textPrimary)
+  let searchBg = isDark ? Color.white.opacity(0.045) : Color.white.opacity(0.88)
+  let divider = isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.08)
+
+  VStack(spacing: 0) {
+    VStack(alignment: HorizontalAlignment.leading, spacing: 10) {
+      HStack(spacing: 8) {
+        Image(systemName: "magnifyingglass")
+          .font(.system(size: 12))
+          .foregroundColor(muted)
+        TextField("Search history", text: searchQuery)
+          .textFieldStyle(PlainTextFieldStyle())
+          .onSubmit(perform: SearchChanged)
+          .onChange(of: searchQuery, perform: SearchChanged)
+        if searchQuery != "" {
+          Button(action: ClearSearch) {
+            Image(systemName: "xmark.circle.fill")
+          }
+          .buttonStyle(PlainButtonStyle())
+          .focusable(false)
+          .foregroundColor(muted)
+        }
+        Text("⌘F")
+          .font(.system(size: 11, weight: Font.Weight.medium))
+          .foregroundColor(muted)
+          .padding(vertical: 2, horizontal: 6)
+          .background(RoundedRectangle(cornerRadius: 4).fill(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.045)))
+      }
+      .padding(vertical: 7, horizontal: 10)
+      .background(RoundedRectangle(cornerRadius: 8).stroke(divider).background(RoundedRectangle(cornerRadius: 8).fill(searchBg)))
+
+      HStack {
+        Text(searchQuery == "" ? "Today" : "Search Results")
+          .font(.system(size: 12, weight: Font.Weight.semibold))
+          .foregroundColor(muted)
+        Spacer()
+        Text("8")
+          .font(.system(size: 11))
+          .foregroundColor(muted)
+          .padding(vertical: 2, horizontal: 7)
+          .background(Capsule().fill(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.05)))
+      }
+    }
+    .padding(top: 34, leading: 12, bottom: 6, trailing: 12)
+
+    ScrollView {
+      LazyVStack(spacing: 2) {
+        ForEach(items: history, id: id, item: item) {
+          Button(action: SelectItem(itemId: item.id)) {
+            ClipItemRow(item: item, isDark: isDark)
+          }
+          .buttonStyle(PlainButtonStyle())
+          .padding(horizontal: 6)
+        }
+      }
+      .padding(bottom: 10)
+    }
+
+    Rectangle()
+      .fill(divider)
+      .frame(height: 1)
+    HStack {
+      Spacer()
+      Text(historyCountText)
+        .font(.system(size: 11))
+        .foregroundColor(muted)
+      Spacer()
+    }
+    .padding(vertical: 7)
+  }
+  .background(bg)
+}
+
+component ClipPreviewPane(isDark: Bool) {
+  let bg = isDark ? Color(red: 0.135, green: 0.138, blue: 0.146) : Color(red: 0.966, green: 0.968, blue: 0.972)
+  let card = isDark ? Color(red: 0.150, green: 0.153, blue: 0.160) : Color.white.opacity(0.94)
+  let fg = isDark ? Color.white.opacity(0.94) : Color.black.opacity(0.90)
+  let muted = isDark ? Color.white.opacity(0.56) : Color.black.opacity(0.50)
+  let divider = isDark ? Color.white.opacity(0.09) : Color.black.opacity(0.08)
+
+  VStack(spacing: 10) {
+    HStack(spacing: 9) {
+      Button(action: CopyItem(itemId: selectedItemId)) {
+        ToolbarActionButton(icon: "doc.on.doc", label: "Copy", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      .disabled(!hasSelection)
+      Button(action: CopyItemAs(itemId: selectedItemId)) {
+        ToolbarActionButton(icon: "doc.on.clipboard", label: "Copy as...", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      .disabled(!hasSelection)
+      Rectangle()
+        .fill(divider)
+        .frame(width: 1, height: 34)
+        .padding(horizontal: 5)
+      Button(action: PinItem(itemId: selectedItemId)) {
+        ToolbarActionButton(icon: selectedIsFavorite ? "pin.slash" : "pin", label: selectedIsFavorite ? "Unpin" : "Pin", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      .disabled(!hasSelection)
+      Button(action: RequestToggleFavorite(itemId: selectedItemId)) {
+        ToolbarActionButton(icon: selectedIsFavorite ? "star.fill" : "star", label: "Favorite", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      .disabled(!hasSelection)
+      Button(action: ShareItem(itemId: selectedItemId)) {
+        ToolbarActionButton(icon: "square.and.arrow.up", label: "Share", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      .disabled(!hasSelection)
+      Button(action: RequestDeleteItem(itemId: selectedItemId)) {
+        ToolbarActionButton(icon: "trash", label: "Delete", isDark: isDark)
+      }
+      .buttonStyle(PlainButtonStyle())
+      .focusable(false)
+      .disabled(!hasSelection)
+    }
+    .frame(maxWidth: .infinity, alignment: Alignment.center)
+    .padding(top: 34, leading: 16, bottom: 4, trailing: 16)
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 18) {
+      if hasSelection {
+        if selectedKind == "Image" || selectedKind == "Color" || selectedKind == "File" {
+          ClipboardPreview(kind: selectedKind, text: selectedPreviewText, path: selectedPayloadPath, colorHex: selectedColorHex, isDark: isDark)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+          Text(selectedTitle)
+            .font(.system(size: 24, weight: Font.Weight.bold))
+            .foregroundColor(fg)
+            .lineLimit(2)
+          Text(selectedPreviewText)
+            .font(.system(size: 14))
+            .foregroundColor(fg.opacity(0.88))
+            .textSelection(.enabled)
+            .lineLimit(12)
+        }
+      } else {
+        Spacer()
+        HStack {
+          Spacer()
+          VStack(spacing: 12) {
+            Image(systemName: "doc.on.clipboard")
+              .font(.system(size: 42, weight: Font.Weight.light))
+              .foregroundColor(muted.opacity(0.65))
+            Text("No Clip Selected")
+              .font(.system(size: 16, weight: Font.Weight.semibold))
+              .foregroundColor(fg.opacity(0.72))
+          }
+          Spacer()
+        }
+        Spacer()
+      }
+      Spacer()
+    }
+    .padding(top: 36, leading: 34, bottom: 26, trailing: 34)
+    .frame(maxWidth: .infinity, minHeight: 330, maxHeight: .infinity)
+    .background(RoundedRectangle(cornerRadius: 8).stroke(divider).background(RoundedRectangle(cornerRadius: 8).fill(card)))
+    .padding(horizontal: 6)
+
+    VStack(spacing: 0) {
+      HStack(spacing: 6) {
+        Text("Details")
+          .font(.system(size: 12, weight: Font.Weight.medium))
+          .foregroundColor(fg.opacity(0.92))
+          .frame(width: 82, height: 24)
+          .background(RoundedRectangle(cornerRadius: 6).fill(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.055)))
+        Text("Metadata")
+          .font(.system(size: 12, weight: Font.Weight.medium))
+          .foregroundColor(muted)
+          .frame(width: 92, height: 24)
+        Spacer()
+      }
+      .frame(height: 40)
+      .padding(top: 4, leading: 12, bottom: 0, trailing: 12)
+      Rectangle()
+        .fill(divider)
+        .frame(height: 1)
+      HStack(alignment: VerticalAlignment.top, spacing: 22) {
+        VStack(alignment: HorizontalAlignment.leading, spacing: 8) {
+          DetailField(label: "Kind", value: selectedKind == "" ? "None" : selectedKind, isDark: isDark)
+          DetailField(label: "Size", value: "1.3 KB", isDark: isDark)
+          DetailField(label: "Created", value: selectedTimestamp == "" ? "Today" : selectedTimestamp, isDark: isDark)
+          DetailField(label: "Modified", value: selectedTimestamp == "" ? "Today" : selectedTimestamp, isDark: isDark)
+          DetailField(label: "Last Copied", value: selectedTimestamp == "" ? "Today" : selectedTimestamp, isDark: isDark)
+          DetailField(label: "First Copied", value: selectedTimestamp == "" ? "Today" : selectedTimestamp, isDark: isDark)
+          DetailField(label: "Source", value: selectedSourceApp == "" ? "Unknown" : selectedSourceApp, isDark: isDark)
+          HStack(spacing: 10) {
+            Text("Collection")
+              .font(.system(size: 11))
+              .foregroundColor(muted)
+              .frame(width: 74, alignment: Alignment.leading)
+            Circle()
+              .fill(Color(token.color.accent))
+              .frame(width: 8, height: 8)
+            Text(selectedKind == "Link" ? "Links" : "Notes")
+              .font(.system(size: 11))
+              .foregroundColor(fg.opacity(0.86))
+            Spacer()
+          }
+          HStack(spacing: 8) {
+            Text("Tags")
+              .font(.system(size: 11))
+              .foregroundColor(muted)
+              .frame(width: 74, alignment: Alignment.leading)
+            TextField("Add tag", text: tagDraft)
+              .textFieldStyle(RoundedBorderTextFieldStyle())
+              .onSubmit(perform: RequestAddTag)
+              .frame(width: 150)
+            Button(action: RequestAddTag) {
+              PillText(label: "+", isDark: isDark)
+            }
+            .buttonStyle(PlainButtonStyle())
+            .focusable(false)
+            Spacer()
+          }
+          DetailField(label: "Location", value: "MacBook Pro ▸ Clipboard", isDark: isDark)
+        }
+        .frame(maxWidth: .infinity, alignment: Alignment.leading)
+        Spacer()
+        VStack(spacing: 12) {
+          if selectedKind == "Image" {
+            ClipboardPreview(kind: selectedKind, text: selectedPreviewText, path: selectedPayloadPath, colorHex: selectedColorHex, isDark: isDark)
+              .frame(width: 120, height: 92)
+              .clipShape(RoundedRectangle(cornerRadius: 7))
+          } else {
+            Image(systemName: selectedKind == "File" ? "doc" : "doc.richtext")
+              .font(.system(size: 58, weight: Font.Weight.light))
+              .foregroundColor(muted.opacity(0.52))
+              .frame(width: 120, height: 92)
+          }
+          Button("Show in Finder", action: ShowFileInFinder) {}
+            .buttonStyle(PlainButtonStyle())
+            .focusable(false)
+            .font(.system(size: 12, weight: Font.Weight.semibold))
+            .foregroundColor(isDark ? Color.white.opacity(0.86) : Color.black.opacity(0.74))
+            .padding(vertical: 6, horizontal: 12)
+            .background(RoundedRectangle(cornerRadius: 6).fill(isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.075)))
+            .disabled(!hasSelection)
+        }
+        .frame(width: 134, alignment: Alignment.top)
+      }
+      .padding(top: 12, leading: 12, bottom: 14, trailing: 12)
+    }
+    .frame(maxWidth: .infinity, minHeight: 250, maxHeight: 290)
+    .background(RoundedRectangle(cornerRadius: 8).stroke(divider).background(RoundedRectangle(cornerRadius: 8).fill(card)))
+    .padding(horizontal: 6)
+    .padding(bottom: 8)
+  }
+  .background(bg)
+}
+
+component ClipEditSheet(isDark: Bool) {
+  let fg = isDark ? Color.white.opacity(0.90) : Color(token.color.textPrimary)
+  let muted = isDark ? Color.white.opacity(0.56) : Color(token.color.textMuted)
+  VStack(alignment: HorizontalAlignment.leading, spacing: 14) {
+    Text("Edit Item")
+      .font(.system(size: 20, weight: Font.Weight.semibold))
+      .foregroundColor(fg)
+    Text("Changes are saved to the local clipboard history store.")
+      .font(.system(size: 12))
+      .foregroundColor(muted)
+    TextField("Title", text: editTitle)
+      .textFieldStyle(RoundedBorderTextFieldStyle())
+    TextEditor(text: editText)
+      .font(.system(size: 12, design: Font.Design.monospaced))
+      .frame(width: 520, height: 260)
+    HStack {
+      Spacer()
+      Button("Cancel", action: HideEditSheet) {}
+      Button("Save", action: RequestSaveEdit) {}
+        .keyboardShortcut(.defaultAction)
+    }
+  }
+  .padding(18)
+}
+
+component ClipSettingsSheet(isDark: Bool) {
+  let fg = isDark ? Color.white.opacity(0.90) : Color(token.color.textPrimary)
+  let muted = isDark ? Color.white.opacity(0.56) : Color(token.color.textMuted)
+  let panel = isDark ? Color.white.opacity(0.055) : Color(NSColor.controlBackgroundColor)
+
+  VStack(alignment: HorizontalAlignment.leading, spacing: 18) {
+    VStack(alignment: HorizontalAlignment.leading, spacing: 4) {
+      Text("Settings")
+        .font(.system(size: 20, weight: Font.Weight.semibold))
+        .foregroundColor(fg)
+      Text("ClipBook keeps clipboard history locally on this Mac.")
+        .font(.system(size: 12))
+        .foregroundColor(muted)
+    }
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 10) {
+      Text("Appearance")
+        .font(.system(size: 12, weight: Font.Weight.semibold))
+        .foregroundColor(fg)
+      HStack(spacing: 8) {
+        Button(action: SetAppearanceSystem) { FilterChip(label: "System", active: appearanceMode == "System", isDark: isDark) }
+          .buttonStyle(PlainButtonStyle())
+          .focusable(false)
+        Button(action: SetAppearanceLight) { FilterChip(label: "Light", active: appearanceMode == "Light", isDark: isDark) }
+          .buttonStyle(PlainButtonStyle())
+          .focusable(false)
+        Button(action: SetAppearanceDark) { FilterChip(label: "Dark", active: appearanceMode == "Dark", isDark: isDark) }
+          .buttonStyle(PlainButtonStyle())
+          .focusable(false)
+      }
+    }
+    .padding(12)
+    .background(RoundedRectangle(cornerRadius: 8).fill(panel))
+
+    VStack(alignment: HorizontalAlignment.leading, spacing: 10) {
+      Text("Capture")
+        .font(.system(size: 12, weight: Font.Weight.semibold))
+        .foregroundColor(fg)
+      Toggle("Capture images", isOn: captureImages)
+      Toggle("Capture files", isOn: captureFiles)
+      Toggle("Capture sensitive apps", isOn: captureSensitiveApps)
+      Toggle("Preserve favorites when clearing", isOn: preserveFavoritesOnClear)
+      Toggle("Clear on quit", isOn: clearOnQuit)
+      Toggle("Clear on restart", isOn: clearOnRestart)
+    }
+    .padding(12)
+    .background(RoundedRectangle(cornerRadius: 8).fill(panel))
+
+    HStack {
+      Text("Retain days")
+        .frame(width: 120, alignment: Alignment.leading)
+      TextField("30", text: retainDays)
+        .textFieldStyle(RoundedBorderTextFieldStyle())
+        .frame(width: 80)
+      Text("Max items")
+      TextField("500", text: maxItems)
+        .textFieldStyle(RoundedBorderTextFieldStyle())
+        .frame(width: 80)
+    }
+    TextField("Ignored apps, comma separated", text: ignoredAppsText)
+      .textFieldStyle(RoundedBorderTextFieldStyle())
+    VStack(alignment: HorizontalAlignment.leading, spacing: 4) {
+      Text("Storage")
+        .font(.system(size: 12, weight: Font.Weight.semibold))
+        .foregroundColor(fg)
+      Text(storagePath)
+        .font(.system(size: 11, design: Font.Design.monospaced))
+        .foregroundColor(muted)
+        .textSelection(.enabled)
+        .lineLimit(2)
+    }
+    .padding(12)
+    .background(RoundedRectangle(cornerRadius: 8).fill(panel))
+
+    HStack {
+      Text(accessibilityTrusted ? "Accessibility permission granted" : "Paste-to-app needs Accessibility permission")
+        .font(.system(size: 11))
+        .foregroundColor(isDark ? Color.white.opacity(0.58) : Color(token.color.textMuted))
+      Spacer()
+      Button("Cancel", action: HideSettings) {}
+      Button("Save", action: SaveSettings) {}
+        .keyboardShortcut(.defaultAction)
+    }
+  }
+  .frame(width: 560)
+  .padding(18)
+}

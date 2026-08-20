@@ -73,6 +73,7 @@ type
   IrcEvent* = object
     ## An event emitted by the IRC client.
     msgBatchRef*: string      ## IRCv3 batch reference tag (from message tags), empty if not in a batch
+    msgTime*: string          ## IRCv3 server-time tag, empty when unavailable
     case kind*: IrcEventKind
     of iekConnected:
       discard
@@ -1346,6 +1347,7 @@ proc classifyMessage*(msg: IrcMessage): IrcEvent =
   # Propagate batch reference from message tags
   if msg.tags.hasKey("batch"):
     result.msgBatchRef = msg.tags["batch"]
+  result.msgTime = msg.getTime()
 
 # ============================================================
 # IRC formatting code stripping

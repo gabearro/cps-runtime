@@ -1914,11 +1914,11 @@ proc emitGeneratedSwift(ir: GuiIrProgram, appName: string): string =
         else:
           outLines.add "            window.titleVisibility = .hidden"
           outLines.add "            window.titlebarAppearsTransparent = true"
-        # Extend content into the titlebar region so split-view sidebars align
-        # under the traffic-light/titlebar area.
-        outLines.add "            window.styleMask.insert(.fullSizeContentView)"
-        outLines.add "            window.toolbarStyle = .unified"
-        outLines.add "            window.toolbar?.showsBaselineSeparator = false"
+          # Extend content into the titlebar region so split-view sidebars align
+          # under the traffic-light/titlebar area.
+          outLines.add "            window.styleMask.insert(.fullSizeContentView)"
+          outLines.add "            window.toolbarStyle = .unified"
+          outLines.add "            window.toolbar?.showsBaselineSeparator = false"
       outLines.add "          }"
       outLines.add "#endif"
     if hasShortcutMonitor:

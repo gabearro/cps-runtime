@@ -17,6 +17,7 @@ import ../io/streams
 import ../io/tcp
 import ../io/buffered
 import ../io/proxy
+import ../io/timeouts
 import ../concurrency/channels
 import ../tls/client as tlsclient
 import ./protocol
@@ -48,6 +49,8 @@ type
     reconnectMaxDelayMs*: int  ## Cap on backoff delay (default: 300000 = 5 min)
     reconnectJitterMs*: int    ## Random jitter range (default: 5000)
     maxReconnectAttempts*: int ## Max reconnect attempts (0 = unlimited)
+    connectTimeoutMs*: int     ## TCP/proxy/TLS connect timeout (default 30000, 0 = no timeout)
+    registrationTimeoutMs*: int ## Time to wait for IRC welcome after connect (default 60000, 0 = no timeout)
     pingTimeoutMs*: int        ## PING timeout (default 120000)
     autoJoinChannels*: seq[string] ## Channels to join on connect
     quitMessage*: string       ## QUIT reason shown to other users (default "Goodbye")
@@ -109,6 +112,8 @@ proc newIrcClientConfig*(host: string, port: int = 6667,
     reconnectMaxDelayMs: 300_000,
     reconnectJitterMs: 5000,
     maxReconnectAttempts: 0,
+    connectTimeoutMs: 30_000,
+    registrationTimeoutMs: 60_000,
     pingTimeoutMs: 120_000,
     quitMessage: "Goodbye",
     ctcpVersion: "CPS IRC Client 1.0",
@@ -408,6 +413,19 @@ proc doRegister(client: IrcClient): CpsVoidFuture {.cps.} =
     await client.sendRaw(formatPass(client.config.password))
   await client.sendRaw(formatNick(client.config.nick))
   await client.sendRaw(formatUser(client.config.username, client.config.realname))
+
+proc abortSocket(client: IrcClient)
+
+proc registrationTimeoutLoop(client: IrcClient): CpsVoidFuture {.cps.} =
+  ## Abort connections that complete TCP/TLS but never finish IRC registration.
+  let timeoutMs = client.config.registrationTimeoutMs
+  if timeoutMs <= 0:
+    return
+  await cpsSleep(timeoutMs)
+  if client.state == icsRegistering and not client.registered:
+    await client.emit(IrcEvent(kind: iekError,
+      errMsg: "Registration timed out (" & $(timeoutMs div 1000) & "s)"))
+    client.abortSocket()
 
 # ============================================================
 # Internal: handle CTCP requests
@@ -787,21 +805,47 @@ proc connectToServer(client: IrcClient): CpsFuture[bool] {.cps.} =
   try:
     var stream: AsyncStream
     if client.config.proxies.len > 0:
-      let ps = await proxyChainConnect(client.config.proxies,
+      let proxyFut = proxyChainConnect(client.config.proxies,
                                         client.config.host, client.config.port)
+      let ps =
+        if client.config.connectTimeoutMs > 0:
+          await withTimeout(proxyFut, client.config.connectTimeoutMs)
+        else:
+          await proxyFut
       if client.config.useTls:
         # TLS over proxy tunnel
         let tcp = ps.getUnderlyingTcpStream()
         let tls = tlsclient.newTlsStream(tcp, client.config.host, alpnProtocols = @[])
-        await tlsclient.tlsConnect(tls)
+        try:
+          let tlsFut = tlsclient.tlsConnect(tls)
+          if client.config.connectTimeoutMs > 0:
+            await withTimeout(tlsFut, client.config.connectTimeoutMs)
+          else:
+            await tlsFut
+        except CatchableError:
+          tls.close()
+          raise
         stream = tls.AsyncStream
       else:
         stream = ps.AsyncStream
     else:
-      let tcp = await tcpConnect(client.config.host, client.config.port)
+      let tcpFut = tcpConnect(client.config.host, client.config.port)
+      let tcp =
+        if client.config.connectTimeoutMs > 0:
+          await withTimeout(tcpFut, client.config.connectTimeoutMs)
+        else:
+          await tcpFut
       if client.config.useTls:
         let tls = tlsclient.newTlsStream(tcp, client.config.host, alpnProtocols = @[])
-        await tlsclient.tlsConnect(tls)
+        try:
+          let tlsFut = tlsclient.tlsConnect(tls)
+          if client.config.connectTimeoutMs > 0:
+            await withTimeout(tlsFut, client.config.connectTimeoutMs)
+          else:
+            await tlsFut
+        except CatchableError:
+          tls.close()
+          raise
         stream = tls.AsyncStream
       else:
         stream = tcp.AsyncStream
@@ -830,6 +874,8 @@ proc run*(client: IrcClient): CpsVoidFuture {.cps.} =
       client.lastDataReceived = epochTime()
       await client.doRegister()
 
+      let registrationTimeoutFut = registrationTimeoutLoop(client)
+
       # Start keep-alive loop in background (runs concurrently via event loop).
       # It sends periodic PINGs and force-closes the stream on timeout.
       let keepAliveFut = keepAliveLoop(client)
@@ -839,6 +885,7 @@ proc run*(client: IrcClient): CpsVoidFuture {.cps.} =
       # readLoop exited — cancel keep-alive (it will also exit on its own
       # when it sees the stream is closed/nil, but cancel is immediate)
       keepAliveFut.cancel()
+      registrationTimeoutFut.cancel()
 
       # Disconnected
       client.state = icsDisconnected

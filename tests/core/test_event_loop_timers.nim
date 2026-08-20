@@ -14,6 +14,81 @@ block testScheduleCallbackReadyQueue:
   assert ran, "scheduleCallback should enqueue and execute through ready queue"
   echo "PASS: scheduleCallback executes via ready queue"
 
+block testReadyCallbackExceptionDoesNotStopLoop:
+  let loop = getEventLoop()
+  loop.resetStats()
+  var afterThrow = false
+
+  loop.scheduleCallback(proc() =
+    raise newException(ValueError, "ready callback failure")
+  )
+  loop.scheduleCallback(proc() =
+    afterThrow = true
+  )
+
+  loop.tick()
+
+  let stats = loop.getStats()
+  assert afterThrow, "Ready callback after a throwing callback should still run"
+  assert stats.callbackErrors >= 1, "Expected ready callback error to be counted"
+  echo "PASS: Ready callback exception is isolated"
+
+block testTimerCallbackExceptionDoesNotStopLoop:
+  let loop = getEventLoop()
+  loop.resetStats()
+  var afterThrow = false
+
+  discard loop.registerTimer(0, proc() =
+    raise newException(ValueError, "timer callback failure")
+  )
+  discard loop.registerTimer(0, proc() =
+    afterThrow = true
+  )
+
+  loop.tick()
+
+  let stats = loop.getStats()
+  assert afterThrow, "Timer callback after a throwing callback should still run"
+  assert stats.callbackErrors >= 1, "Expected timer callback error to be counted"
+  echo "PASS: Timer callback exception is isolated"
+
+block testFutureCallbackExceptionDoesNotEscapeCompletion:
+  let fut = newCpsVoidFuture()
+  var afterThrow = false
+  var completeReturned = false
+
+  fut.addCallback(proc() =
+    raise newException(ValueError, "future callback failure")
+  )
+  fut.addCallback(proc() =
+    afterThrow = true
+  )
+
+  try:
+    fut.complete()
+    completeReturned = true
+  except CatchableError:
+    completeReturned = false
+
+  assert completeReturned, "Future completion should not rethrow callback errors"
+  assert afterThrow, "Future callback after a throwing callback should still run"
+  echo "PASS: Future callback exception is isolated"
+
+block testFailedFutureStillRaisesOnRead:
+  let fut = newCpsVoidFuture()
+  var raised = false
+
+  fut.fail(newException(ValueError, "future failure"))
+
+  runCps(fut)
+  try:
+    fut.read()
+  except ValueError:
+    raised = true
+
+  assert raised, "Failed futures should still raise when read"
+  echo "PASS: Failed future semantics preserved"
+
 block testManyTimersFireAndDrain:
   let loop = getEventLoop()
   var fired = 0

@@ -751,7 +751,12 @@ proc natPmpRequest(mgr: NatManager, request: string, opcode: byte,
 
   var attempt: int = 0
   while attempt < maxRetries:
-    discard mgr.sock.trySendToAddr(request, mgr.gatewayIp, NatPmpPort, AF_INET)
+    try:
+      discard mgr.sock.trySendToAddr(request, mgr.gatewayIp, NatPmpPort, AF_INET)
+    except CatchableError:
+      if key in mgr.pendingPmp:
+        mgr.pendingPmp.del(key)
+      return ""
     let timeoutMs: int = NatPmpBaseTimeoutMs * (1 shl attempt)
     let timedOut: bool = await withTimeoutBool(responseFut, timeoutMs)
     if not timedOut:
@@ -778,7 +783,12 @@ proc pcpRequest(mgr: NatManager, request: string,
 
   var attempt: int = 0
   while attempt < maxRetries:
-    discard mgr.sock.trySendToAddr(request, mgr.gatewayIp, NatPmpPort, AF_INET)
+    try:
+      discard mgr.sock.trySendToAddr(request, mgr.gatewayIp, NatPmpPort, AF_INET)
+    except CatchableError:
+      if key in mgr.pendingPcp:
+        mgr.pendingPcp.del(key)
+      return ""
     let baseMs: int = min(PcpBaseTimeoutMs * (1 shl attempt), 1024_000)
     let timeoutMs: int = jitteredTimeout(baseMs)
     let timedOut: bool = await withTimeoutBool(responseFut, timeoutMs)
@@ -866,7 +876,10 @@ proc ssdpDiscover(mgr: NatManager, timeoutMs: int = 3000): CpsVoidFuture {.cps.}
   let discoverSock = newUdpSocket(AF_INET)
   defer: discoverSock.close()
 
-  discard discoverSock.trySendToAddr(msearch, "239.255.255.250", 1900, AF_INET)
+  try:
+    discard discoverSock.trySendToAddr(msearch, "239.255.255.250", 1900, AF_INET)
+  except CatchableError:
+    return
 
   let recvFut: CpsFuture[Datagram] = discoverSock.recvFrom(2048)
   let timedOut: bool = await withTimeoutBool(recvFut, timeoutMs)
@@ -940,7 +953,10 @@ proc discoverInner(mgr: NatManager): CpsVoidFuture {.cps.} =
     let nonce = generateNonce()
     let request: string = pcpBuildMapRequest(mgr.localIp, mpTcp, 0, 0, 0, nonce)
     ensureNatSocket(mgr)
-    discard mgr.sock.trySendToAddr(request, mgr.gatewayIp, NatPmpPort, AF_INET)
+    try:
+      discard mgr.sock.trySendToAddr(request, mgr.gatewayIp, NatPmpPort, AF_INET)
+    except CatchableError:
+      return
 
     let key: string = nonceToHex(nonce)
     let responseFut = newCpsFuture[string]()
@@ -965,9 +981,10 @@ proc discoverInner(mgr: NatManager): CpsVoidFuture {.cps.} =
       let nonce = generateNonce()
       let request: string = pcpBuildMapRequest(mgr.localIp, mpTcp, 0, 0, 0, nonce)
       let data: string = await pcpRequest(mgr, request, nonce, 3)
-      let pcpExtIp = pcpParseResponse(data)
-      if pcpExtIp.externalIp.len > 0:
-        mgr.externalIp = pcpExtIp.externalIp
+      if data.len > 0:
+        let pcpExtIp = pcpParseResponse(data)
+        if pcpExtIp.externalIp.len > 0:
+          mgr.externalIp = pcpExtIp.externalIp
     except CatchableError:
       discard
     return
@@ -977,12 +994,13 @@ proc discoverInner(mgr: NatManager): CpsVoidFuture {.cps.} =
   try:
     let request: string = natPmpBuildExternalAddrRequest()
     let data: string = await natPmpRequest(mgr, request, NatPmpOpExternalAddr, 0, 4)
-    let pmpResp = natPmpParseResponse(data)
-    mgr.checkPmpEpoch(pmpResp.epoch)
-    if pmpResp.resultCode == 0:
-      mgr.protocol = npNatPmp
-      mgr.externalIp = pmpResp.externalIp
-      pmpOk = true
+    if data.len > 0:
+      let pmpResp = natPmpParseResponse(data)
+      mgr.checkPmpEpoch(pmpResp.epoch)
+      if pmpResp.resultCode == 0:
+        mgr.protocol = npNatPmp
+        mgr.externalIp = pmpResp.externalIp
+        pmpOk = true
   except CatchableError:
     discard
 

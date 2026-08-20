@@ -250,12 +250,12 @@ struct ReorderableSidebar: View {
         .background(sidebarBg)
         // Clear drag state once the store arrays actually update from the bridge response.
         // This prevents the flash where the old item appears at full opacity before reorder.
-        .onChange(of: store.state.servers) { _ in
+        .onChange(of: store.state.servers.map(\.id)) { _ in
             if draggingServerId != nil {
                 clearServerDragState()
             }
         }
-        .onChange(of: store.state.channels) { _ in
+        .onChange(of: store.state.channels.map { "\($0.serverId):\($0.name)" }) { _ in
             if draggingChannelName != nil {
                 clearChannelDragState()
             }

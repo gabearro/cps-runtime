@@ -146,6 +146,7 @@ type
     cancellations*: int
     callbacksRegistered*: int
     callbacksFired*: int
+    callbackErrors*: int
     callbackNodesAllocated*: int
     callbackNodesFreed*: int
     runCpsWaits*: int
@@ -168,6 +169,7 @@ var rtFailures: Atomic[int]
 var rtCancellations: Atomic[int]
 var rtCallbacksRegistered: Atomic[int]
 var rtCallbacksFired: Atomic[int]
+var rtCallbackErrors: Atomic[int]
 var rtCallbackNodesAllocated: Atomic[int]
 var rtCallbackNodesFreed: Atomic[int]
 var rtRunCpsWaits: Atomic[int]
@@ -186,6 +188,7 @@ proc getRuntimeStats*(): RuntimeStats =
     cancellations: rtCancellations.load(moRelaxed),
     callbacksRegistered: rtCallbacksRegistered.load(moRelaxed),
     callbacksFired: rtCallbacksFired.load(moRelaxed),
+    callbackErrors: rtCallbackErrors.load(moRelaxed),
     callbackNodesAllocated: rtCallbackNodesAllocated.load(moRelaxed),
     callbackNodesFreed: rtCallbackNodesFreed.load(moRelaxed),
     runCpsWaits: rtRunCpsWaits.load(moRelaxed),
@@ -198,6 +201,7 @@ proc resetRuntimeStats*() =
   rtCancellations.store(0, moRelaxed)
   rtCallbacksRegistered.store(0, moRelaxed)
   rtCallbacksFired.store(0, moRelaxed)
+  rtCallbackErrors.store(0, moRelaxed)
   rtCallbackNodesAllocated.store(0, moRelaxed)
   rtCallbackNodesFreed.store(0, moRelaxed)
   rtRunCpsWaits.store(0, moRelaxed)
@@ -953,7 +957,10 @@ proc dispatchCallback(rt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
         let prevRt = currentRuntimeCtx
         setCurrentRuntime(targetRt)
         try:
-          cb()
+          try:
+            cb()
+          except CatchableError:
+            statInc(rtCallbackErrors)
         finally:
           setCurrentRuntime(prevRt)
       )
@@ -967,7 +974,10 @@ proc dispatchCallback(rt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
     if mustEnter:
       setCurrentRuntime(rt)
     try:
-      cb()
+      try:
+        cb()
+      except CatchableError:
+        statInc(rtCallbackErrors)
     finally:
       if mustEnter:
         setCurrentRuntime(prevRt)
@@ -1013,13 +1023,15 @@ proc fireCallbacks[T](fut: CpsFuture[T], head: pointer) {.inline.} =
     fut.inlineCallback = nil
     fut.inlineTargetRuntime = nil
     if cb != nil:
-      if rt == nil:
-        cb()
-      else:
-        dispatchCallback(rt, cb)
+      try:
+        if rt == nil:
+          cb()
+        else:
+          dispatchCallback(rt, cb)
+      except CatchableError:
+        statInc(rtCallbackErrors)
     return
   var p = head
-  var firstErr: ref CatchableError = nil
   while p != nil and p != CallbackClosed:
     let node = cast[ptr CallbackNode](p)
     p = node.next
@@ -1030,15 +1042,12 @@ proc fireCallbacks[T](fut: CpsFuture[T], head: pointer) {.inline.} =
           thunk.cb()
         else:
           dispatchCallback(thunk.targetRuntime, thunk.cb)
-    except CatchableError as e:
-      if firstErr == nil:
-        firstErr = e
+    except CatchableError:
+      statInc(rtCallbackErrors)
     finally:
       if thunk != nil:
         GC_unref(thunk)
       freeCallbackNode(node)
-  if firstErr != nil:
-    raise firstErr
 
 proc fireCallbacks(fut: CpsVoidFuture, head: pointer) {.inline.} =
   if head == CallbackInline:
@@ -1047,13 +1056,15 @@ proc fireCallbacks(fut: CpsVoidFuture, head: pointer) {.inline.} =
     fut.inlineCallback = nil
     fut.inlineTargetRuntime = nil
     if cb != nil:
-      if rt == nil:
-        cb()
-      else:
-        dispatchCallback(rt, cb)
+      try:
+        if rt == nil:
+          cb()
+        else:
+          dispatchCallback(rt, cb)
+      except CatchableError:
+        statInc(rtCallbackErrors)
     return
   var p = head
-  var firstErr: ref CatchableError = nil
   while p != nil and p != CallbackClosed:
     let node = cast[ptr CallbackNode](p)
     p = node.next
@@ -1064,21 +1075,21 @@ proc fireCallbacks(fut: CpsVoidFuture, head: pointer) {.inline.} =
           thunk.cb()
         else:
           dispatchCallback(thunk.targetRuntime, thunk.cb)
-    except CatchableError as e:
-      if firstErr == nil:
-        firstErr = e
+    except CatchableError:
+      statInc(rtCallbackErrors)
     finally:
       if thunk != nil:
         GC_unref(thunk)
       freeCallbackNode(node)
-  if firstErr != nil:
-    raise firstErr
 
 proc fireLocalCallback[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
   if cb == nil:
     return
   if targetRt == nil:
-    cb()
+    try:
+      cb()
+    except CatchableError:
+      statInc(rtCallbackErrors)
     return
   if fut.schedulePinnedLocalCallback(targetRt, cb):
     return
@@ -1088,7 +1099,10 @@ proc fireLocalCallback(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {.cl
   if cb == nil:
     return
   if targetRt == nil:
-    cb()
+    try:
+      cb()
+    except CatchableError:
+      statInc(rtCallbackErrors)
     return
   if fut.schedulePinnedLocalCallback(targetRt, cb):
     return
@@ -1105,17 +1119,12 @@ proc fireLocalCallbacks[T](fut: CpsFuture[T]) =
     fut.fireLocalCallback(inlineRt, inlineCb)
     return
 
-  var firstErr: ref CatchableError = nil
   if fut.localCallbacks.len > 0:
     var i = fut.localCallbacks.len - 1
     while true:
       let thunk = fut.localCallbacks[i]
-      try:
-        if thunk != nil:
-          fut.fireLocalCallback(thunk.targetRuntime, thunk.cb)
-      except CatchableError as e:
-        if firstErr == nil:
-          firstErr = e
+      if thunk != nil:
+        fut.fireLocalCallback(thunk.targetRuntime, thunk.cb)
       if i == 0:
         break
       dec i
@@ -1124,13 +1133,7 @@ proc fireLocalCallbacks[T](fut: CpsFuture[T]) =
   let inlineRt = fut.inlineTargetRuntime
   fut.inlineCallback = nil
   fut.inlineTargetRuntime = nil
-  try:
-    fut.fireLocalCallback(inlineRt, inlineCb)
-  except CatchableError as e:
-    if firstErr == nil:
-      firstErr = e
-  if firstErr != nil:
-    raise firstErr
+  fut.fireLocalCallback(inlineRt, inlineCb)
 
 proc fireLocalCallbacks(fut: CpsVoidFuture) =
   if fut.localCallbacks.len == 0:
@@ -1143,17 +1146,12 @@ proc fireLocalCallbacks(fut: CpsVoidFuture) =
     fut.fireLocalCallback(inlineRt, inlineCb)
     return
 
-  var firstErr: ref CatchableError = nil
   if fut.localCallbacks.len > 0:
     var i = fut.localCallbacks.len - 1
     while true:
       let thunk = fut.localCallbacks[i]
-      try:
-        if thunk != nil:
-          fut.fireLocalCallback(thunk.targetRuntime, thunk.cb)
-      except CatchableError as e:
-        if firstErr == nil:
-          firstErr = e
+      if thunk != nil:
+        fut.fireLocalCallback(thunk.targetRuntime, thunk.cb)
       if i == 0:
         break
       dec i
@@ -1162,13 +1160,7 @@ proc fireLocalCallbacks(fut: CpsVoidFuture) =
   let inlineRt = fut.inlineTargetRuntime
   fut.inlineCallback = nil
   fut.inlineTargetRuntime = nil
-  try:
-    fut.fireLocalCallback(inlineRt, inlineCb)
-  except CatchableError as e:
-    if firstErr == nil:
-      firstErr = e
-  if firstErr != nil:
-    raise firstErr
+  fut.fireLocalCallback(inlineRt, inlineCb)
 
 proc wakeReactorIfNeeded(rt: CpsRuntime) {.inline.} =
   if rt != nil and rt.wakeReactor != nil:
@@ -1334,9 +1326,19 @@ proc read*[T](fut: CpsFuture[T]): T =
     raise fut.error
   result = fut.value
 
+proc read*(fut: CpsVoidFuture) =
+  if fut.perfMode == fpLocalFast:
+    fut.ensureLocalAffinity("read")
+  assert fut.finished, "Future not yet completed"
+  if fut.error != nil:
+    raise fut.error
+
 proc fireCallbackInline(targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
   if targetRt == nil:
-    cb()
+    try:
+      cb()
+    except CatchableError:
+      statInc(rtCallbackErrors)
   else:
     dispatchCallback(targetRt, cb)
 

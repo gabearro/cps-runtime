@@ -27,10 +27,7 @@ struct KeyInterceptingTextField: View {
             onTextChange: { store.send(.inputChanged) },
             onEscapePress: {
                 if store.state.completionActive {
-                    store.state.completionActive = false
-                    store.state.completionSuggestions = []
-                    store.state.completionIndex = -1
-                    store.state.completionSelectIndex = -1
+                    store.send(.dismissCompletion)
                 }
             }
         )
