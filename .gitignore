@@ -1,31 +1,23 @@
-# Nim build artifacts
+.DS_Store
 .nimcache/
+nimcache/
 *.exe
 *.dll
 *.so
 *.dylib
-
-# Node/browser test artifacts
-tests/http/browser/node_modules/
-tests/http/browser/playwright-report/
-tests/http/browser/test-results/
-
-# Python venv/cache artifacts
+*.out
+/tests/**/out/
+/tests/**/node_modules/
+/examples/**/out/
+/build/
+/out/
+node_modules/
+playwright-report/
+test-results/
 .venv/
-venv/
 __pycache__/
 *.pyc
-
-# Local temporary outputs
-*.log
-*.tmp
-
-.claude
-.idea
-CLAUDE.md
-.nimcache
-/downloads/artemis_serv_2026-02-13.zip
-/downloads/Bsk-ebooks(2026-02-19)-OS.zip
-/out_torrent/
-/out/
-/examples/gui/torrent/out/
+/deps/boringssl/
+/deps/boringssl-src/
+/tests/**/test_*
+!/tests/**/*.nim

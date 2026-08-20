@@ -2007,7 +2007,9 @@ macro cps*(prc: untyped): untyped =
     stepNames.add ident(procBaseName & "Step" & $i)
 
   # Keep bare idents for proc definitions; instantiate stepNames for transitions
-  let stepBareNames = stepNames  # snapshot before generic instantiation
+  # Sequences share their backing storage after assignment, so make an actual
+  # copy before replacing stepNames with generic instantiations.
+  let stepBareNames = stepNames.mapIt(it.copyNimTree())
   if isGeneric:
     for i in 0 ..< numSteps:
       stepNames[i] = makeGenericInst(stepBareNames[i])
