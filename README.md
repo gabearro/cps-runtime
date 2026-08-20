@@ -12,6 +12,17 @@ nimble install https://github.com/gabearro/cps-runtime@#v1.0.0
 import cps
 ```
 
+Projects that import `cps/mt` must enable the thread-safe memory manager:
+
+```cfg
+--threads:on
+--mm:atomicArc
+--deepcopy:on
+```
+
+Place these settings in the consuming project's `nim.cfg`. The core runtime
+does not require `cps/mt`.
+
 ## Development
 
 ```sh
