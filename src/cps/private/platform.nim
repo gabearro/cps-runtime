@@ -205,15 +205,19 @@ elif defined(windows):
 # ============================================================
 
 when defined(windows):
+  ## Parse a presentation-format IP address into its network representation.
   proc inet_pton*(af: cint, src: cstring, dst: pointer): cint
     {.importc: "inet_pton", header: "<ws2tcpip.h>".}
 
+  ## Format a network-format IP address for presentation.
   proc inet_ntop*(af: cint, src: pointer, dst: cstring, size: int32): cstring
     {.importc: "inet_ntop", header: "<ws2tcpip.h>".}
 
+  ## Read the local address bound to a socket.
   proc getsockname*(fd: SocketHandle, a: ptr SockAddr, alen: ptr SockLen): cint
     {.importc: "getsockname", header: "<winsock2.h>".}
 
+  ## Resolve a socket address into numeric host and service strings.
   proc getnameinfo*(sa: ptr SockAddr, salen: SockLen,
                     host: cstring, hostlen: SockLen,
                     serv: cstring, servlen: SockLen,

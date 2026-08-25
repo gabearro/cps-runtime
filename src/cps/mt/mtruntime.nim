@@ -234,9 +234,11 @@ proc spawnBlockingOn*(handle: RuntimeHandle, body: proc() {.gcsafe.}): CpsVoidFu
   result = fut
 
 proc spawnBlocking*[T](body: proc(): T {.gcsafe.}): CpsFuture[T] =
+  ## Schedule blocking for asynchronous execution.
   spawnBlockingOn(currentRuntime(), body)
 
 proc spawnBlocking*(body: proc() {.gcsafe.}): CpsVoidFuture =
+  ## Schedule blocking for asynchronous execution.
   spawnBlockingOn(currentRuntime(), body)
 
 proc shutdownMtRuntime*(rt: CpsRuntime) =

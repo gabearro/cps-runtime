@@ -11,6 +11,7 @@
 import std/[macros, sets, tables, sequtils, sugar]
 import ./runtime
 
+## Expand the CPS future mode operation for the current transform.
 template cpsFutureMode*(mode: untyped) {.pragma.}
 
 type
@@ -741,6 +742,7 @@ proc splitStmtForAwait(s: NimNode, segments: var seq[Segment],
   return false
 
 macro cps*(prc: untyped): untyped =
+  ## Transform the CPS syntax at compile time.
   expectKind prc, nnkProcDef
 
   let procName = prc[0]

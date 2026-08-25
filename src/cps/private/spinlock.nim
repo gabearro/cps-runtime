@@ -17,6 +17,7 @@ type
     state: Atomic[int]  ## 0 = unlocked, 1 = locked
 
 proc initSpinLock*(sl: var SpinLock) {.inline.} =
+  ## Initialize spin lock.
   sl.state.store(0, moRelaxed)
 
 proc acquire*(sl: var SpinLock) {.inline.} =

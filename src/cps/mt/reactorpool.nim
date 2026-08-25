@@ -35,6 +35,7 @@ type
     threads: seq[Thread[ReactorThreadArg]]
     joined: bool
 
+## Shut down reactorpool and release its runtime resources.
 proc shutdown*(pool: ReactorPool)
 
 proc reactorMain(arg: ReactorThreadArg) {.thread.} =
@@ -104,6 +105,7 @@ proc stop*(pool: ReactorPool) =
     platform.wakePipeSignal(pool.state.wakeFds[i])
 
 proc join*(pool: ReactorPool) =
+  ## Wait for every reactor thread to exit.
   if pool == nil or pool.state == nil or pool.joined:
     return
   for i in 0 ..< pool.threads.len:
@@ -114,6 +116,7 @@ proc join*(pool: ReactorPool) =
   pool.state = nil
 
 proc shutdown*(pool: ReactorPool) =
+  ## Shut down reactorpool and release its runtime resources.
   pool.stop()
   pool.join()
 

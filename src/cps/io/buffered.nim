@@ -22,6 +22,7 @@ type
     eof: bool
 
 proc newBufferedReader*(stream: AsyncStream, bufSize: int = 8192): BufferedReader =
+  ## Create a new buffered reader.
   let initialSize = max(1, bufSize)
   BufferedReader(
     stream: stream,
@@ -388,6 +389,7 @@ type
     bufSize: int
 
 proc newBufferedWriter*(stream: AsyncStream, bufSize: int = 8192): BufferedWriter =
+  ## Create a new buffered writer.
   BufferedWriter(
     stream: stream,
     buf: "",

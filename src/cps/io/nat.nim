@@ -112,9 +112,11 @@ proc putU32BE(buf: var string, offset: int, val: uint32) =
   buf[offset + 3] = char(val and 0xFF)
 
 proc getU16BE*(data: string, offset: int): uint16 =
+  ## Decode a big-endian uint16 from the packet buffer.
   result = (uint16(data[offset].byte) shl 8) or uint16(data[offset + 1].byte)
 
 proc getU32BE*(data: string, offset: int): uint32 =
+  ## Decode a big-endian uint32 from the packet buffer.
   result = (uint32(data[offset].byte) shl 24) or
            (uint32(data[offset + 1].byte) shl 16) or
            (uint32(data[offset + 2].byte) shl 8) or
@@ -607,6 +609,7 @@ proc soapAddPortMapping*(serviceType: string, externalPort: uint16,
 
 proc soapDeletePortMapping*(serviceType: string, externalPort: uint16,
                              proto: MappingProto): string =
+  ## Ask the gateway to remove a SOAP port mapping.
   let protoStr = if proto == mpTcp: "TCP" else: "UDP"
   result = "<?xml version=\"1.0\"?>\r\n" &
     "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" " &
@@ -621,6 +624,7 @@ proc soapDeletePortMapping*(serviceType: string, externalPort: uint16,
     "</s:Envelope>"
 
 proc soapGetExternalIPAddress*(serviceType: string): string =
+  ## Ask the gateway for its external IP address over SOAP.
   result = "<?xml version=\"1.0\"?>\r\n" &
     "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" " &
     "s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\r\n" &
@@ -635,6 +639,7 @@ proc soapGetExternalIPAddress*(serviceType: string): string =
 # Returns true if timed out, false if completed.
 
 proc withTimeoutBool*[T](fut: CpsFuture[T], timeoutMs: int): CpsFuture[bool] =
+  ## Run the operation with a deadline and report whether it completed.
   let resultFut = newCpsFuture[bool]()
   resultFut.pinFutureRuntime()
 
@@ -662,6 +667,7 @@ proc withTimeoutBool*[T](fut: CpsFuture[T], timeoutMs: int): CpsFuture[bool] =
   result = resultFut
 
 proc withTimeoutBool*(fut: CpsVoidFuture, timeoutMs: int): CpsFuture[bool] =
+  ## Run the operation with a deadline and report whether it completed.
   let resultFut = newCpsFuture[bool]()
   resultFut.pinFutureRuntime()
 

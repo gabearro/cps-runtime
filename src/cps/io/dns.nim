@@ -433,9 +433,11 @@ proc resetDnsResolver*() =
 # ============================================================
 
 proc initDnsResolver*(numThreads: int = 2) {.deprecated: "DNS resolver no longer needs initialization".} =
+  ## Initialize DNS resolver.
   discard
 
 proc deinitDnsResolver*() {.deprecated: "DNS resolver no longer needs deinitialization".} =
+  ## Release resources owned by DNS resolver.
   discard
 
 # ============================================================

@@ -160,11 +160,17 @@ proc isTerminalFutureState(state: int): bool {.inline.} =
 
 proc ensureLocalAffinity[T](fut: CpsFuture[T], opName: string) {.inline.}
 proc ensureLocalAffinity(fut: CpsVoidFuture, opName: string) {.inline.}
+## Promote the future to shared-safe state before it crosses a thread boundary.
 proc ensureShared*[T](fut: CpsFuture[T])
+## Promote the future to shared-safe state before it crosses a thread boundary.
 proc ensureShared*(fut: CpsVoidFuture)
+## Complete the future and notify its waiters.
 proc complete*[T](fut: CpsFuture[T], val: T)
+## Complete the future and notify its waiters.
 proc complete*(fut: CpsVoidFuture)
+## Fail the future and notify its waiters.
 proc fail*[T](fut: CpsFuture[T], err: ref CatchableError)
+## Fail the future and notify its waiters.
 proc fail*(fut: CpsVoidFuture, err: ref CatchableError)
 
 var rtCompletions: Atomic[int]
@@ -185,6 +191,7 @@ template statInc(counter: untyped) =
     discard counter.fetchAdd(1, moRelaxed)
 
 proc getRuntimeStats*(): RuntimeStats =
+  ## Return a snapshot of runtime counters and queue depth.
   RuntimeStats(
     completions: rtCompletions.load(moRelaxed),
     failures: rtFailures.load(moRelaxed),
@@ -199,6 +206,7 @@ proc getRuntimeStats*(): RuntimeStats =
   )
 
 proc resetRuntimeStats*() =
+  ## Reset runtime stats to its initial state.
   rtCompletions.store(0, moRelaxed)
   rtFailures.store(0, moRelaxed)
   rtCancellations.store(0, moRelaxed)
@@ -275,6 +283,7 @@ proc applyCompatMtHooks(rt: CpsRuntime) {.inline.} =
     mtWakeReactor = nil
 
 proc defaultRuntimeConfig*(): RuntimeConfig =
+  ## Return the default runtime config.
   RuntimeConfig(
     flavor: rfCurrentThread,
     numWorkers: 0,
@@ -284,27 +293,34 @@ proc defaultRuntimeConfig*(): RuntimeConfig =
   )
 
 proc toHandle*(rt: CpsRuntime): RuntimeHandle {.inline.} =
+  ## Return a runtime handle for the supplied runtime.
   RuntimeHandle(runtime: rt)
 
 proc isNil*(h: RuntimeHandle): bool {.inline.} =
+  ## Return whether the runtime handle has no runtime attached.
   h.runtime.isNil
 
 proc runtimeId*(h: RuntimeHandle): int64 {.inline.} =
+  ## Return the stable identifier of the referenced runtime.
   if h.runtime.isNil: 0 else: h.runtime.id
 
 proc runtimeFlavor*(h: RuntimeHandle): RuntimeFlavor {.inline.} =
+  ## Return the execution model used by the referenced runtime.
   if h.runtime.isNil: rfCurrentThread else: h.runtime.flavor
 
 proc setCurrentRuntime*(rt: CpsRuntime) =
+  ## Bind the supplied runtime to the current thread.
   currentRuntimeCtx = rt
   if not isSchedulerWorker:
     currentWorkerId = -1
   applyCompatMtHooks(rt)
 
 proc tryCurrentRuntime*(): RuntimeHandle =
+  ## Return the runtime bound to this thread without creating one.
   toHandle(currentRuntimeCtx)
 
 proc newCurrentThreadRuntime*(): CpsRuntime =
+  ## Create a new current thread runtime.
   result = CpsRuntime()
   result.id = nextRuntimeId()
   result.flavor = rfCurrentThread
@@ -324,12 +340,14 @@ proc newCurrentThreadRuntime*(): CpsRuntime =
   result.mtActive = false
 
 proc registerMtRuntimeFactory*(factory: MtRuntimeFactoryProc) =
+  ## Register the factory used to construct multithreaded runtimes.
   gMtRuntimeFactory = factory
 
 proc newMultiThreadRuntime*(numWorkers: int = 0,
                             numBlockingThreads: int = 0,
                             maxSchedulerQueue: int = DefaultSchedulerQueueCap,
                             maxBlockingQueue: int = DefaultBlockingQueueCap): CpsRuntime =
+  ## Create a new multi thread runtime.
   if gMtRuntimeFactory == nil:
     raise newException(ValueError, "MT runtime factory not registered; import cps/mt first")
   let cfg = RuntimeConfig(
@@ -342,6 +360,7 @@ proc newMultiThreadRuntime*(numWorkers: int = 0,
   result = gMtRuntimeFactory(cfg)
 
 proc newRuntime*(config: RuntimeConfig): CpsRuntime =
+  ## Create a new runtime.
   case config.flavor
   of rfCurrentThread:
     result = newCurrentThreadRuntime()
@@ -366,6 +385,7 @@ proc ensureMainRuntime(): CpsRuntime =
   release(gRuntimeLock)
 
 proc setMainRuntime*(rt: CpsRuntime) =
+  ## Replace the process-wide main runtime binding.
   ensureRuntimeLockReady()
   acquire(gRuntimeLock)
   gMainRuntime = rt
@@ -373,9 +393,11 @@ proc setMainRuntime*(rt: CpsRuntime) =
   release(gRuntimeLock)
 
 proc mainRuntime*(): RuntimeHandle =
+  ## Return the process-wide main runtime handle.
   toHandle(ensureMainRuntime())
 
 proc currentRuntime*(): RuntimeHandle =
+  ## Return the runtime bound to this thread, creating the main runtime when needed.
   if currentRuntimeCtx != nil:
     toHandle(currentRuntimeCtx)
   else:
@@ -393,9 +415,11 @@ proc setLocalFutureDefault*(enabled: bool) {.inline.} =
   localFutureDefault = enabled
 
 proc localFutureDefaultEnabled*(): bool {.inline.} =
+  ## Return whether new futures use reactor-local storage by default.
   localFutureDefault
 
 proc enter*(handle: RuntimeHandle): RuntimeGuard =
+  ## Enter the referenced runtime and retain the previous thread-local binding.
   if handle.runtime == nil:
     raise newException(ValueError, "Cannot enter a nil runtime handle")
   result.prev = currentRuntimeCtx
@@ -403,12 +427,14 @@ proc enter*(handle: RuntimeHandle): RuntimeGuard =
   setCurrentRuntime(handle.runtime)
 
 proc leave*(guard: var RuntimeGuard) =
+  ## Restore the runtime binding retained by the guard.
   if not guard.active:
     return
   guard.active = false
   setCurrentRuntime(guard.prev)
 
 template withRuntime*(handle: RuntimeHandle, body: untyped): untyped =
+  ## Run a block with a temporary thread-local runtime binding.
   block:
     var guard = enter(handle)
     try:
@@ -430,21 +456,26 @@ proc ensureRuntimeWaitReady(rt: CpsRuntime) {.inline.} =
       cpuRelax()
 
 proc runCpsWaitEnter*(rt: CpsRuntime) {.inline.} =
+  ## Register a synchronous waiter with the runtime.
   ensureRuntimeWaitReady(rt)
   if rt != nil:
     discard rt.waiters.fetchAdd(1, moAcquireRelease)
 
 proc runCpsWaitLeave*(rt: CpsRuntime) {.inline.} =
+  ## Remove a synchronous waiter from the runtime.
   if rt != nil:
     discard rt.waiters.fetchSub(1, moAcquireRelease)
 
 proc runCpsWaitEnter*() {.inline.} =
+  ## Register a synchronous waiter with the runtime.
   runCpsWaitEnter(currentRuntime().runtime)
 
 proc runCpsWaitLeave*() {.inline.} =
+  ## Remove a synchronous waiter from the runtime.
   runCpsWaitLeave(currentRuntime().runtime)
 
 proc waitRunCpsSignal*[T](rt: CpsRuntime, fut: CpsFuture[T]) =
+  ## Wait until the future completes, fails, or is cancelled.
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("waitRunCpsSignal")
     return
@@ -466,6 +497,7 @@ proc waitRunCpsSignal*[T](rt: CpsRuntime, fut: CpsFuture[T]) =
       spins = 32
 
 proc waitRunCpsSignal*(rt: CpsRuntime, fut: CpsVoidFuture) =
+  ## Wait until the future completes, fails, or is cancelled.
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("waitRunCpsSignal")
     return
@@ -487,10 +519,12 @@ proc waitRunCpsSignal*(rt: CpsRuntime, fut: CpsVoidFuture) =
       spins = 32
 
 proc waitRunCpsSignal*[T](fut: CpsFuture[T]) =
+  ## Wait until the future completes, fails, or is cancelled.
   let rt = if fut.ownerRuntime != nil: fut.ownerRuntime else: currentRuntime().runtime
   waitRunCpsSignal(rt, fut)
 
 proc waitRunCpsSignal*(fut: CpsVoidFuture) =
+  ## Wait until the future completes, fails, or is cancelled.
   let rt = if fut.ownerRuntime != nil: fut.ownerRuntime else: currentRuntime().runtime
   waitRunCpsSignal(rt, fut)
 
@@ -500,6 +534,7 @@ proc waitRunCpsSignal*(fut: CpsVoidFuture) =
 
 proc newContinuation*(T: typedesc[Continuation],
                       fn: proc(c: sink Continuation): Continuation {.nimcall.}): T =
+  ## Create a new continuation.
   result = T()
   result.fn = fn
   result.state = csRunning
@@ -528,12 +563,15 @@ proc fail*(c: sink Continuation, err: ref CatchableError): Continuation {.inline
   result = c
 
 proc isRunning*(c: Continuation): bool {.inline.} =
+  ## Return whether the future is currently running.
   c.fn != nil
 
 proc isFinished*(c: Continuation): bool {.inline.} =
+  ## Return whether the future has reached a terminal state.
   c.state in {csFinished, csError}
 
 proc isSuspended*(c: Continuation): bool {.inline.} =
+  ## Return whether the future is suspended.
   c.state == csSuspended
 
 # ============================================================
@@ -541,6 +579,7 @@ proc isSuspended*(c: Continuation): bool {.inline.} =
 # ============================================================
 
 proc initTrampoline*(c: sink Continuation): Trampoline {.inline.} =
+  ## Initialize trampoline.
   Trampoline(current: c)
 
 proc bounce*(t: var Trampoline): bool {.inline.} =
@@ -694,18 +733,23 @@ proc localTerminalState(state: int): bool {.inline.} =
   state == FutureStateDone or state == FutureStateCancelled
 
 proc isLocalFast*[T](fut: CpsFuture[T]): bool {.inline.} =
+  ## Return whether the future uses reactor-local fast state.
   fut.perfMode == fpLocalFast
 
 proc isLocalFast*(fut: CpsVoidFuture): bool {.inline.} =
+  ## Return whether the future uses reactor-local fast state.
   fut.perfMode == fpLocalFast
 
 proc isSharedSafe*[T](fut: CpsFuture[T]): bool {.inline.} =
+  ## Return whether the future can cross thread boundaries.
   fut.perfMode == fpSharedSafe
 
 proc isSharedSafe*(fut: CpsVoidFuture): bool {.inline.} =
+  ## Return whether the future can cross thread boundaries.
   fut.perfMode == fpSharedSafe
 
 proc newCpsFuture*[T](): CpsFuture[T] =
+  ## Create a new CPS future.
   when not SharedFuturesOnly:
     if localFutureDefault:
       result = CpsFuture[T]()
@@ -722,6 +766,7 @@ proc newCpsFuture*[T](): CpsFuture[T] =
   result.ownerRuntime = nil
 
 proc newCpsVoidFuture*(): CpsVoidFuture =
+  ## Create a new CPS void future.
   when not SharedFuturesOnly:
     if localFutureDefault:
       result = CpsVoidFuture()
@@ -738,6 +783,7 @@ proc newCpsVoidFuture*(): CpsVoidFuture =
   result.ownerRuntime = nil
 
 proc newLocalCpsFuture*[T](): CpsFuture[T] =
+  ## Create a new local CPS future.
   when SharedFuturesOnly:
     result = newCpsFuture[T]()
   else:
@@ -758,6 +804,7 @@ proc newLocalCpsFuture*[T](): CpsFuture[T] =
     result.ownerRuntime = rt
 
 proc newLocalCpsVoidFuture*(): CpsVoidFuture =
+  ## Create a new local CPS void future.
   when SharedFuturesOnly:
     result = newCpsVoidFuture()
   else:
@@ -778,18 +825,22 @@ proc newLocalCpsVoidFuture*(): CpsVoidFuture =
     result.ownerRuntime = rt
 
 proc completedLocalFuture*[T](val: T): CpsFuture[T] =
+  ## Create an already-completed reactor-local future.
   result = newLocalCpsFuture[T]()
   complete(result, val)
 
 proc completedLocalVoidFuture*(): CpsVoidFuture =
+  ## Create an already-completed reactor-local void future.
   result = newLocalCpsVoidFuture()
   complete(result)
 
 proc failedLocalFuture*[T](err: ref CatchableError): CpsFuture[T] =
+  ## Create an already-failed reactor-local future.
   result = newLocalCpsFuture[T]()
   fail(result, err)
 
 proc failedLocalVoidFuture*(err: ref CatchableError): CpsVoidFuture =
+  ## Create an already-failed reactor-local void future.
   result = newLocalCpsVoidFuture()
   fail(result, err)
 
@@ -866,12 +917,15 @@ proc ownerRuntimeRef(fut: CpsVoidFuture): CpsRuntime {.inline.} =
   fut.ownerRuntime
 
 proc futureRuntime*[T](fut: CpsFuture[T]): RuntimeHandle {.inline.} =
+  ## Return the runtime currently associated with the future.
   toHandle(ownerRuntimeRef(fut))
 
 proc futureRuntime*(fut: CpsVoidFuture): RuntimeHandle {.inline.} =
+  ## Return the runtime currently associated with the future.
   toHandle(ownerRuntimeRef(fut))
 
 proc bindFutureRuntime*[T](fut: CpsFuture[T], handle: RuntimeHandle) {.inline.} =
+  ## Associate the future with the supplied runtime.
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("bindFutureRuntime")
     if handle.runtime != fut.ownerRuntime:
@@ -879,6 +933,7 @@ proc bindFutureRuntime*[T](fut: CpsFuture[T], handle: RuntimeHandle) {.inline.} 
   fut.ownerRuntime = handle.runtime
 
 proc bindFutureRuntime*(fut: CpsVoidFuture, handle: RuntimeHandle) {.inline.} =
+  ## Associate the future with the supplied runtime.
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("bindFutureRuntime")
     if handle.runtime != fut.ownerRuntime:
@@ -886,16 +941,19 @@ proc bindFutureRuntime*(fut: CpsVoidFuture, handle: RuntimeHandle) {.inline.} =
   fut.ownerRuntime = handle.runtime
 
 proc setFutureRootContinuation*[T](fut: CpsFuture[T], c: Continuation) {.inline.} =
+  ## Set the future's root continuation for cancellation and migration.
   fut.rootContinuationPtr = cast[pointer](c)
   if c != nil and c.runtimeOwner != nil:
     fut.ownerRuntime = c.runtimeOwner
 
 proc setFutureRootContinuation*(fut: CpsVoidFuture, c: Continuation) {.inline.} =
+  ## Set the future's root continuation for cancellation and migration.
   fut.rootContinuationPtr = cast[pointer](c)
   if c != nil and c.runtimeOwner != nil:
     fut.ownerRuntime = c.runtimeOwner
 
 proc pinFutureRuntime*[T](fut: CpsFuture[T]) {.inline.} =
+  ## Pin the future and its root continuation to the supplied runtime.
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("pinFutureRuntime")
   if fut.ownerRuntime == nil:
@@ -911,6 +969,7 @@ proc pinFutureRuntime*[T](fut: CpsFuture[T]) {.inline.} =
   fut.runtimePinned.store(true, moRelease)
 
 proc pinFutureRuntime*(fut: CpsVoidFuture) {.inline.} =
+  ## Pin the future and its root continuation to the supplied runtime.
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("pinFutureRuntime")
   if fut.ownerRuntime == nil:
@@ -926,12 +985,15 @@ proc pinFutureRuntime*(fut: CpsVoidFuture) {.inline.} =
   fut.runtimePinned.store(true, moRelease)
 
 proc isRuntimePinned*[T](fut: CpsFuture[T]): bool {.inline.} =
+  ## Return whether the future is pinned to a runtime.
   fut.runtimePinned.load(moAcquire)
 
 proc isRuntimePinned*(fut: CpsVoidFuture): bool {.inline.} =
+  ## Return whether the future is pinned to a runtime.
   fut.runtimePinned.load(moAcquire)
 
 proc tryMigrateTo*[T](fut: CpsFuture[T], handle: RuntimeHandle): bool =
+  ## Attempt to move the future to another runtime without blocking.
   if fut.perfMode == fpLocalFast:
     fut.ensureShared()
   if handle.runtime == nil:
@@ -945,6 +1007,7 @@ proc tryMigrateTo*[T](fut: CpsFuture[T], handle: RuntimeHandle): bool =
   result = true
 
 proc tryMigrateTo*(fut: CpsVoidFuture, handle: RuntimeHandle): bool =
+  ## Attempt to move the future to another runtime without blocking.
   if fut.perfMode == fpLocalFast:
     fut.ensureShared()
   if handle.runtime == nil:
@@ -958,12 +1021,14 @@ proc tryMigrateTo*(fut: CpsVoidFuture, handle: RuntimeHandle): bool =
   result = true
 
 proc migrateTo*[T](fut: CpsFuture[T], handle: RuntimeHandle) =
+  ## Move the future to another runtime.
   if not tryMigrateTo(fut, handle):
     raise newException(RuntimeAffinityError,
       "cannot migrate future to runtime " & $handle.runtimeId() &
       ": future is runtime-pinned")
 
 proc migrateTo*(fut: CpsVoidFuture, handle: RuntimeHandle) =
+  ## Move the future to another runtime.
   if not tryMigrateTo(fut, handle):
     raise newException(RuntimeAffinityError,
       "cannot migrate future to runtime " & $handle.runtimeId() &
@@ -1235,6 +1300,7 @@ proc wakeRunCpsWaitersIfNeeded(rt: CpsRuntime) {.inline.} =
     discard rt.waitWakeSeq.fetchAdd(1'u64, moAcquireRelease)
 
 proc complete*[T](fut: CpsFuture[T], val: T) =
+  ## Complete the future and notify its waiters.
   if fut.perfMode == fpLocalFast:
     if not fut.localAffinityOk():
       let localVal = val
@@ -1270,6 +1336,7 @@ proc complete*[T](fut: CpsFuture[T], val: T) =
   wakeReactorIfNeeded(ownerRuntimeRef(fut))
 
 proc complete*(fut: CpsVoidFuture) =
+  ## Complete the future and notify its waiters.
   if fut.perfMode == fpLocalFast:
     if not fut.localAffinityOk():
       if fut.tryHopLocalOpToOwner(proc() {.closure.} =
@@ -1298,6 +1365,7 @@ proc complete*(fut: CpsVoidFuture) =
   wakeReactorIfNeeded(ownerRuntimeRef(fut))
 
 proc fail*[T](fut: CpsFuture[T], err: ref CatchableError) =
+  ## Fail the future and notify its waiters.
   if fut.perfMode == fpLocalFast:
     if not fut.localAffinityOk():
       let localErr = err
@@ -1329,6 +1397,7 @@ proc fail*[T](fut: CpsFuture[T], err: ref CatchableError) =
   wakeReactorIfNeeded(ownerRuntimeRef(fut))
 
 proc fail*(fut: CpsVoidFuture, err: ref CatchableError) =
+  ## Fail the future and notify its waiters.
   if fut.perfMode == fpLocalFast:
     if not fut.localAffinityOk():
       let localErr = err
@@ -1360,26 +1429,31 @@ proc fail*(fut: CpsVoidFuture, err: ref CatchableError) =
   wakeReactorIfNeeded(ownerRuntimeRef(fut))
 
 proc hasError*[T](fut: CpsFuture[T]): bool {.inline.} =
+  ## Return whether the operation completed with an error.
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("hasError")
   fut.error != nil
 
 proc hasError*(fut: CpsVoidFuture): bool {.inline.} =
+  ## Return whether the operation completed with an error.
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("hasError")
   fut.error != nil
 
 proc getError*[T](fut: CpsFuture[T]): ref CatchableError {.inline.} =
+  ## Return the error that failed the future.
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("getError")
   fut.error
 
 proc getError*(fut: CpsVoidFuture): ref CatchableError {.inline.} =
+  ## Return the error that failed the future.
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("getError")
   fut.error
 
 proc read*[T](fut: CpsFuture[T]): T =
+  ## Return the completed future's value or raise its terminal error.
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("read")
   assert fut.finished, "Future not yet completed"
@@ -1388,6 +1462,7 @@ proc read*[T](fut: CpsFuture[T]): T =
   result = fut.value
 
 proc read*(fut: CpsVoidFuture) =
+  ## Return the completed future's value or raise its terminal error.
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("read")
   assert fut.finished, "Future not yet completed"
@@ -1596,18 +1671,23 @@ proc addCallbackOnRuntime(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {
       cpuRelax()
 
 proc addCallbackOn*[T](fut: CpsFuture[T], rt: RuntimeHandle, cb: proc() {.closure.}) {.inline.} =
+  ## Register a callback on the future's owning runtime.
   addCallbackOnRuntime(fut, rt.runtime, cb)
 
 proc addCallbackOn*(fut: CpsVoidFuture, rt: RuntimeHandle, cb: proc() {.closure.}) {.inline.} =
+  ## Register a callback on the future's owning runtime.
   addCallbackOnRuntime(fut, rt.runtime, cb)
 
 proc addCallback*[T](fut: CpsFuture[T], cb: proc() {.closure.}) {.inline.} =
+  ## Register a callback to run when the future completes.
   addCallbackOnRuntime(fut, defaultCallbackRuntime(), cb)
 
 proc addCallback*(fut: CpsVoidFuture, cb: proc() {.closure.}) {.inline.} =
+  ## Register a callback to run when the future completes.
   addCallbackOnRuntime(fut, defaultCallbackRuntime(), cb)
 
 proc ensureShared*[T](fut: CpsFuture[T]) =
+  ## Promote the future to shared-safe state before it crosses a thread boundary.
   if fut.perfMode == fpSharedSafe:
     return
   fut.ensureLocalAffinity("ensureShared")
@@ -1642,6 +1722,7 @@ proc ensureShared*[T](fut: CpsFuture[T]) =
     fut.callbackHead.store(CallbackClosed, moRelaxed)
 
 proc ensureShared*(fut: CpsVoidFuture) =
+  ## Promote the future to shared-safe state before it crosses a thread boundary.
   if fut.perfMode == fpSharedSafe:
     return
   fut.ensureLocalAffinity("ensureShared")
@@ -1694,6 +1775,7 @@ proc isCancelled*(fut: CpsVoidFuture): bool {.inline.} =
   fut.atomicState.load(moAcquire) == FutureStateCancelled
 
 proc cancel*[T](fut: CpsFuture[T]) =
+  ## Cancel runtime and notify its waiters.
   if fut.perfMode == fpLocalFast:
     if not fut.localAffinityOk():
       if fut.tryHopLocalOpToOwner(proc() {.closure.} =
@@ -1726,6 +1808,7 @@ proc cancel*[T](fut: CpsFuture[T]) =
   wakeReactorIfNeeded(ownerRuntimeRef(fut))
 
 proc cancel*(fut: CpsVoidFuture) =
+  ## Cancel runtime and notify its waiters.
   if fut.perfMode == fpLocalFast:
     if not fut.localAffinityOk():
       if fut.tryHopLocalOpToOwner(proc() {.closure.} =
@@ -1767,11 +1850,13 @@ type
     failed*: Atomic[bool]
 
 proc newAtomicCounter*(initial: int): ptr AtomicCounter =
+  ## Create a new atomic counter.
   result = cast[ptr AtomicCounter](allocShared0(sizeof(AtomicCounter)))
   result.value.store(initial, moRelaxed)
   result.failed.store(false, moRelaxed)
 
 proc freeAtomicCounter*(c: ptr AtomicCounter) =
+  ## Release resources owned by atomic counter.
   deallocShared(c)
 
 # ============================================================

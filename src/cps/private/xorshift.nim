@@ -11,12 +11,15 @@ type
     state: uint32
 
 proc initXorShift32*(seed: uint32): XorShift32 =
+  ## Initialize xor shift32.
   result.state = if seed == 0: 2654435761'u32 else: seed
 
 proc initXorShift32*(seed: int): XorShift32 =
+  ## Initialize xor shift32.
   initXorShift32(uint32(seed))
 
 proc next*(rng: var XorShift32): uint32 =
+  ## Advance the xorshift generator and return its next value.
   var x = rng.state
   x = x xor (x shl 13)
   x = x xor (x shr 17)

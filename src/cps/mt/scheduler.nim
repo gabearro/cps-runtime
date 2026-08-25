@@ -203,6 +203,7 @@ proc workerMain(arg: WorkerArg) {.thread.} =
   currentWorkerId = -1
 
 proc newScheduler*(runtime: CpsRuntime, numWorkers: int = 0, maxGlobalQueue: int = 65536): Scheduler =
+  ## Create a new scheduler.
   let n = if numWorkers <= 0: countProcessors() else: numWorkers
   let maxQ = if maxGlobalQueue <= 0: high(int) else: maxGlobalQueue
   let obj = cast[ptr SchedulerObj](allocShared0(sizeof(SchedulerObj)))
@@ -273,6 +274,7 @@ proc schedulePinned*(s: Scheduler, workerId: int, task: SchedulerTask): bool =
   result = true
 
 proc shutdownScheduler*(s: Scheduler) =
+  ## Shut down scheduler and release its runtime resources.
   let obj = s.obj
   obj.shutdown.store(true, moRelease)
 

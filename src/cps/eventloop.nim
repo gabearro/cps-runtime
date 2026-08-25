@@ -90,6 +90,7 @@ proc cancel*(h: TimerHandle) {.inline.} =
     h.state.cancelled.store(true, moRelease)
 
 proc isCancelled*(h: TimerHandle): bool {.inline.} =
+  ## Return whether the operation was cancelled.
   h.state == nil or h.state.cancelled.load(moAcquire)
 
 proc newEventLoop*(): EventLoop =
@@ -220,10 +221,12 @@ proc getEventLoopForRuntime*(rt: CpsRuntime): EventLoop =
   release(gLoopInitLock)
 
 proc getEventLoop*(handle: RuntimeHandle): EventLoop =
+  ## Return the event loop bound to the current thread.
   let rt = if handle.runtime != nil: handle.runtime else: mainRuntime().runtime
   getEventLoopForRuntime(rt)
 
 proc getEventLoop*(): EventLoop =
+  ## Return the event loop bound to the current thread.
   getEventLoop(currentRuntime())
 
 proc setEventLoop*(loop: EventLoop) =
@@ -268,6 +271,7 @@ proc shouldProxyToReactor*(loop: EventLoop): bool {.inline.} =
     loop.wakePipeWrite != SocketHandle(-1)
 
 proc registerTimer*(loop: EventLoop, delayMs: int, cb: proc() {.closure.}): TimerHandle {.discardable.} =
+  ## Register a one-shot timer with the event loop.
   let timerState = newTimerState()
   let timerCb = cb
   if loop.shouldProxyToReactor():
@@ -352,6 +356,7 @@ proc queueReadyIfAlreadySignaled(loop: EventLoop, fd: SocketHandle,
       loop.readyQueue.add(cb)
 
 proc registerRead*(loop: EventLoop, fd: SocketHandle, cb: proc() {.closure.}) =
+  ## Register a one-shot socket-read callback.
   if loop.shouldProxyToReactor():
     let fdVal = fd
     let cbVal = cb
@@ -364,9 +369,11 @@ proc registerRead*(loop: EventLoop, fd: SocketHandle, cb: proc() {.closure.}) =
     registerHandleSafe(loop, fd, {Event.Read}, cb)
 
 proc registerRead*(loop: EventLoop, fd: int, cb: proc() {.closure.}) =
+  ## Register a one-shot socket-read callback.
   registerRead(loop, SocketHandle(fd), cb)
 
 proc registerWrite*(loop: EventLoop, fd: SocketHandle, cb: proc() {.closure.}) =
+  ## Register a one-shot socket-write callback.
   if loop.shouldProxyToReactor():
     let fdVal = fd
     let cbVal = cb
@@ -379,9 +386,11 @@ proc registerWrite*(loop: EventLoop, fd: SocketHandle, cb: proc() {.closure.}) =
     registerHandleSafe(loop, fd, {Event.Write}, cb)
 
 proc registerWrite*(loop: EventLoop, fd: int, cb: proc() {.closure.}) =
+  ## Register a one-shot socket-write callback.
   registerWrite(loop, SocketHandle(fd), cb)
 
 proc unregister*(loop: EventLoop, fd: SocketHandle) =
+  ## Remove the socket registration from the event loop.
   if loop.shouldProxyToReactor():
     let fdVal = fd
     loop.postToEventLoop(proc() {.closure, gcsafe.} =
@@ -399,9 +408,11 @@ proc unregister*(loop: EventLoop, fd: SocketHandle) =
         discard
 
 proc unregister*(loop: EventLoop, fd: int) =
+  ## Remove the socket registration from the event loop.
   unregister(loop, SocketHandle(fd))
 
 proc scheduleCallback*(loop: EventLoop, cb: proc() {.closure.}) =
+  ## Queue a callback for execution on the event-loop thread.
   if loop.shouldProxyToReactor():
     let cbCopy = cb
     loop.postToEventLoop(proc() {.closure, gcsafe.} =
@@ -412,6 +423,7 @@ proc scheduleCallback*(loop: EventLoop, cb: proc() {.closure.}) =
     loop.readyQueue.add(cb)
 
 proc scheduleCallback*(cb: proc() {.closure.}) =
+  ## Queue a callback for execution on the event-loop thread.
   getEventLoop().scheduleCallback(cb)
 
 proc drainCrossThreadQueue*(loop: EventLoop) =
@@ -611,6 +623,7 @@ proc tick*(loop: EventLoop) =
       loop.stats.maxTickDurationUs = durationUs
 
 proc hasWork*(loop: EventLoop): bool =
+  ## Return whether the event loop has work ready to run.
   loop.pruneCancelledTimerRoots()
   loop.readyQueue.len > 0 or
   loop.timers.len > 0 or
@@ -618,14 +631,17 @@ proc hasWork*(loop: EventLoop): bool =
   (loop.mtActive and loop.crossThreadQueue.hasPending())
 
 proc runForever*(loop: EventLoop) =
+  ## Run forever until it completes or is stopped.
   loop.running = true
   while loop.running and loop.hasWork:
     loop.tick()
 
 proc runForever*() =
+  ## Run forever until it completes or is stopped.
   getEventLoop().runForever()
 
 proc stop*(loop: EventLoop) =
+  ## Stop eventloop and wake any pending work.
   loop.running = false
 
 proc shutdownGracefully*(loop: EventLoop, drainTimeoutMs: int = 1000) =
@@ -809,23 +825,28 @@ proc blockOn*(handle: RuntimeHandle, fut: CpsVoidFuture) =
     leave(guard)
 
 proc runCpsOn*[T](handle: RuntimeHandle, fut: CpsFuture[T]): T {.inline.} =
+  ## Run CPS on until it completes or is stopped.
   blockOn(handle, fut)
 
 proc runCpsOn*(handle: RuntimeHandle, fut: CpsVoidFuture) {.inline.} =
+  ## Run CPS on until it completes or is stopped.
   blockOn(handle, fut)
 
 template runOn*(handle: RuntimeHandle, expr: untyped): untyped =
+  ## Run on until it completes or is stopped.
   block:
     withRuntime(handle):
       runCpsOn(handle, expr)
 
 proc runCps*[T](fut: CpsFuture[T]): T =
+  ## Run CPS until it completes or is stopped.
   let h =
     if fut.ownerRuntime != nil: fut.futureRuntime()
     else: currentRuntime()
   blockOn(h, fut)
 
 proc runCps*(fut: CpsVoidFuture) =
+  ## Run CPS until it completes or is stopped.
   let h =
     if fut.ownerRuntime != nil: fut.futureRuntime()
     else: currentRuntime()
@@ -994,32 +1015,49 @@ type
     name*: string  ## Optional human-readable name for debugging/tracing
 
 # Task[T] - future-compatible interface so `await task` works
+## Return whether the task's future has completed.
 proc finished*[T](t: Task[T]): bool {.inline.} = t.future.finished
+## Return the completed task value or raise its terminal error.
 proc read*[T](t: Task[T]): T {.inline.} = t.future.read()
 proc addCallback*[T](t: Task[T], cb: proc() {.closure.}) {.inline.} =
+  ## Register a callback to run when the task completes.
   t.future.addCallback(cb)
+## Return whether the operation completed with an error.
 proc hasError*[T](t: Task[T]): bool {.inline.} = t.future.hasError()
+## Return the error that failed the task.
 proc getError*[T](t: Task[T]): ref CatchableError {.inline.} = t.future.getError()
 
 # VoidTask - future-compatible interface
+## Return whether the task's future has completed.
 proc finished*(t: VoidTask): bool {.inline.} = t.future.finished
 proc addCallback*(t: VoidTask, cb: proc() {.closure.}) {.inline.} =
+  ## Register a callback to run when the task completes.
   t.future.addCallback(cb)
+## Return whether the operation completed with an error.
 proc hasError*(t: VoidTask): bool {.inline.} = t.future.hasError()
+## Return the error that failed the task.
 proc getError*(t: VoidTask): ref CatchableError {.inline.} = t.future.getError()
 
 # Task/VoidTask cancellation
+## Cancel eventloop and notify its waiters.
 proc cancel*[T](t: Task[T]) {.inline.} = t.future.cancel()
+## Cancel eventloop and notify its waiters.
 proc cancel*(t: VoidTask) {.inline.} = t.future.cancel()
+## Return whether the operation was cancelled.
 proc isCancelled*[T](t: Task[T]): bool {.inline.} = t.future.isCancelled()
+## Return whether the operation was cancelled.
 proc isCancelled*(t: VoidTask): bool {.inline.} = t.future.isCancelled()
 proc tryMigrateTo*[T](t: Task[T], handle: RuntimeHandle): bool {.inline.} =
+  ## Attempt to move the future to another runtime without blocking.
   t.future.tryMigrateTo(handle)
 proc tryMigrateTo*(t: VoidTask, handle: RuntimeHandle): bool {.inline.} =
+  ## Attempt to move the future to another runtime without blocking.
   t.future.tryMigrateTo(handle)
 proc migrateTo*[T](t: Task[T], handle: RuntimeHandle) {.inline.} =
+  ## Move the future to another runtime.
   t.future.migrateTo(handle)
 proc migrateTo*(t: VoidTask, handle: RuntimeHandle) {.inline.} =
+  ## Move the future to another runtime.
   t.future.migrateTo(handle)
 
 proc spawnOn*[T](handle: RuntimeHandle, fut: CpsFuture[T], name: string = ""): Task[T] =
@@ -1055,9 +1093,11 @@ proc spawnOn*(handle: RuntimeHandle, fut: CpsVoidFuture, name: string = ""): Voi
   result = VoidTask(future: fut, name: name)
 
 proc spawn*[T](fut: CpsFuture[T], name: string = ""): Task[T] =
+  ## Schedule eventloop for asynchronous execution.
   spawnOn(currentRuntime(), fut, name)
 
 proc spawn*(fut: CpsVoidFuture, name: string = ""): VoidTask =
+  ## Schedule eventloop for asynchronous execution.
   spawnOn(currentRuntime(), fut, name)
 
 proc allTasks*[T](tasks: openArray[Task[T]]): CpsFuture[seq[T]] =
