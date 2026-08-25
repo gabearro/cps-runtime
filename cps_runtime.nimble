@@ -1,4 +1,4 @@
-version = "1.0.0"
+version = "1.1.0"
 author = "Gabriel Arroyo"
 description = "Continuation-passing-style async runtime, event loop, I/O, concurrency, and multi-threaded scheduler for Nim."
 license = "MIT"

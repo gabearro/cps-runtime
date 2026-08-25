@@ -28,7 +28,7 @@ BitTorrent live in their own packages.
 ## Install
 
 ```sh
-nimble install https://github.com/gabearro/cps-runtime@#v1.0.0
+nimble install https://github.com/gabearro/cps-runtime@#v1.1.0
 ```
 
 ## Hello async
