@@ -57,6 +57,9 @@ type
     eventLoopPtr*: RootRef
     schedulerPtr*: RootRef
     blockingPoolPtr*: RootRef
+    blockingThreadCount*: int
+    maxBlockingQueue*: int
+    continuationDispatcher*: proc(c: sink Continuation) {.closure, gcsafe.}
     callbackDispatcher*: proc(cb: proc() {.closure.}) {.closure, gcsafe.}
     pinnedCallbackDispatcher*: proc(workerId: int, cb: proc() {.closure.}): bool {.closure, gcsafe.}
     yieldDispatcher*: proc(cb: proc() {.closure, gcsafe.}) {.closure, gcsafe.}
@@ -307,6 +310,9 @@ proc newCurrentThreadRuntime*(): CpsRuntime =
   result.eventLoopPtr = nil
   result.schedulerPtr = nil
   result.blockingPoolPtr = nil
+  result.blockingThreadCount = 0
+  result.maxBlockingQueue = DefaultBlockingQueueCap
+  result.continuationDispatcher = nil
   result.callbackDispatcher = nil
   result.pinnedCallbackDispatcher = nil
   result.yieldDispatcher = nil
@@ -543,10 +549,15 @@ proc run*(c: sink Continuation): Continuation {.discardable.} =
   ## Uses a direct while loop — no Trampoline struct overhead.
   ## The fn pointer is loaded exactly once per iteration to prevent
   ## TOCTOU races when another thread modifies the continuation.
+  let targetRt = if c != nil: c.runtimeOwner else: nil
+  if targetRt != nil and targetRt.continuationDispatcher != nil and
+     (not isSchedulerWorker or currentRuntimeCtx != targetRt):
+    targetRt.continuationDispatcher(c)
+    return nil
+  # Compatibility hook for embedders using the original MT dispatcher API.
   if mtDispatcher != nil:
     mtDispatcher(c)
     return nil
-  let targetRt = if c != nil: c.runtimeOwner else: nil
   let prevRt = currentRuntimeCtx
   if targetRt != nil and targetRt != prevRt:
     setCurrentRuntime(targetRt)

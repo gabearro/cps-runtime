@@ -13,5 +13,6 @@
 import ./mt/threadpool
 import ./mt/scheduler
 import ./mt/mtruntime
+import ./mt/reactorpool
 
-export threadpool, scheduler, mtruntime
+export threadpool, scheduler, mtruntime, reactorpool

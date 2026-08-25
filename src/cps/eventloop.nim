@@ -434,6 +434,43 @@ proc drainCrossThreadQueue*(loop: EventLoop) =
     if drained > 0:
       debugEcho "[MT-IO] drainCrossThreadQueue: drained ", drained, " callbacks, selector.count=", loop.selector.count
 
+proc enableCrossThreadWake*(loop: EventLoop) =
+  ## Add a wake descriptor and MPSC inbox to an event loop. Reactor pools use
+  ## this for control messages while all normal I/O remains shard-local.
+  if loop.wakePipeRead != SocketHandle(-1):
+    loop.mtActive = true
+    return
+  let (readEnd, writeEnd) = platform.createWakePipe()
+  loop.wakePipeRead = readEnd
+  loop.wakePipeWrite = writeEnd
+  loop.mtActive = true
+  initMpscQueue(loop.crossThreadQueue)
+  loop.registerRead(readEnd, proc() =
+    platform.wakePipeDrain(readEnd)
+    loop.recordWakeSignal()
+    loop.drainCrossThreadQueue()
+    loop.markWakeDrained()
+    if loop.crossThreadQueue.hasPending():
+      loop.tryWakeSelector()
+  )
+
+proc disableCrossThreadWake*(loop: EventLoop) =
+  ## Remove cross-thread control state and release its descriptors/closures.
+  if loop.wakePipeRead == SocketHandle(-1):
+    loop.mtActive = false
+    return
+  try:
+    loop.unregister(loop.wakePipeRead)
+  except Exception:
+    discard
+  platform.closePipeFd(loop.wakePipeRead)
+  platform.closePipeFd(loop.wakePipeWrite)
+  loop.wakePipeRead = SocketHandle(-1)
+  loop.wakePipeWrite = SocketHandle(-1)
+  discardAll(loop.crossThreadQueue)
+  loop.mtActive = false
+  loop.markWakeDrained()
+
 proc processIo(loop: EventLoop, timeoutMs: int): int {.warning[ProveInit]: off.} =
   ## Process I/O events, returning the number of events processed.
   ## Suppress a known ioselectors_kqueue `ProveInit` false-positive from

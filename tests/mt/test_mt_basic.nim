@@ -8,7 +8,7 @@
 
 import cps/mt
 import cps/transform
-import std/[monotimes, times]
+import std/[atomics, monotimes, times]
 
 let loop = initMtRuntime(numWorkers = 2)
 
@@ -32,17 +32,18 @@ block testMtSleep:
 
 # Test 3: cpsYield works on MT event loop
 block testMtYield:
-  var counter = 0
+  var counter: Atomic[int]
+  counter.store(0, moRelaxed)
 
   proc yieldTest(): CpsVoidFuture {.cps.} =
-    counter = 1
+    counter.store(1, moRelease)
     await cpsYield()
-    counter = 2
+    counter.store(2, moRelease)
 
   let fut = yieldTest()
-  assert counter == 1, "Should have executed first part"
   runCps(fut)
-  assert counter == 2, "Should have executed second part after yield"
+  assert counter.load(moAcquire) == 2,
+    "Should have executed both parts around yield on a worker"
   echo "PASS: cpsYield on MT event loop"
 
 # Test 4: CPS proc with return value on MT event loop
