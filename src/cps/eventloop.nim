@@ -48,6 +48,8 @@ type
     selector: Selector[IoCallback]
     timers: seq[TimerEntry]
     readyQueue: seq[proc() {.closure.}]
+    readyScratch: seq[proc() {.closure.}]
+    ioEvents: array[64, ReadyKey]
     running: bool
     ownerRuntime*: CpsRuntime
     # MT extensions (nil/default when single-threaded)
@@ -96,6 +98,7 @@ proc newEventLoop*(): EventLoop =
   result.selector = newSelector[IoCallback]()
   result.timers = @[]
   result.readyQueue = @[]
+  result.readyScratch = @[]
   result.running = false
   result.ownerRuntime = nil
   result.wakePipeRead = SocketHandle(-1)
@@ -299,7 +302,11 @@ proc registerHandleSafe(loop: EventLoop, fd: SocketHandle, events: set[Event],
   ## Fix: validate the fd before touching the selector.
   when defined(debugMtIo):
     debugEcho "[MT-IO] registerHandleSafe fd=", int(fd), " events=", events, " contains=", loop.selector.contains(fd)
-  when not defined(windows):
+  # This preflight is required by kqueue: a failed registration can leave its
+  # buffered change list poisoned. epoll/poll do not have that failure mode,
+  # and an extra fcntl for every readiness wait is pure overhead there.
+  when defined(macosx) or defined(freebsd) or defined(netbsd) or
+       defined(openbsd) or defined(dragonfly):
     if posix.fcntl(cint(int(fd)), F_GETFD) < 0:
       # fd is closed or invalid — skip registration to avoid corrupting
       # the kqueue selector's changes buffer.
@@ -385,10 +392,11 @@ proc unregister*(loop: EventLoop, fd: SocketHandle) =
           discard
     )
   else:
-    try:
-      loop.selector.unregister(fd)
-    except Exception:
-      discard
+    if loop.selector.contains(fd):
+      try:
+        loop.selector.unregister(fd)
+      except Exception:
+        discard
 
 proc unregister*(loop: EventLoop, fd: int) =
   unregister(loop, SocketHandle(fd))
@@ -436,17 +444,19 @@ proc processIo(loop: EventLoop, timeoutMs: int): int {.warning[ProveInit]: off.}
     return 0
   when defined(debugMtIo):
     debugEcho "[MT-IO] processIo: calling select(", timeoutMs, ") count=", loop.selector.count
-  var events: seq[ReadyKey]
+  var eventCount = 0
   try:
-    events = loop.selector.select(timeoutMs)
+    eventCount = loop.selector.selectInto(timeoutMs, loop.ioEvents)
   except Exception:
     # kqueue AssertionDefect or other selector corruption — skip this tick
     return 0
   when defined(debugMtIo):
-    if events.len > 0:
-      for ev in events:
+    if eventCount > 0:
+      for i in 0 ..< eventCount:
+        let ev = loop.ioEvents[i]
         debugEcho "[MT-IO] processIo: event fd=", ev.fd, " events=", ev.events
-  for ev in events:
+  for i in 0 ..< eventCount:
+    let ev = loop.ioEvents[i]
     # Guard: a previous callback in this batch may have unregistered this fd.
     # Nim's selector.getData() returns `var T`; when the fd is no longer
     # registered the result pointer is never assigned (nil), and the
@@ -468,11 +478,11 @@ proc processReady(loop: EventLoop): int =
   ## Run callbacks queued for immediate execution.
   if loop.readyQueue.len == 0:
     return 0
-  let ready = loop.readyQueue
-  loop.readyQueue = @[]
-  for cb in ready:
+  swap(loop.readyQueue, loop.readyScratch)
+  for cb in loop.readyScratch:
     if loop.runLoopCallback(cb):
       inc result
+  loop.readyScratch.setLen(0)
 
 proc tick*(loop: EventLoop) =
   ## Run one iteration of the event loop.

@@ -296,5 +296,22 @@ block testWaitAllEmpty:
   assert errors.len == 0, "Empty group should have no errors"
   echo "PASS: waitAll on empty group"
 
+# ============================================================
+# Test 16: Completed task cancellation slots are safely reused
+# ============================================================
+
+block testCompletedTaskSlotReuse:
+  let group = newTaskGroup()
+  for _ in 0 ..< 10_000:
+    group.spawn(completedVoidFuture())
+
+  assert group.len == 10_000
+  assert group.activeCount == 0
+  group.cancelAll()  # Vacated slots must not call nil/stale closures.
+  let waitFut = group.wait()
+  assert waitFut.finished
+  assert not waitFut.hasError()
+  echo "PASS: Completed task cancellation slots are safely reused"
+
 echo ""
 echo "All task group tests passed!"

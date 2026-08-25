@@ -22,12 +22,13 @@ type
     eof: bool
 
 proc newBufferedReader*(stream: AsyncStream, bufSize: int = 8192): BufferedReader =
+  let initialSize = max(1, bufSize)
   BufferedReader(
     stream: stream,
-    buf: newString(bufSize),
+    buf: newString(initialSize),
     pos: 0,
     cap: 0,
-    bufSize: bufSize,
+    bufSize: initialSize,
     eof: false
   )
 
@@ -260,6 +261,15 @@ proc searchHeaderEnd*(br: BufferedReader): int {.inline.} =
 
 proc extractHeaderBlock*(br: BufferedReader, endIdx: int): string {.inline.} =
   ## Extract header block from buffer up to endIdx, advance past \r\n\r\n.
+  # When the read contains exactly one header block, transfer ownership of the
+  # backing string instead of allocating and copying it. The next fill grows a
+  # fresh buffer lazily. Pipelined/body bytes still use the preserving path.
+  if br.pos == 0 and endIdx + 4 == br.cap:
+    result = move(br.buf)
+    result.setLen(endIdx)
+    br.pos = 0
+    br.cap = 0
+    return
   let blockLen = endIdx - br.pos
   result = br.extract(blockLen)
   br.pos += 4  # skip \r\n\r\n (extract already advanced by blockLen)

@@ -219,6 +219,64 @@ block testOnRecv:
   sender.close()
   echo "PASS: onRecv persistent callback"
 
+# Borrowed receive and byte-sequence send avoid intermediate string copies.
+block testBorrowedRecvAndByteSend:
+  let receiver = newUdpSocket()
+  receiver.bindAddr("127.0.0.1", 0)
+  let port = receiver.getBoundPort()
+  let sender = newUdpSocket()
+  var received = ""
+
+  receiver.onRecvBorrowed(1024,
+    proc(data: openArray[byte], srcAddr: Sockaddr_storage, addrLen: SockLen) =
+      received = newString(data.len)
+      if data.len > 0:
+        copyMem(addr received[0], unsafeAddr data[0], data.len)
+  )
+  let sendFuture = sender.sendToAddrBytes(
+    @[byte('b'), byte('o'), byte('r'), byte('r'), byte('o'), byte('w')],
+    "127.0.0.1", port)
+
+  let loop = getEventLoop()
+  var ticks = 0
+  while ticks < 20 and (received.len == 0 or not sendFuture.finished):
+    loop.tick()
+    ticks += 1
+
+  assert sendFuture.finished and not sendFuture.hasError()
+  assert received == "borrow"
+  receiver.close()
+  sender.close()
+  echo "PASS: borrowed recv and byte send"
+
+block testTryByteSend:
+  let receiver = newUdpSocket()
+  receiver.bindAddr("127.0.0.1", 0)
+  let port = receiver.getBoundPort()
+  let sender = newUdpSocket()
+  var received = ""
+
+  receiver.onRecvBorrowed(1024,
+    proc(data: openArray[byte], srcAddr: Sockaddr_storage, addrLen: SockLen) =
+      received = newString(data.len)
+      if data.len > 0:
+        copyMem(addr received[0], unsafeAddr data[0], data.len)
+  )
+  let sent = sender.trySendToAddrBytes(
+    [byte('f'), byte('a'), byte('s'), byte('t')], "127.0.0.1", port)
+
+  let loop = getEventLoop()
+  var ticks = 0
+  while ticks < 20 and received.len == 0:
+    loop.tick()
+    inc ticks
+
+  assert sent
+  assert received == "fast"
+  receiver.close()
+  sender.close()
+  echo "PASS: synchronous byte send fast path"
+
 # Test 7: parseSenderAddress extracts correct IP and port
 block testParseSenderAddress:
   let receiver = newUdpSocket()

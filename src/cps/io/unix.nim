@@ -197,6 +197,23 @@ proc fillSockaddrUn(path: string): SockaddrUn =
     result.sun_path[i] = path[i]
   result.sun_path[path.len] = '\0'
 
+proc unixSocketIsReachable*(path: string): bool =
+  ## Return true only when a process is actively accepting connections at
+  ## `path`. A Unix socket directory entry can outlive its owner, so checking
+  ## the filesystem alone is not enough for daemon discovery.
+  if path.len == 0 or path.len >= sizeof(SockaddrUn().sun_path):
+    return false
+  let fd = createNativeSocket(AF_UNIX_C, SOCK_STREAM.cint, 0)
+  if fd == osInvalidSocket:
+    return false
+  defer: fd.close()
+  var addrUn: SockaddrUn
+  try:
+    addrUn = fillSockaddrUn(path)
+  except CatchableError:
+    return false
+  connect(fd, cast[ptr SockAddr](addr addrUn), sizeof(addrUn).SockLen) == 0.cint
+
 proc unixConnect*(path: string): CpsFuture[UnixStream] =
   ## Connect to a Unix domain socket at `path` asynchronously.
   ## Returns a UnixStream.

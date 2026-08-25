@@ -755,7 +755,7 @@ proc failedLocalVoidFuture*(err: ref CatchableError): CpsVoidFuture =
   result = newLocalCpsVoidFuture()
   fail(result, err)
 
-proc completedFuture*[T](val: T): CpsFuture[T] =
+proc completedFuture*[T](val: T): CpsFuture[T] {.inline.} =
   ## Create a future that is already completed with a value.
   ## Uses relaxed store (no CAS needed since the future hasn't been shared yet).
   result = CpsFuture[T](value: val, ownerRuntime: nil, perfMode: fpSharedSafe,
@@ -763,21 +763,21 @@ proc completedFuture*[T](val: T): CpsFuture[T] =
   result.atomicState.store(FutureStateDone, moRelaxed)
   result.callbackHead.store(CallbackClosed, moRelaxed)
 
-proc completedVoidFuture*(): CpsVoidFuture =
+proc completedVoidFuture*(): CpsVoidFuture {.inline.} =
   ## Create a void future that is already completed.
   result = CpsVoidFuture(ownerRuntime: nil, perfMode: fpSharedSafe,
                          localState: FutureStateDone, localOwnerWorkerId: -1)
   result.atomicState.store(FutureStateDone, moRelaxed)
   result.callbackHead.store(CallbackClosed, moRelaxed)
 
-proc failedFuture*[T](err: ref CatchableError): CpsFuture[T] =
+proc failedFuture*[T](err: ref CatchableError): CpsFuture[T] {.inline.} =
   ## Create a future that is already failed with an error.
   result = CpsFuture[T](error: err, ownerRuntime: nil, perfMode: fpSharedSafe,
                         localState: FutureStateDone, localOwnerWorkerId: -1)
   result.atomicState.store(FutureStateDone, moRelaxed)
   result.callbackHead.store(CallbackClosed, moRelaxed)
 
-proc failedVoidFuture*(err: ref CatchableError): CpsVoidFuture =
+proc failedVoidFuture*(err: ref CatchableError): CpsVoidFuture {.inline.} =
   ## Create a void future that is already failed with an error.
   result = CpsVoidFuture(error: err, ownerRuntime: nil, perfMode: fpSharedSafe,
                          localState: FutureStateDone, localOwnerWorkerId: -1)

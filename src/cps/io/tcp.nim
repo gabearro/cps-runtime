@@ -4,7 +4,11 @@
 ## integrated with the CPS event loop.
 
 import std/[nativesockets, net, os]
-from std/posix import shutdown, SHUT_WR
+when defined(linux):
+  from std/posix import shutdown, SHUT_WR, TCP_NODELAY, IPV6_V6ONLY,
+    accept4, SOCK_CLOEXEC, O_NONBLOCK
+else:
+  from std/posix import shutdown, SHUT_WR, TCP_NODELAY, IPV6_V6ONLY
 import ../runtime
 import ../eventloop
 import ../private/platform
@@ -13,22 +17,22 @@ import ./dns
 import ./timeouts
 import ./udp
 
-const
-  TCP_NODELAY_OPT {.importc: "TCP_NODELAY", header: "<netinet/tcp.h>".}: cint = 0
-  IPPROTO_TCP_C {.importc: "IPPROTO_TCP", header: "<netinet/in.h>".}: cint = 0
-  IPPROTO_IPV6_C {.importc: "IPPROTO_IPV6", header: "<netinet/in.h>".}: cint = 0
-  IPV6_V6ONLY_C {.importc: "IPV6_V6ONLY", header: "<netinet/in.h>".}: cint = 0
-  TcpConnectPerAddressTimeoutMs = 5000
+when defined(linux):
+  const TCP_DEFER_ACCEPT_OPT = 9.cint  # Linux <netinet/tcp.h>
+const TcpConnectPerAddressTimeoutMs = 5000
 
-when defined(macosx) or defined(bsd):
-  const SO_NOSIGPIPE_C {.importc: "SO_NOSIGPIPE", header: "<sys/socket.h>".}: cint = 0
+proc ipprotoTcp(): cint {.inline.} =
+  result = cint(toInt(IPPROTO_TCP))
+
+proc ipprotoIpv6(): cint {.inline.} =
+  result = cint(toInt(IPPROTO_IPV6))
 
 proc setSoNosigpipe(fd: SocketHandle) {.inline.} =
   ## On macOS/BSD, set SO_NOSIGPIPE to prevent SIGPIPE on broken-pipe writes.
   ## Combined with the global SIGPIPE ignore, this provides defense in depth.
   when defined(macosx) or defined(bsd):
     var yes: cint = 1
-    discard setsockopt(fd, SOL_SOCKET.cint, SO_NOSIGPIPE_C,
+    discard setsockopt(fd, SOL_SOCKET.cint, SO_NOSIGPIPE,
                        addr yes, sizeof(yes).SockLen)
 
 # Ensure SIGPIPE is ignored at module init — before any socket I/O.
@@ -225,6 +229,22 @@ proc tcpStreamClose(s: AsyncStream) =
       break
   ts.fd.close()
 
+proc closeImmediately*(ts: TcpStream) =
+  ## Close a TCP stream without half-close/drain processing.
+  ##
+  ## This is appropriate when a protocol implementation has consumed the
+  ## complete inbound message and has already queued its complete response.
+  ## Generic `close()` remains graceful for protocols such as IRC where unread
+  ## peer data could otherwise turn the close into a reset.
+  if ts.isNil or ts.closed:
+    return
+  ts.closed = true
+  try:
+    getEventLoop().unregister(ts.fd)
+  except Exception:
+    discard
+  ts.fd.close()
+
 proc newTcpStream*(fd: SocketHandle, domain: Domain = AF_INET): TcpStream =
   ## Wrap a connected, non-blocking socket fd into a TcpStream.
   result = TcpStream(
@@ -274,7 +294,7 @@ proc tcpConnectIp*(ip: string, port: int, domain: Domain = AF_INET): CpsFuture[T
 
   # Disable Nagle's algorithm for low-latency sends
   var optOne: cint = 1
-  discard setsockopt(fd, IPPROTO_TCP_C, TCP_NODELAY_OPT,
+  discard setsockopt(fd, ipprotoTcp(), TCP_NODELAY,
                      addr optOne, sizeof(optOne).SockLen)
 
   # Build sockaddr directly from IP via inet_pton (no getAddrInfo)
@@ -397,13 +417,25 @@ type
     fd*: SocketHandle
     domain: Domain
     closed*: bool
+    noDelay: bool
+
+  TcpAcceptHandler* = proc(client: TcpStream) {.closure.}
+  TcpAcceptErrorHandler* = proc(err: ref CatchableError) {.closure.}
 
 proc tcpListen*(host: string, port: int, backlog: int = 128,
-                domain: Domain = AF_INET, dualStack: bool = false): TcpListener =
+                domain: Domain = AF_INET, dualStack: bool = false,
+                reusePort: bool = false,
+                deferAcceptSeconds: int = 0,
+                noDelay: bool = false): TcpListener =
   ## Create a TCP listening socket. Binds to host:port and starts listening.
   ## This is a synchronous operation — the socket is ready for accept() calls.
   ## When `dualStack` is true and `domain` is AF_INET6, sets IPV6_V6ONLY=0 so
   ## the socket accepts both IPv4 (as ::ffff:x.x.x.x) and IPv6 connections.
+  ## `reusePort` opts into kernel flow distribution across matching listeners.
+  ## On Linux, `deferAcceptSeconds > 0` delays accept readiness until request
+  ## data arrives (or the timeout expires), avoiding empty-socket wakeups.
+  ## `noDelay` disables Nagle once on the listener. Linux inherits this option
+  ## into accepted sockets, avoiding a setsockopt syscall for every connection.
   let fd = createNativeSocket(domain, SOCK_STREAM, IPPROTO_TCP)
   if fd == osInvalidSocket:
     raise newException(streams.AsyncIoError, "Failed to create socket")
@@ -417,11 +449,32 @@ proc tcpListen*(host: string, port: int, backlog: int = 128,
     fd.close()
     raise newException(streams.AsyncIoError, "Failed to set SO_REUSEADDR")
 
+  # Explicit opt-in for independent reactor/process sharding on one address.
+  # This is intentionally not implied by SO_REUSEADDR because it changes bind
+  # exclusivity and load-balances new flows across all matching listeners.
+  if reusePort and setsockopt(fd, SOL_SOCKET.cint, SO_REUSEPORT.cint,
+                              addr yes, sizeof(yes).SockLen) != 0:
+    fd.close()
+    raise newException(streams.AsyncIoError, "Failed to set SO_REUSEPORT")
+
+  if noDelay and setsockopt(fd, ipprotoTcp(), TCP_NODELAY,
+                            addr yes, sizeof(yes).SockLen) != 0:
+    fd.close()
+    raise newException(streams.AsyncIoError, "Failed to set TCP_NODELAY")
+
   # Dual-stack: allow IPv6 socket to accept IPv4 connections too
   if dualStack and domain == AF_INET6:
     var no: cint = 0
-    discard setsockopt(fd, IPPROTO_IPV6_C, IPV6_V6ONLY_C,
+    discard setsockopt(fd, ipprotoIpv6(), IPV6_V6ONLY,
                        addr no, sizeof(no).SockLen)
+
+  when defined(linux):
+    if deferAcceptSeconds > 0:
+      var seconds = deferAcceptSeconds.cint
+      if setsockopt(fd, ipprotoTcp(), TCP_DEFER_ACCEPT_OPT,
+                    addr seconds, sizeof(seconds).SockLen) != 0:
+        fd.close()
+        raise newException(streams.AsyncIoError, "Failed to set TCP_DEFER_ACCEPT")
 
   fd.setBlocking(false)
 
@@ -443,7 +496,12 @@ proc tcpListen*(host: string, port: int, backlog: int = 128,
     fd.close()
     raise newException(streams.AsyncIoError, "Listen failed: " & osErrorMsg(err))
 
-  result = TcpListener(fd: fd, domain: domain, closed: false)
+  result = TcpListener(
+    fd: fd,
+    domain: domain,
+    closed: false,
+    noDelay: noDelay
+  )
 
 proc localPort*(listener: TcpListener): int =
   ## Return the port the listener is bound to. Useful when bound to port 0
@@ -467,6 +525,24 @@ proc peerEndpoint*(stream: TcpStream): tuple[ip: string, port: uint16] =
     return (ip, 0'u16)
   (ip, uint16(port))
 
+proc acceptNative(listener: TcpListener, clientAddr: var Sockaddr_storage,
+                  addrLen: var SockLen): SocketHandle {.inline.} =
+  when defined(linux):
+    accept4(listener.fd, cast[ptr SockAddr](addr clientAddr), addr addrLen,
+            SOCK_CLOEXEC or O_NONBLOCK)
+  else:
+    accept(listener.fd, cast[ptr SockAddr](addr clientAddr), addr addrLen)
+
+proc prepareAccepted(listener: TcpListener, clientFd: SocketHandle): TcpStream {.inline.} =
+  when not defined(linux):
+    clientFd.setBlocking(false)
+    if listener.noDelay:
+      var yes: cint = 1
+      discard setsockopt(clientFd, ipprotoTcp(), TCP_NODELAY,
+                         addr yes, sizeof(yes).SockLen)
+  clientFd.setSoNosigpipe()
+  newTcpStream(clientFd, listener.domain)
+
 proc accept*(listener: TcpListener): CpsFuture[TcpStream] =
   ## Accept a new connection asynchronously. Returns a TcpStream.
   let fut = newCpsFuture[TcpStream]()
@@ -476,7 +552,7 @@ proc accept*(listener: TcpListener): CpsFuture[TcpStream] =
   proc tryAccept() =
     var clientAddr: Sockaddr_storage
     var addrLen: SockLen = sizeof(clientAddr).SockLen
-    let clientFd = accept(listener.fd, cast[ptr SockAddr](addr clientAddr), addr addrLen)
+    let clientFd = listener.acceptNative(clientAddr, addrLen)
     if clientFd == osInvalidSocket:
       let err = osLastError()
       if err.isWouldBlock():
@@ -484,16 +560,66 @@ proc accept*(listener: TcpListener): CpsFuture[TcpStream] =
           loop.unregister(listener.fd)
           tryAccept()
         )
-        return
       else:
         fut.fail(newException(streams.AsyncIoError, "Accept failed: " & osErrorMsg(err)))
-        return
-    clientFd.setBlocking(false)
-    clientFd.setSoNosigpipe()
-    fut.complete(newTcpStream(clientFd, listener.domain))
+      return
+    fut.complete(listener.prepareAccepted(clientFd))
 
   tryAccept()
   result = fut
+
+proc acceptEach*(listener: TcpListener, onAccept: TcpAcceptHandler,
+                 onError: TcpAcceptErrorHandler = nil,
+                 maxBatch: int = 64) =
+  ## Register a persistent, allocation-light accept callback.
+  ##
+  ## This is intended for servers that continuously consume a listener. It
+  ## avoids constructing and completing a Future for every accepted socket,
+  ## while bounding each readiness callback so established connections and
+  ## timers still get reactor time. A listener must have only one active
+  ## accept consumer (`accept` or `acceptEach`) at a time.
+  if listener.isNil or listener.closed:
+    raise newException(streams.AsyncIoError, "Cannot accept on a closed listener")
+  if onAccept.isNil:
+    raise newException(ValueError, "acceptEach requires an accept callback")
+
+  let loop = getEventLoop()
+  let batchLimit = max(1, maxBatch)
+
+  proc acceptReady()
+
+  proc queueAccept() =
+    # Do not accept and recycle descriptor numbers while processIo is still
+    # walking the readiness batch that made the listener readable. Deferring
+    # until the ready phase prevents a stale event later in that batch from
+    # being mistaken for a newly accepted socket that reused the same fd.
+    loop.scheduleCallback(acceptReady)
+
+  proc acceptReady() =
+    if listener.closed:
+      return
+    var accepted = 0
+    while accepted < batchLimit and not listener.closed:
+      var clientAddr: Sockaddr_storage
+      var addrLen: SockLen = sizeof(clientAddr).SockLen
+      let clientFd = listener.acceptNative(clientAddr, addrLen)
+      if clientFd == osInvalidSocket:
+        let err = osLastError()
+        if not err.isWouldBlock() and onError != nil:
+          onError(newException(streams.AsyncIoError,
+            "Accept failed: " & osErrorMsg(err)))
+        return
+
+      let client = listener.prepareAccepted(clientFd)
+      try:
+        onAccept(client)
+      except CatchableError as err:
+        client.closeImmediately()
+        if onError != nil:
+          onError(err)
+      inc accepted
+
+  loop.registerRead(listener.fd, queueAccept)
 
 proc close*(listener: TcpListener) =
   ## Close the listening socket.

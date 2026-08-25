@@ -38,7 +38,8 @@ type
     epCollectAll  ## Wait for all, collect errors
 
   TaskGroup* = ref object
-    cancelProcs: seq[proc() {.closure.}]  ## Cancel closures for each task
+    cancelProcs: seq[proc() {.closure.}]  ## Active cancellation closures by reusable slot
+    freeCancelSlots: seq[int]             ## Vacated slots, bounded by peak concurrency
     errors: seq[ref CatchableError]
     atomicActive: Atomic[int]      ## Lock-free active task count
     completionWaiters: seq[CpsVoidFuture]
@@ -64,9 +65,32 @@ proc cancelAll*(group: TaskGroup) =
   ## synchronously, which may re-enter group methods.
   var snapshot: seq[proc() {.closure.}]
   withLock(group.lock, group.mtEnabled):
-    snapshot = group.cancelProcs
+    snapshot = newSeq[proc() {.closure.}](group.cancelProcs.len)
+    for i, cancelProc in group.cancelProcs:
+      snapshot[i] = cancelProc
   for cancelProc in snapshot:
-    cancelProc()
+    if cancelProc != nil:
+      cancelProc()
+
+proc registerCancelProc(group: TaskGroup,
+                        cancelProc: proc() {.closure.}): int =
+  ## Store a cancellation closure in a slot that is recycled when the task
+  ## completes. Keeping every historical closure made long-lived groups grow
+  ## in proportion to total tasks rather than peak concurrent tasks.
+  withLock(group.lock, group.mtEnabled):
+    if group.freeCancelSlots.len > 0:
+      result = group.freeCancelSlots.pop()
+      group.cancelProcs[result] = cancelProc
+    else:
+      result = group.cancelProcs.len
+      group.cancelProcs.add(cancelProc)
+
+proc releaseCancelProc(group: TaskGroup, slot: int) =
+  withLock(group.lock, group.mtEnabled):
+    if slot >= 0 and slot < group.cancelProcs.len and
+        group.cancelProcs[slot] != nil:
+      group.cancelProcs[slot] = nil
+      group.freeCancelSlots.add(slot)
 
 proc len*(group: TaskGroup): int {.inline.} =
   ## Number of tasks (total spawned). Lock-free via atomic load.
@@ -128,7 +152,8 @@ proc tryComplete(group: TaskGroup) =
       if not waiter.finished:
         complete(waiter)
 
-template onTaskComplete(group: TaskGroup, futExpr: untyped) =
+template onTaskComplete(group: TaskGroup, futExpr: untyped,
+                        cancelSlot: int) =
   ## Register a completion callback that handles error collection,
   ## fail-fast cancellation, active count tracking, and group completion.
   let tracked = futExpr
@@ -144,6 +169,7 @@ template onTaskComplete(group: TaskGroup, futExpr: untyped) =
           if group.atomicCancelled.compareExchange(expected, true,
               moAcquireRelease, moRelaxed):
             shouldCancel = true
+    group.releaseCancelProc(cancelSlot)
     discard group.atomicActive.fetchSub(1, moAcquireRelease)
     if shouldCancel:
       group.cancelAll()
@@ -154,18 +180,16 @@ proc spawn*(group: TaskGroup, fut: CpsVoidFuture, name: string = "") =
   ## Add a void task to the group. The task starts running immediately.
   discard group.atomicTaskCount.fetchAdd(1, moRelaxed)
   discard group.atomicActive.fetchAdd(1, moAcquireRelease)
-  withLock(group.lock, group.mtEnabled):
-    group.cancelProcs.add(proc() = cancel(fut))
-  onTaskComplete(group, fut)
+  let cancelSlot = group.registerCancelProc(proc() = cancel(fut))
+  onTaskComplete(group, fut, cancelSlot)
 
 proc spawn*[T](group: TaskGroup, fut: CpsFuture[T], name: string = ""): Task[T] =
   ## Add a typed task to the group. Returns the Task[T] for reading the result later.
   result = spawn(fut, name)
   discard group.atomicTaskCount.fetchAdd(1, moRelaxed)
   discard group.atomicActive.fetchAdd(1, moAcquireRelease)
-  withLock(group.lock, group.mtEnabled):
-    group.cancelProcs.add(proc() = cancel(fut))
-  onTaskComplete(group, result)
+  let cancelSlot = group.registerCancelProc(proc() = cancel(fut))
+  onTaskComplete(group, result, cancelSlot)
 
 proc wait*(group: TaskGroup): CpsVoidFuture =
   ## Wait for all tasks in the group to complete.

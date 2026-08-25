@@ -31,6 +31,8 @@ type
     addrLen*: SockLen
 
   UdpRecvCallback* = proc(data: string, srcAddr: Sockaddr_storage, addrLen: SockLen) {.closure.}
+  UdpRecvBorrowedCallback* = proc(data: openArray[byte], srcAddr: Sockaddr_storage,
+                                  addrLen: SockLen) {.closure.}
 
 proc newUdpSocket*(domain: Domain = AF_INET): UdpSocket =
   ## Create a new non-blocking UDP socket.
@@ -62,6 +64,19 @@ proc bindAddr*(sock: UdpSocket, host: string, port: int) =
 
   freeAddrInfo(aiList)
 
+proc setBufferSizes*(sock: UdpSocket, receiveBytes: int = 0,
+                     sendBytes: int = 0) =
+  ## Request larger kernel UDP buffers. The kernel may clamp these values to
+  ## its configured limits; that is still preferable to failing socket setup.
+  if receiveBytes > 0:
+    var value = receiveBytes.cint
+    discard setsockopt(sock.fd, SOL_SOCKET.cint, SO_RCVBUF.cint,
+                       addr value, sizeof(value).SockLen)
+  if sendBytes > 0:
+    var value = sendBytes.cint
+    discard setsockopt(sock.fd, SOL_SOCKET.cint, SO_SNDBUF.cint,
+                       addr value, sizeof(value).SockLen)
+
 # ============================================================
 # Address helpers
 # ============================================================
@@ -92,22 +107,50 @@ proc fillSockaddrIp*(ip: string, port: int, domain: Domain,
   else:
     raise newException(streams.AsyncIoError, "Unsupported domain: " & $domain)
 
-proc parseSockaddr(sa: ptr SockAddr, saLen: SockLen): (string, int) =
-  ## Parse IP address and port from a sockaddr via getnameinfo.
-  var host = newString(46)   # IPv6 max text: 45 chars
-  var portStr = newString(6) # Port max: 5 digits
+proc extractEndpoint*(sa: ptr SockAddr, saLen: SockLen): (string, int) =
+  ## Extract a numeric IP and port without resolver/service-database work for
+  ## the normal IPv4 and IPv6 cases. Falls back to getnameinfo for any other
+  ## address family.
+  let family = cast[ptr Sockaddr_in](sa).sin_family
+  var host: array[46, char]
+  if family == AF_INET.TSa_Family:
+    let sa4 = cast[ptr Sockaddr_in](sa)
+    if inet_ntop(AF_INET.cint, addr sa4.sin_addr,
+                 cast[cstring](addr host[0]), host.len.int32) == nil:
+      return ("", 0)
+    return ($cast[cstring](addr host[0]), int(nativesockets.ntohs(sa4.sin_port)))
+  if family == AF_INET6.TSa_Family:
+    let sa6 = cast[ptr Sockaddr_in6](sa)
+    if inet_ntop(AF_INET6.cint, addr sa6.sin6_addr,
+                 cast[cstring](addr host[0]), host.len.int32) == nil:
+      return ("", 0)
+    return ($cast[cstring](addr host[0]), int(nativesockets.ntohs(sa6.sin6_port)))
+
+  var hostStr = newString(46)
+  var portStr = newString(6)
   let rc = getnameinfo(sa, saLen,
-                       cstring(host), host.len.SockLen,
+                       cstring(hostStr), hostStr.len.SockLen,
                        cstring(portStr), portStr.len.SockLen,
                        (NI_NUMERICHOST or NI_NUMERICSERV).cint)
   if rc != 0:
-    raise newException(streams.AsyncIoError, "Failed to parse socket address")
-  host.setLen(host.cstring.len)
+    return ("", 0)
+  hostStr.setLen(hostStr.cstring.len)
   portStr.setLen(portStr.cstring.len)
-  result = (host, parseInt(portStr))
+  try: (hostStr, parseInt(portStr))
+  except ValueError: (hostStr, 0)
+
+proc parseSockaddr(sa: ptr SockAddr, saLen: SockLen): (string, int) =
+  result = extractEndpoint(sa, saLen)
+  if result[0].len == 0:
+    raise newException(streams.AsyncIoError, "Failed to parse socket address")
 
 proc extractPort*(sa: ptr SockAddr, saLen: SockLen): int =
   ## Extract just the port from a sockaddr. Returns 0 on failure.
+  let family = cast[ptr Sockaddr_in](sa).sin_family
+  if family == AF_INET.TSa_Family:
+    return int(nativesockets.ntohs(cast[ptr Sockaddr_in](sa).sin_port))
+  if family == AF_INET6.TSa_Family:
+    return int(nativesockets.ntohs(cast[ptr Sockaddr_in6](sa).sin6_port))
   var portStr = newString(6)
   let rc = getnameinfo(sa, saLen,
                        nil, 0.SockLen,
@@ -118,21 +161,6 @@ proc extractPort*(sa: ptr SockAddr, saLen: SockLen): int =
   portStr.setLen(portStr.cstring.len)
   try: parseInt(portStr)
   except ValueError: 0
-
-proc extractEndpoint*(sa: ptr SockAddr, saLen: SockLen): (string, int) =
-  ## Extract IP and port from a sockaddr. Returns ("", 0) on failure.
-  var host = newString(46)
-  var portStr = newString(6)
-  let rc = getnameinfo(sa, saLen,
-                       cstring(host), host.len.SockLen,
-                       cstring(portStr), portStr.len.SockLen,
-                       (NI_NUMERICHOST or NI_NUMERICSERV).cint)
-  if rc != 0:
-    return ("", 0)
-  host.setLen(host.cstring.len)
-  portStr.setLen(portStr.cstring.len)
-  try: (host, parseInt(portStr))
-  except ValueError: (host, 0)
 
 proc parseSenderAddress*(rd: RawDatagram): (string, int) =
   ## Extract the sender IP and port from a RawDatagram.
@@ -298,6 +326,54 @@ proc sendToAddr*(sock: UdpSocket, data: string, ip: string, port: int,
   result = sendWithRetry(sock, data, sa, saLen,
     "sendToAddr ip=" & ip & " port=" & $port & " bytes=" & $data.len)
 
+proc sendToAddrBytes*(sock: UdpSocket, data: seq[byte], ip: string,
+                      port: int): CpsVoidFuture =
+  ## Send owned byte data to a numeric address without converting it to a
+  ## string or resolving it. Ownership is retained across an EAGAIN retry.
+  let fut = newCpsVoidFuture()
+  fut.pinFutureRuntime()
+  let loop = getEventLoop()
+  var sa: Sockaddr_storage
+  let saLen = fillSockaddrForSocket(sock, ip, port, sa)
+
+  proc trySend() =
+    let dataPtr = if data.len == 0: nil else: unsafeAddr data[0]
+    let n = sendto(sock.fd, dataPtr, data.len.cint, 0'i32,
+                   cast[ptr SockAddr](addr sa), saLen)
+    if n < 0:
+      let err = osLastError()
+      if err.isWouldBlock():
+        loop.registerWrite(sock.fd, proc() =
+          loop.unregister(sock.fd)
+          trySend()
+        )
+      else:
+        fut.fail(newException(streams.AsyncIoError,
+          "sendToAddrBytes failed: " & osErrorMsg(err)))
+    else:
+      fut.complete()
+
+  trySend()
+  result = fut
+
+proc trySendToAddrBytes*(sock: UdpSocket, data: openArray[byte], ip: string,
+                         port: int): bool =
+  ## Attempt an owned/borrowed byte datagram without allocating a future or
+  ## retry closure. Returns false only when the non-blocking socket would block;
+  ## callers can then fall back to `sendToAddrBytes` for readiness-based retry.
+  var sa: Sockaddr_storage
+  let saLen = fillSockaddrForSocket(sock, ip, port, sa)
+  let dataPtr = if data.len == 0: nil else: unsafeAddr data[0]
+  let n = sendto(sock.fd, dataPtr, data.len.cint, 0'i32,
+                 cast[ptr SockAddr](addr sa), saLen)
+  if n < 0:
+    let err = osLastError()
+    if err.isWouldBlock():
+      return false
+    raise newException(streams.AsyncIoError,
+      "trySendToAddrBytes failed: " & osErrorMsg(err))
+  true
+
 # ============================================================
 # Persistent read callback (for multiplexed protocols like DNS)
 # ============================================================
@@ -334,6 +410,36 @@ proc onRecv*(sock: UdpSocket, maxSize: int, callback: UdpRecvCallback) =
         discard
 
     # Re-register for next read event (if socket not closed)
+    if not sock.closed:
+      loop.registerRead(sock.fd, readHandler)
+
+  loop.registerRead(sock.fd, readHandler)
+
+proc onRecvBorrowed*(sock: UdpSocket, maxSize: int,
+                     callback: UdpRecvBorrowedCallback) =
+  ## Persistent zero-copy receive callback. `data` is valid only for the
+  ## duration of callback execution and must be copied if retained.
+  let loop = getEventLoop()
+  var buf = newString(maxSize)
+
+  proc readHandler() {.closure.} =
+    try:
+      loop.unregister(sock.fd)
+    except Exception:
+      discard
+
+    while not sock.closed:
+      var srcAddr: Sockaddr_storage
+      var addrLen: SockLen = sizeof(srcAddr).SockLen
+      let n = recvfrom(sock.fd, addr buf[0], maxSize.cint, 0'i32,
+                       cast[ptr SockAddr](addr srcAddr), addr addrLen)
+      if n <= 0:
+        break
+      try:
+        callback(buf.toOpenArrayByte(0, n - 1), srcAddr, addrLen)
+      except Exception:
+        discard
+
     if not sock.closed:
       loop.registerRead(sock.fd, readHandler)
 

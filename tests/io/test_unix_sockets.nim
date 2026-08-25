@@ -15,6 +15,7 @@ const TestSocket4 = "/tmp/cps_test_unix4.sock"
 const TestSocket5 = "/tmp/cps_test_unix5.sock"
 const TestSocket6 = "/tmp/cps_test_unix6.sock"
 const TestSocket7 = "/tmp/cps_test_unix7.sock"
+const TestSocket8 = "/tmp/cps_test_unix8.sock"
 
 # ============================================================
 # Test 1: Listen + connect + send/recv basic data
@@ -260,5 +261,21 @@ block testBuffered:
   assert lines[2] == "line three", "Line 3: " & lines[2]
   listener.close()
   echo "PASS: Unix socket buffered reader/writer"
+
+# ============================================================
+# Test 8: Distinguish a live socket from a stale directory entry
+# ============================================================
+block testReachabilityProbe:
+  let listener = unixListen(TestSocket8)
+  assert unixSocketIsReachable(TestSocket8), "Listening socket should be reachable"
+
+  # Simulate an unclean daemon exit: close the descriptor without unlinking
+  # the filesystem entry.
+  discard posix.close(listener.fd.cint)
+  listener.closed = true
+  assert pathExists(TestSocket8), "Socket entry should remain after raw close"
+  assert not unixSocketIsReachable(TestSocket8), "Stale socket entry must not be reported live"
+  discard posix.unlink(TestSocket8.cstring)
+  echo "PASS: Unix socket live/stale reachability probe"
 
 echo "All Unix socket tests passed!"

@@ -6,7 +6,11 @@ import cps/eventloop
 import cps/io/streams
 import cps/io/tcp
 import std/nativesockets
-from std/posix import Sockaddr_in, getsockname, SockLen
+when defined(linux):
+  from std/posix import Sockaddr_in, getsockname, SockLen, fcntl, F_GETFL,
+    O_NONBLOCK, getsockopt, TCP_NODELAY
+else:
+  from std/posix import Sockaddr_in, getsockname, SockLen
 
 # Test 1: TCP echo server via loopback
 block testTcpEcho:
@@ -49,6 +53,51 @@ block testTcpEcho:
   assert clientGot == "hello tcp", "Client should have received echo, got '" & clientGot & "'"
   listener.close()
   echo "PASS: TCP echo server"
+
+when defined(linux):
+  block testDeferredAcceptOption:
+    let listener = tcpListen("127.0.0.1", 0, deferAcceptSeconds = 1)
+    var configured: cint
+    var configuredLen = sizeof(configured).SockLen
+    let rc = getsockopt(listener.fd, cint(toInt(IPPROTO_TCP)), 9.cint,
+                        addr configured, addr configuredLen)
+    assert rc == 0 and configured > 0,
+      "TCP_DEFER_ACCEPT must be active when explicitly requested"
+    listener.close()
+    echo "PASS: TCP deferred accept option"
+
+  block testAcceptedSocketIsNonBlocking:
+    let listener = tcpListen("127.0.0.1", 0)
+    let accepted = listener.accept()
+    let connected = tcpConnect("127.0.0.1", listener.localPort())
+    runCps(waitAll(accepted, connected))
+    let serverSide = accepted.read()
+    let clientSide = connected.read()
+    let flags = fcntl(cint(int(serverSide.fd)), F_GETFL)
+    assert flags >= 0 and (flags and O_NONBLOCK) != 0,
+      "accept4 must set O_NONBLOCK on every accepted socket"
+    serverSide.closeImmediately()
+    clientSide.closeImmediately()
+    listener.close()
+    echo "PASS: accepted TCP socket is non-blocking"
+
+  block testAcceptedSocketInheritsNoDelay:
+    let listener = tcpListen("127.0.0.1", 0, noDelay = true)
+    let accepted = listener.accept()
+    let connected = tcpConnect("127.0.0.1", listener.localPort())
+    runCps(waitAll(accepted, connected))
+    let serverSide = accepted.read()
+    let clientSide = connected.read()
+    var configured: cint
+    var configuredLen = sizeof(configured).SockLen
+    let rc = getsockopt(serverSide.fd, cint(toInt(IPPROTO_TCP)), TCP_NODELAY,
+                        addr configured, addr configuredLen)
+    assert rc == 0 and configured == 1,
+      "accepted sockets must inherit listener TCP_NODELAY"
+    serverSide.closeImmediately()
+    clientSide.closeImmediately()
+    listener.close()
+    echo "PASS: accepted TCP socket inherits TCP_NODELAY"
 
 # Test 2: Multiple messages
 block testTcpMultiMessage:
@@ -103,5 +152,90 @@ block testConnectError:
       break
   assert fut.hasError(), "Connection to port 1 should fail"
   echo "PASS: TCP connect error handling"
+
+block testReusePortListeners:
+  let first = tcpListen("127.0.0.1", 0, reusePort = true)
+  let port = first.localPort()
+  let second = tcpListen("127.0.0.1", port, reusePort = true)
+  assert second.localPort() == port
+  second.close()
+  first.close()
+  echo "PASS: TCP SO_REUSEPORT listener sharding"
+
+# Test 5: A large concurrent backlog stays live, including multiple
+# request/response rounds on every accepted stream.
+block testConcurrentAcceptLiveness:
+  const ClientCount = 96
+  const Rounds = 3
+  let listener = tcpListen("127.0.0.1", 0, backlog = ClientCount)
+  let port = listener.localPort()
+
+  proc serveClient(client: TcpStream): CpsVoidFuture {.cps.} =
+    for _ in 0 ..< Rounds:
+      let data = await client.AsyncStream.read(1)
+      assert data == "x"
+      await client.AsyncStream.write("y")
+    client.closeImmediately()
+
+  proc serveBatch(l: TcpListener): CpsVoidFuture {.cps.} =
+    var clients: seq[CpsVoidFuture]
+    for _ in 0 ..< ClientCount:
+      let client = await l.accept()
+      clients.add serveClient(client)
+    await waitAll(clients)
+
+  proc runClient(p: int): CpsVoidFuture {.cps.} =
+    let client = await tcpConnect("127.0.0.1", p)
+    for _ in 0 ..< Rounds:
+      await client.AsyncStream.write("x")
+      let data = await client.AsyncStream.read(1)
+      assert data == "y"
+    client.closeImmediately()
+
+  let serverFut = serveBatch(listener)
+  var clientFuts: seq[CpsVoidFuture]
+  for _ in 0 ..< ClientCount:
+    clientFuts.add runClient(port)
+  let clientsDone = waitAll(clientFuts)
+  let allDone = waitAll(serverFut, clientsDone)
+  runCps(allDone)
+  assert serverFut.finished and not serverFut.hasError()
+  assert clientsDone.finished and not clientsDone.hasError()
+  listener.close()
+  echo "PASS: TCP concurrent accept liveness"
+
+block testPersistentAcceptCallback:
+  const ClientCount = 48
+  let listener = tcpListen("127.0.0.1", 0, backlog = ClientCount)
+  let port = listener.localPort()
+  var accepted = 0
+  var serverFutures: seq[CpsVoidFuture]
+
+  proc serveOne(client: TcpStream): CpsVoidFuture {.cps.} =
+    let value = await client.AsyncStream.read(1)
+    await client.AsyncStream.write(value)
+    client.closeImmediately()
+
+  listener.acceptEach(proc(client: TcpStream) =
+    inc accepted
+    serverFutures.add serveOne(client)
+  , maxBatch = 8)
+
+  proc roundTrip(p: int): CpsVoidFuture {.cps.} =
+    let client = await tcpConnect("127.0.0.1", p)
+    await client.AsyncStream.write("z")
+    let echoed = await client.AsyncStream.read(1)
+    assert echoed == "z"
+    client.closeImmediately()
+
+  var clients: seq[CpsVoidFuture]
+  for _ in 0 ..< ClientCount:
+    clients.add roundTrip(port)
+  runCps(waitAll(clients))
+  assert accepted == ClientCount
+  for fut in serverFutures:
+    assert fut.finished and not fut.hasError()
+  listener.close()
+  echo "PASS: persistent TCP accept callback"
 
 echo "All TCP tests passed!"
