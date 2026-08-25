@@ -226,6 +226,7 @@ var gNextRuntimeId: Atomic[int64]
 var gMtRuntimeFactory: MtRuntimeFactoryProc = nil
 
 var currentRuntimeCtx {.threadvar.}: CpsRuntime
+var localFutureDefault {.threadvar.}: bool
 var currentSchedulerPtr* {.threadvar.}: pointer
 
 var mtModeEnabled* {.threadvar.}: bool
@@ -383,6 +384,16 @@ proc currentRuntime*(): RuntimeHandle =
       toHandle(fast)
     else:
       mainRuntime()
+
+proc setLocalFutureDefault*(enabled: bool) {.inline.} =
+  ## Select local-fast futures for constructors called on this thread.
+  ## Isolated reactor threads use this because their continuations and I/O
+  ## callbacks never cross a thread boundary. Shared and work-stealing
+  ## runtimes leave it disabled.
+  localFutureDefault = enabled
+
+proc localFutureDefaultEnabled*(): bool {.inline.} =
+  localFutureDefault
 
 proc enter*(handle: RuntimeHandle): RuntimeGuard =
   if handle.runtime == nil:
@@ -695,6 +706,14 @@ proc isSharedSafe*(fut: CpsVoidFuture): bool {.inline.} =
   fut.perfMode == fpSharedSafe
 
 proc newCpsFuture*[T](): CpsFuture[T] =
+  when not SharedFuturesOnly:
+    if localFutureDefault:
+      result = CpsFuture[T]()
+      result.perfMode = fpLocalFast
+      result.localState = FutureStatePending
+      result.captureLocalOwner()
+      result.ownerRuntime = currentRuntimeCtx
+      return
   result = CpsFuture[T]()
   # Atomic[int] zero-initializes to 0 (pending). No lock needed.
   result.perfMode = fpSharedSafe
@@ -703,6 +722,14 @@ proc newCpsFuture*[T](): CpsFuture[T] =
   result.ownerRuntime = nil
 
 proc newCpsVoidFuture*(): CpsVoidFuture =
+  when not SharedFuturesOnly:
+    if localFutureDefault:
+      result = CpsVoidFuture()
+      result.perfMode = fpLocalFast
+      result.localState = FutureStatePending
+      result.captureLocalOwner()
+      result.ownerRuntime = currentRuntimeCtx
+      return
   result = CpsVoidFuture()
   # Atomic[int] zero-initializes to 0 (pending). No lock needed.
   result.perfMode = fpSharedSafe
@@ -769,6 +796,12 @@ proc failedLocalVoidFuture*(err: ref CatchableError): CpsVoidFuture =
 proc completedFuture*[T](val: T): CpsFuture[T] {.inline.} =
   ## Create a future that is already completed with a value.
   ## Uses relaxed store (no CAS needed since the future hasn't been shared yet).
+  when not SharedFuturesOnly:
+    if localFutureDefault:
+      result = newCpsFuture[T]()
+      result.value = val
+      result.localState = FutureStateDone
+      return
   result = CpsFuture[T](value: val, ownerRuntime: nil, perfMode: fpSharedSafe,
                         localState: FutureStateDone, localOwnerWorkerId: -1)
   result.atomicState.store(FutureStateDone, moRelaxed)
@@ -776,6 +809,11 @@ proc completedFuture*[T](val: T): CpsFuture[T] {.inline.} =
 
 proc completedVoidFuture*(): CpsVoidFuture {.inline.} =
   ## Create a void future that is already completed.
+  when not SharedFuturesOnly:
+    if localFutureDefault:
+      result = newCpsVoidFuture()
+      result.localState = FutureStateDone
+      return
   result = CpsVoidFuture(ownerRuntime: nil, perfMode: fpSharedSafe,
                          localState: FutureStateDone, localOwnerWorkerId: -1)
   result.atomicState.store(FutureStateDone, moRelaxed)
@@ -783,6 +821,12 @@ proc completedVoidFuture*(): CpsVoidFuture {.inline.} =
 
 proc failedFuture*[T](err: ref CatchableError): CpsFuture[T] {.inline.} =
   ## Create a future that is already failed with an error.
+  when not SharedFuturesOnly:
+    if localFutureDefault:
+      result = newCpsFuture[T]()
+      result.error = err
+      result.localState = FutureStateDone
+      return
   result = CpsFuture[T](error: err, ownerRuntime: nil, perfMode: fpSharedSafe,
                         localState: FutureStateDone, localOwnerWorkerId: -1)
   result.atomicState.store(FutureStateDone, moRelaxed)
@@ -790,6 +834,12 @@ proc failedFuture*[T](err: ref CatchableError): CpsFuture[T] {.inline.} =
 
 proc failedVoidFuture*(err: ref CatchableError): CpsVoidFuture {.inline.} =
   ## Create a void future that is already failed with an error.
+  when not SharedFuturesOnly:
+    if localFutureDefault:
+      result = newCpsVoidFuture()
+      result.error = err
+      result.localState = FutureStateDone
+      return
   result = CpsVoidFuture(error: err, ownerRuntime: nil, perfMode: fpSharedSafe,
                          localState: FutureStateDone, localOwnerWorkerId: -1)
   result.atomicState.store(FutureStateDone, moRelaxed)

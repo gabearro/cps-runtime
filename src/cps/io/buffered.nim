@@ -70,8 +70,8 @@ proc compact(br: BufferedReader) {.inline.} =
     br.pos = 0
     br.cap = avail
 
-var gFillTrueFut {.global.}: CpsFuture[bool]
-var gFillFalseFut {.global.}: CpsFuture[bool]
+var gFillTrueFut {.threadvar.}: CpsFuture[bool]
+var gFillFalseFut {.threadvar.}: CpsFuture[bool]
 
 proc completedBoolTrue(): CpsFuture[bool] {.inline.} =
   if gFillTrueFut.isNil:

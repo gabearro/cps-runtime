@@ -2,7 +2,12 @@
 ##
 ## Each thread owns its runtime, selector, callbacks, and connections. This
 ## keeps the normal I/O path thread-local while allowing a process to scale
-## across cores. Cross-thread wakeups are reserved for pool control.
+## across cores. A minimal wake descriptor is used only to stop each shard;
+## the data path never touches the MT callback queue.
+##
+## Futures constructed on a shard default to local-fast state. Applications
+## must keep futures and GC-managed shard state on their owning reactor thread;
+## use the work-stealing MT runtime when tasks need to cross threads.
 
 import std/[atomics, cpuinfo, os]
 import ../runtime
@@ -35,25 +40,33 @@ proc shutdown*(pool: ReactorPool)
 proc reactorMain(arg: ReactorThreadArg) {.thread.} =
   isReactorThread = true
   var loop: EventLoop
+  var running = true
+  let (wakeRead, wakeWrite) = platform.createWakePipe()
   {.cast(gcsafe).}:
     let rt = newCurrentThreadRuntime()
     setCurrentRuntime(rt)
+    setLocalFutureDefault(true)
     loop = getEventLoop()
-    loop.enableCrossThreadWake()
-  arg.state.wakeFds[arg.shardId] = loop.wakePipeWrite
+    loop.registerRead(wakeRead, proc() =
+      platform.wakePipeDrain(wakeRead)
+      running = false
+    )
+  arg.state.wakeFds[arg.shardId] = wakeWrite
   try:
     arg.setup(arg.shardId)
   except CatchableError:
     arg.state.failed.store(true, moRelease)
   discard arg.state.started.fetchAdd(1, moRelease)
-  if not arg.state.failed.load(moAcquire):
-    while not arg.state.stopping.load(moAcquire):
-      {.cast(gcsafe).}:
-        loop.tick()
+  while running:
+    {.cast(gcsafe).}:
+      loop.tick()
   {.cast(gcsafe).}:
-    loop.disableCrossThreadWake()
+    loop.unregister(wakeRead)
+  platform.closePipeFd(wakeRead)
+  platform.closePipeFd(wakeWrite)
   isReactorThread = false
   {.cast(gcsafe).}:
+    setLocalFutureDefault(false)
     setCurrentRuntime(nil)
 
 proc startReactorPool*(setup: ReactorSetup,

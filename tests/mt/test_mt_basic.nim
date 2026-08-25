@@ -68,29 +68,30 @@ block testMtReturnValue:
 
 # Test 5: Concurrent CPS procs on MT event loop
 block testMtConcurrent:
-  var log: seq[string]
+  var seen: Atomic[int]
+  var completionSeq: Atomic[int]
+  var t1EndOrder: Atomic[int]
+  var t2EndOrder: Atomic[int]
 
   proc task1(): CpsVoidFuture {.cps.} =
-    log.add "t1-start"
+    discard seen.fetchOr(0b0001, moAcquireRelease)
     await cpsSleep(30)
-    log.add "t1-end"
+    t1EndOrder.store(completionSeq.fetchAdd(1, moAcquireRelease), moRelease)
+    discard seen.fetchOr(0b0100, moAcquireRelease)
 
   proc task2(): CpsVoidFuture {.cps.} =
-    log.add "t2-start"
+    discard seen.fetchOr(0b0010, moAcquireRelease)
     await cpsSleep(10)
-    log.add "t2-end"
+    t2EndOrder.store(completionSeq.fetchAdd(1, moAcquireRelease), moRelease)
+    discard seen.fetchOr(0b1000, moAcquireRelease)
 
   let f1 = task1()
   let f2 = task2()
   let combined = waitAll(f1, f2)
   runCps(combined)
-  assert "t1-start" in log
-  assert "t2-start" in log
-  assert "t1-end" in log
-  assert "t2-end" in log
-  let t2EndIdx = log.find("t2-end")
-  let t1EndIdx = log.find("t1-end")
-  assert t2EndIdx < t1EndIdx, "t2 should finish before t1"
+  assert seen.load(moAcquire) == 0b1111
+  assert t2EndOrder.load(moAcquire) < t1EndOrder.load(moAcquire),
+    "t2 should finish before t1"
   echo "PASS: Concurrent CPS procs on MT event loop"
 
 loop.shutdownMtRuntime()

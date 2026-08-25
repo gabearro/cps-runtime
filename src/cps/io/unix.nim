@@ -75,7 +75,7 @@ proc unixStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
   )
   result = fut
 
-var gSyncWriteCompleted: CpsVoidFuture
+var gSyncWriteCompleted {.threadvar.}: CpsVoidFuture
 
 proc getSyncWriteCompleted(): CpsVoidFuture {.inline.} =
   if gSyncWriteCompleted.isNil:

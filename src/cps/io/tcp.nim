@@ -108,12 +108,13 @@ proc tcpStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
   )
   result = fut
 
-var gSyncWriteCompleted: CpsVoidFuture
+var gSyncWriteCompleted {.threadvar.}: CpsVoidFuture
 
 proc getSyncWriteCompleted(): CpsVoidFuture {.inline.} =
-  ## Singleton pre-completed void future for synchronous writes.
-  ## Safe to share: addCallback on a completed future fires inline,
-  ## finished/hasError are read-only checks. No mutation occurs.
+  ## Per-thread pre-completed void future for synchronous writes.
+  ## Safe to reuse on its owning thread: addCallback fires inline and
+  ## finished/hasError are read-only checks. Reactor threads must not mutate
+  ## the same ARC reference count, so each isolated reactor owns one instance.
   if gSyncWriteCompleted.isNil:
     gSyncWriteCompleted = newCpsVoidFuture()
     gSyncWriteCompleted.complete()
