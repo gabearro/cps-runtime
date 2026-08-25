@@ -1,0 +1,13 @@
+nimTitle	dns	cps/io/dns.html	module cps/io/dns		0
+nim	DnsError	cps/io/dns.html#DnsError	object DnsError		31
+nim	DnsCache	cps/io/dns.html#DnsCache	type DnsCache		39
+nim	initDnsCache	cps/io/dns.html#initDnsCache,int	proc initDnsCache(ttlSeconds: int = 300): DnsCache		322
+nim	getDnsCache	cps/io/dns.html#getDnsCache	proc getDnsCache(): DnsCache		326
+nim	clearDnsCache	cps/io/dns.html#clearDnsCache	proc clearDnsCache()		332
+nim	setDnsCacheTtl	cps/io/dns.html#setDnsCacheTtl,int	proc setDnsCacheTtl(ttlSeconds: int)		337
+nim	isIpAddress	cps/io/dns.html#isIpAddress,string	proc isIpAddress(host: string): bool		366
+nim	resetDnsResolver	cps/io/dns.html#resetDnsResolver	proc resetDnsResolver()		412
+nim	initDnsResolver	cps/io/dns.html#initDnsResolver,int	proc initDnsResolver(numThreads: int = 2)		435
+nim	deinitDnsResolver	cps/io/dns.html#deinitDnsResolver	proc deinitDnsResolver()		439
+nim	asyncResolve	cps/io/dns.html#asyncResolve,string,Port,Domain	proc asyncResolve(host: string; port: Port = Port(0); family: Domain = AF_INET): CpsFuture[\n    seq[string]]		2410
+nim	resolve	cps/io/dns.html#resolve,string,Port,Domain	proc resolve(host: string; port: Port = Port(0); family: Domain = AF_INET): CpsFuture[\n    seq[string]]		2410

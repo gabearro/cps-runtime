@@ -1,0 +1,6 @@
+nimTitle	files	cps/io/files.html	module cps/io/files		0
+nim	FileStream	cps/io/files.html#FileStream	type FileStream		18
+nim	newFileStream	cps/io/files.html#newFileStream,string,FileMode	proc newFileStream(path: string; mode: FileMode = fmRead): FileStream		70
+nim	asyncReadFile	cps/io/files.html#asyncReadFile,string	proc asyncReadFile(path: string): CpsFuture[string]		88
+nim	asyncWriteFile	cps/io/files.html#asyncWriteFile,string,string	proc asyncWriteFile(path: string; data: string): CpsVoidFuture		157
+nim	asyncAppendFile	cps/io/files.html#asyncAppendFile,string,string	proc asyncAppendFile(path: string; data: string): CpsVoidFuture		161

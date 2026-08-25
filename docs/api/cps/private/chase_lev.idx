@@ -1,0 +1,11 @@
+nimTitle	chase_lev	cps/private/chase_lev.html	module cps/private/chase_lev		0
+nim	ChaseLevCapacity	cps/private/chase_lev.html#ChaseLevCapacity	const ChaseLevCapacity		32
+nim	ChaseLevDeque	cps/private/chase_lev.html#ChaseLevDeque	object ChaseLevDeque		37
+nim	initChaseLevDeque	cps/private/chase_lev.html#initChaseLevDeque,ChaseLevDeque[T]	proc initChaseLevDeque[T](d: var ChaseLevDeque[T])		59
+nim	destroyChaseLevDeque	cps/private/chase_lev.html#destroyChaseLevDeque,ChaseLevDeque[T]	proc destroyChaseLevDeque[T](d: var ChaseLevDeque[T])		65
+nim	push	cps/private/chase_lev.html#push,ChaseLevDeque[T],T	proc push[T](d: var ChaseLevDeque[T]; item: T): bool		72
+nim	pop	cps/private/chase_lev.html#pop,ChaseLevDeque[T]	proc pop[T](d: var ChaseLevDeque[T]): T		87
+nim	steal	cps/private/chase_lev.html#steal,ChaseLevDeque[T]	proc steal[T](d: var ChaseLevDeque[T]): T		119
+nim	drainAll	cps/private/chase_lev.html#drainAll,ChaseLevDeque[T]	proc drainAll[T](d: var ChaseLevDeque[T])		139
+nim	isEmpty	cps/private/chase_lev.html#isEmpty,ChaseLevDeque[T]	proc isEmpty[T](d: var ChaseLevDeque[T]): bool		149
+nim	len	cps/private/chase_lev.html#len,ChaseLevDeque[T]	proc len[T](d: var ChaseLevDeque[T]): int		153

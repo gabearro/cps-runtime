@@ -58,8 +58,12 @@ as an API guarantee.
 
 ```sh
 nimble checkDocs
+nimble docs
 nimble test
 ```
+
+The generated Nim API reference is committed under `docs/api`; open
+`docs/api/theindex.html` to search exported symbols and their `##` docstrings.
 
 Run the MT and socket tests when changing runtime scheduling or I/O. Build ARC,
 atomic ARC, and shared-futures-only variants when changing future storage or

@@ -1,0 +1,4 @@
+nimTitle	timeouts	cps/io/timeouts.html	module cps/io/timeouts		0
+nim	withTimeout	cps/io/timeouts.html#withTimeout,CpsFuture[T],int	proc withTimeout[T](fut: CpsFuture[T]; ms: int): CpsFuture[T]		24
+nim	withTimeout	cps/io/timeouts.html#withTimeout,CpsVoidFuture,int	proc withTimeout(fut: CpsVoidFuture; ms: int): CpsVoidFuture		57
+nimgrp	withtimeout	cps/io/timeouts.html#withTimeout-procs-all	proc		24

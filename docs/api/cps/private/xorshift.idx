@@ -1,0 +1,8 @@
+nimTitle	xorshift	cps/private/xorshift.html	module cps/private/xorshift		0
+nim	XorShift32	cps/private/xorshift.html#XorShift32	object XorShift32		10
+nim	initXorShift32	cps/private/xorshift.html#initXorShift32,uint32	proc initXorShift32(seed: uint32): XorShift32		13
+nim	initXorShift32	cps/private/xorshift.html#initXorShift32,int	proc initXorShift32(seed: int): XorShift32		17
+nim	next	cps/private/xorshift.html#next,XorShift32	proc next(rng: var XorShift32): uint32		21
+nim	rand	cps/private/xorshift.html#rand,XorShift32,int	proc rand(rng: var XorShift32; bound: int): int		30
+nim	seedFromTime	cps/private/xorshift.html#seedFromTime	proc seedFromTime(): uint32		35
+nimgrp	initxorshift32	cps/private/xorshift.html#initXorShift32-procs-all	proc		13

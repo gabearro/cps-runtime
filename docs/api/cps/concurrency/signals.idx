@@ -1,0 +1,8 @@
+nimTitle	signals	cps/concurrency/signals.html	module cps/concurrency/signals		0
+nim	SignalHandler	cps/concurrency/signals.html#SignalHandler	type SignalHandler		22
+nim	initSignalHandling	cps/concurrency/signals.html#initSignalHandling	proc initSignalHandling()		103
+nim	deinitSignalHandling	cps/concurrency/signals.html#deinitSignalHandling	proc deinitSignalHandling()		125
+nim	onSignal	cps/concurrency/signals.html#onSignal,cint,SignalHandler	proc onSignal(sig: cint; handler: SignalHandler)		158
+nim	removeSignalHandlers	cps/concurrency/signals.html#removeSignalHandlers,cint	proc removeSignalHandlers(sig: cint)		167
+nim	waitForSignal	cps/concurrency/signals.html#waitForSignal,cint	proc waitForSignal(sig: cint): CpsVoidFuture		180
+nim	waitForShutdown	cps/concurrency/signals.html#waitForShutdown	proc waitForShutdown(): CpsVoidFuture		198

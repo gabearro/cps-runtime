@@ -1,0 +1,7 @@
+nimTitle	scheduler	cps/mt/scheduler.html	module cps/mt/scheduler		0
+nim	SchedulerTask	cps/mt/scheduler.html#SchedulerTask	type SchedulerTask		17
+nim	Scheduler	cps/mt/scheduler.html#Scheduler	type Scheduler		41
+nim	newScheduler	cps/mt/scheduler.html#newScheduler,CpsRuntime,int,int	proc newScheduler(runtime: CpsRuntime; numWorkers: int = 0;\n             maxGlobalQueue: int = 65536): Scheduler		205
+nim	schedule	cps/mt/scheduler.html#schedule,Scheduler,SchedulerTask	proc schedule(s: Scheduler; task: SchedulerTask)		231
+nim	schedulePinned	cps/mt/scheduler.html#schedulePinned,Scheduler,int,SchedulerTask	proc schedulePinned(s: Scheduler; workerId: int; task: SchedulerTask): bool		259
+nim	shutdownScheduler	cps/mt/scheduler.html#shutdownScheduler,Scheduler	proc shutdownScheduler(s: Scheduler)		276

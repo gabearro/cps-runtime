@@ -1,0 +1,7 @@
+nimTitle	spinlock	cps/private/spinlock.html	module cps/private/spinlock		0
+nim	SpinLock	cps/private/spinlock.html#SpinLock	object SpinLock		16
+nim	initSpinLock	cps/private/spinlock.html#initSpinLock,SpinLock	proc initSpinLock(sl: var SpinLock)		19
+nim	acquire	cps/private/spinlock.html#acquire,SpinLock	proc acquire(sl: var SpinLock)		23
+nim	release	cps/private/spinlock.html#release,SpinLock	proc release(sl: var SpinLock)		30
+nim	tryAcquire	cps/private/spinlock.html#tryAcquire,SpinLock	proc tryAcquire(sl: var SpinLock): bool		34
+nim	withSpinLock	cps/private/spinlock.html#withSpinLock.t,SpinLock,untyped	template withSpinLock(sl: var SpinLock; body: untyped)		40

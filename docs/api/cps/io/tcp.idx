@@ -1,0 +1,15 @@
+nimTitle	tcp	cps/io/tcp.html	module cps/io/tcp		0
+nim	TcpStream	cps/io/tcp.html#TcpStream	type TcpStream		51
+nim	closeImmediately	cps/io/tcp.html#closeImmediately,TcpStream	proc closeImmediately(ts: TcpStream)		233
+nim	newTcpStream	cps/io/tcp.html#newTcpStream,SocketHandle,Domain	proc newTcpStream(fd: SocketHandle; domain: Domain = AF_INET): TcpStream		249
+nim	tcpConnectIp	cps/io/tcp.html#tcpConnectIp,string,int,Domain	proc tcpConnectIp(ip: string; port: int; domain: Domain = AF_INET): CpsFuture[\n    TcpStream]		266
+nim	tcpConnect	cps/io/tcp.html#tcpConnect,string,int,Domain	proc tcpConnect(host: string; port: int; domain: Domain = AF_INET): CpsFuture[\n    TcpStream]		357
+nim	TcpListener	cps/io/tcp.html#TcpListener	type TcpListener		417
+nim	TcpAcceptHandler	cps/io/tcp.html#TcpAcceptHandler	type TcpAcceptHandler		423
+nim	TcpAcceptErrorHandler	cps/io/tcp.html#TcpAcceptErrorHandler	type TcpAcceptErrorHandler		424
+nim	tcpListen	cps/io/tcp.html#tcpListen,string,int,int,Domain,bool,bool,int,bool	proc tcpListen(host: string; port: int; backlog: int = 128; domain: Domain = AF_INET;\n          dualStack: bool = false; reusePort: bool = false;\n          deferAcceptSeconds: int = 0; noDelay: bool = false): TcpListener		426
+nim	localPort	cps/io/tcp.html#localPort,TcpListener	proc localPort(listener: TcpListener): int		507
+nim	peerEndpoint	cps/io/tcp.html#peerEndpoint,TcpStream	proc peerEndpoint(stream: TcpStream): tuple[ip: string, port: uint16]		517
+nim	accept	cps/io/tcp.html#accept,TcpListener	proc accept(listener: TcpListener): CpsFuture[TcpStream]		547
+nim	acceptEach	cps/io/tcp.html#acceptEach,TcpListener,TcpAcceptHandler,TcpAcceptErrorHandler,int	proc acceptEach(listener: TcpListener; onAccept: TcpAcceptHandler;\n           onError: TcpAcceptErrorHandler = nil; maxBatch: int = 64)		572
+nim	close	cps/io/tcp.html#close,TcpListener	proc close(listener: TcpListener)		625

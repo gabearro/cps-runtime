@@ -1,0 +1,9 @@
+nimTitle	unix	cps/io/unix.html	module cps/io/unix		0
+nim	UnixStream	cps/io/unix.html#UnixStream	type UnixStream		27
+nim	newUnixStream	cps/io/unix.html#newUnixStream,SocketHandle	proc newUnixStream(fd: SocketHandle): UnixStream		174
+nim	unixSocketIsReachable	cps/io/unix.html#unixSocketIsReachable,string	proc unixSocketIsReachable(path: string): bool		200
+nim	unixConnect	cps/io/unix.html#unixConnect,string	proc unixConnect(path: string): CpsFuture[UnixStream]		217
+nim	UnixListener	cps/io/unix.html#UnixListener	type UnixListener		299
+nim	unixListen	cps/io/unix.html#unixListen,string,int	proc unixListen(path: string; backlog: int = 128): UnixListener		304
+nim	accept	cps/io/unix.html#accept,UnixListener	proc accept(listener: UnixListener): CpsFuture[UnixStream]		334
+nim	close	cps/io/unix.html#close,UnixListener	proc close(listener: UnixListener)		364

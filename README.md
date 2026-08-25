@@ -159,8 +159,12 @@ APIs, ownership, protocol state, or execution behavior.
 ```sh
 nimble install -d -y
 nimble checkDocs
+nimble docs
 nimble test
 ```
+
+`nimble docs` writes the generated API reference to
+[`docs/api/theindex.html`](docs/api/theindex.html).
 
 Tests are standalone Nim programs and use `assert` plus explicit
 `PASS: ...` output. There is no external test framework.

@@ -1,0 +1,27 @@
+nimTitle	sync	cps/concurrency/sync.html	module cps/concurrency/sync		0
+nim	SyncClosed	cps/concurrency/sync.html#SyncClosed	object SyncClosed		42
+nim	AsyncSemaphore	cps/concurrency/sync.html#AsyncSemaphore	type AsyncSemaphore		50
+nim	newAsyncSemaphore	cps/concurrency/sync.html#newAsyncSemaphore,int	proc newAsyncSemaphore(permits: int): AsyncSemaphore		60
+nim	acquire	cps/concurrency/sync.html#acquire,AsyncSemaphore	proc acquire(sem: AsyncSemaphore): CpsVoidFuture		73
+nim	release	cps/concurrency/sync.html#release,AsyncSemaphore	proc release(sem: AsyncSemaphore)		86
+nim	tryAcquire	cps/concurrency/sync.html#tryAcquire,AsyncSemaphore	proc tryAcquire(sem: AsyncSemaphore): bool		101
+nim	availablePermits	cps/concurrency/sync.html#availablePermits,AsyncSemaphore	proc availablePermits(sem: AsyncSemaphore): int		110
+nim	close	cps/concurrency/sync.html#close,AsyncSemaphore	proc close(sem: AsyncSemaphore)		115
+nim	AsyncMutex	cps/concurrency/sync.html#AsyncMutex	type AsyncMutex		134
+nim	newAsyncMutex	cps/concurrency/sync.html#newAsyncMutex	proc newAsyncMutex(): AsyncMutex		144
+nim	lock	cps/concurrency/sync.html#lock,AsyncMutex	proc lock(m: AsyncMutex): CpsVoidFuture		155
+nim	unlock	cps/concurrency/sync.html#unlock,AsyncMutex	proc unlock(m: AsyncMutex)		167
+nim	tryUnlock	cps/concurrency/sync.html#tryUnlock,AsyncMutex	proc tryUnlock(m: AsyncMutex): bool		182
+nim	tryLock	cps/concurrency/sync.html#tryLock,AsyncMutex	proc tryLock(m: AsyncMutex): bool		197
+nim	isLocked	cps/concurrency/sync.html#isLocked,AsyncMutex	proc isLocked(m: AsyncMutex): bool		206
+nim	close	cps/concurrency/sync.html#close,AsyncMutex	proc close(m: AsyncMutex)		211
+nim	AsyncEvent	cps/concurrency/sync.html#AsyncEvent	type AsyncEvent		229
+nim	newAsyncEvent	cps/concurrency/sync.html#newAsyncEvent	proc newAsyncEvent(): AsyncEvent		239
+nim	wait	cps/concurrency/sync.html#wait,AsyncEvent	proc wait(ev: AsyncEvent): CpsVoidFuture		250
+nim	set	cps/concurrency/sync.html#set,AsyncEvent	proc set(ev: AsyncEvent)		261
+nim	clear	cps/concurrency/sync.html#clear,AsyncEvent	proc clear(ev: AsyncEvent)		272
+nim	isSet	cps/concurrency/sync.html#isSet,AsyncEvent	proc isSet(ev: AsyncEvent): bool		277
+nim	close	cps/concurrency/sync.html#close,AsyncEvent	proc close(ev: AsyncEvent)		282
+nim	withPermit	cps/concurrency/sync.html#withPermit.t,AsyncSemaphore,untyped	template withPermit(sem: AsyncSemaphore; body: untyped)		297
+nim	withLock	cps/concurrency/sync.html#withLock.t,AsyncMutex,untyped	template withLock(m: AsyncMutex; body: untyped)		306
+nimgrp	close	cps/concurrency/sync.html#close-procs-all	proc		115

@@ -1,0 +1,7 @@
+nimTitle	mpmc_ring	cps/private/mpmc_ring.html	module cps/private/mpmc_ring		0
+nim	MpmcRingQueue	cps/private/mpmc_ring.html#MpmcRingQueue	object MpmcRingQueue		15
+nim	initMpmcRingQueue	cps/private/mpmc_ring.html#initMpmcRingQueue,MpmcRingQueue[T],int	proc initMpmcRingQueue[T](q: var MpmcRingQueue[T]; requestedCapacity: int)		23
+nim	tryEnqueue	cps/private/mpmc_ring.html#tryEnqueue,MpmcRingQueue[T],T	proc tryEnqueue[T](q: var MpmcRingQueue[T]; value: T): bool		37
+nim	tryDequeue	cps/private/mpmc_ring.html#tryDequeue,MpmcRingQueue[T],T	proc tryDequeue[T](q: var MpmcRingQueue[T]; value: var T): bool		57
+nim	len	cps/private/mpmc_ring.html#len,MpmcRingQueue[T]	proc len[T](q: var MpmcRingQueue[T]): int		78
+nim	deinitMpmcRingQueue	cps/private/mpmc_ring.html#deinitMpmcRingQueue,MpmcRingQueue[T]	proc deinitMpmcRingQueue[T](q: var MpmcRingQueue[T])		82

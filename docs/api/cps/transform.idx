@@ -1,0 +1,3 @@
+nimTitle	transform	cps/transform.html	module cps/transform		0
+nim	cpsFutureMode	cps/transform.html#cpsFutureMode.t,untyped	template cpsFutureMode(mode: untyped)		15
+nim	cps	cps/transform.html#cps.m,untyped	macro cps(prc: untyped): untyped		744

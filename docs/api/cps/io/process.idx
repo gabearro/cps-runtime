@@ -1,0 +1,16 @@
+nimTitle	process	cps/io/process.html	module cps/io/process		0
+nim	pmPipe	cps/io/process.html#pmPipe	PipeMode.pmPipe		23
+nim	pmInherit	cps/io/process.html#pmInherit	PipeMode.pmInherit		23
+nim	pmNull	cps/io/process.html#pmNull	PipeMode.pmNull		23
+nim	PipeMode	cps/io/process.html#PipeMode	enum PipeMode		23
+nim	ProcessError	cps/io/process.html#ProcessError	object ProcessError		28
+nim	PipeStream	cps/io/process.html#PipeStream	type PipeStream		30
+nim	AsyncProcess	cps/io/process.html#AsyncProcess	type AsyncProcess		33
+nim	newPipeStream	cps/io/process.html#newPipeStream,cint	proc newPipeStream(fd: cint): PipeStream		132
+nim	startProcess	cps/io/process.html#startProcess,string,seq[string],seq[],string,PipeMode,PipeMode,PipeMode	proc startProcess(command: string; args: seq[string] = @[];\n             env: seq[(string, string)] = @[]; workingDir: string = "";\n             stdinMode: PipeMode = pmPipe; stdoutMode: PipeMode = pmPipe;\n             stderrMode: PipeMode = pmPipe): AsyncProcess		183
+nim	wait	cps/io/process.html#wait,AsyncProcess	proc wait(p: AsyncProcess): CpsFuture[int]		334
+nim	kill	cps/io/process.html#kill,AsyncProcess,cint	proc kill(p: AsyncProcess; signal: cint = SIGTERM)		351
+nim	terminate	cps/io/process.html#terminate,AsyncProcess	proc terminate(p: AsyncProcess)		356
+nim	forceKill	cps/io/process.html#forceKill,AsyncProcess	proc forceKill(p: AsyncProcess)		360
+nim	exec	cps/io/process.html#exec,string,seq[string],seq[],string,string	proc exec(command: string; args: seq[string] = @[];\n     env: seq[(string, string)] = @[]; workingDir: string = "";\n     input: string = ""): CpsFuture[tuple[exitCode: int, stdout: string,\n    stderr: string]]		392
+nim	execOutput	cps/io/process.html#execOutput,string,seq[string]	proc execOutput(command: string; args: seq[string] = @[]): CpsFuture[string]		442

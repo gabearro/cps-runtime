@@ -1,0 +1,42 @@
+nimTitle	nat	cps/io/nat.html	module cps/io/nat		0
+nim	NatError	cps/io/nat.html#NatError	object NatError		28
+nim	npNone	cps/io/nat.html#npNone	NatProtocol.npNone		31
+nim	npNatPmp	cps/io/nat.html#npNatPmp	NatProtocol.npNatPmp		31
+nim	npPcp	cps/io/nat.html#npPcp	NatProtocol.npPcp		31
+nim	npUpnpIgd	cps/io/nat.html#npUpnpIgd	NatProtocol.npUpnpIgd		31
+nim	NatProtocol	cps/io/nat.html#NatProtocol	enum NatProtocol		31
+nim	mpTcp	cps/io/nat.html#mpTcp	MappingProto.mpTcp		37
+nim	mpUdp	cps/io/nat.html#mpUdp	MappingProto.mpUdp		37
+nim	MappingProto	cps/io/nat.html#MappingProto	enum MappingProto		37
+nim	NatMapping	cps/io/nat.html#NatMapping	type NatMapping		41
+nim	NatManager	cps/io/nat.html#NatManager	type NatManager		52
+nim	getU16BE	cps/io/nat.html#getU16BE,string,int	proc getU16BE(data: string; offset: int): uint16		114
+nim	getU32BE	cps/io/nat.html#getU32BE,string,int	proc getU32BE(data: string; offset: int): uint32		118
+nim	checkPmpEpoch	cps/io/nat.html#checkPmpEpoch,NatManager,uint32	proc checkPmpEpoch(mgr: NatManager; epoch: uint32)		125
+nim	getLocalIp	cps/io/nat.html#getLocalIp	proc getLocalIp(): string		167
+nim	getLocalIpv6	cps/io/nat.html#getLocalIpv6	proc getLocalIpv6(): string		196
+nim	getDefaultGateway	cps/io/nat.html#getDefaultGateway	proc getDefaultGateway(): string		226
+nim	isPrivateIp	cps/io/nat.html#isPrivateIp,string	proc isPrivateIp(ip: string): bool		269
+nim	natPmpBuildExternalAddrRequest	cps/io/nat.html#natPmpBuildExternalAddrRequest	proc natPmpBuildExternalAddrRequest(): string		329
+nim	natPmpBuildMappingRequest	cps/io/nat.html#natPmpBuildMappingRequest,MappingProto,uint16,uint16,uint32	proc natPmpBuildMappingRequest(proto: MappingProto; internalPort: uint16;\n                          externalPort: uint16; lifetime: uint32): string		335
+nim	natPmpParseResponse	cps/io/nat.html#natPmpParseResponse,string	proc natPmpParseResponse(data: string): tuple[version: byte, opcode: byte,\n    resultCode: uint16, epoch: uint32, externalIp: string, internalPort: uint16,\n    externalPort: uint16, lifetime: uint32]		346
+nim	pcpBuildMapRequest	cps/io/nat.html#pcpBuildMapRequest,string,MappingProto,uint16,uint16,uint32,array[,byte]	proc pcpBuildMapRequest(localIp: string; proto: MappingProto; internalPort: uint16;\n                   externalPort: uint16; lifetime: uint32;\n                   nonce: array[12, byte]): string		416
+nim	pcpParseResponse	cps/io/nat.html#pcpParseResponse,string	proc pcpParseResponse(data: string): tuple[version: byte, opcode: byte,\n                                      resultCode: byte, lifetime: uint32,\n                                      epoch: uint32, nonce: array[12, byte],\n                                      protocol: byte, internalPort: uint16,\n                                      externalPort: uint16, externalIp: string]		441
+nim	parseSsdpResponse	cps/io/nat.html#parseSsdpResponse,string	proc parseSsdpResponse(data: string): tuple[location: string, server: string,\n                                       st: string]		483
+nim	parseUpnpControlUrl	cps/io/nat.html#parseUpnpControlUrl,string	proc parseUpnpControlUrl(xml: string): tuple[controlUrl: string, serviceType: string]		494
+nim	parseSoapResponse	cps/io/nat.html#parseSoapResponse,string,string	proc parseSoapResponse(xml: string; tagName: string): string		536
+nim	parseUrlComponents	cps/io/nat.html#parseUrlComponents,string	proc parseUrlComponents(url: string): tuple[host: string, port: int, path: string,\n                                       isHttps: bool]		549
+nim	soapAddPortMapping	cps/io/nat.html#soapAddPortMapping,string,uint16,MappingProto,uint16,string,string,uint32	proc soapAddPortMapping(serviceType: string; externalPort: uint16;\n                   proto: MappingProto; internalPort: uint16;\n                   internalIp: string; description: string; lifetime: uint32): string		586
+nim	soapDeletePortMapping	cps/io/nat.html#soapDeletePortMapping,string,uint16,MappingProto	proc soapDeletePortMapping(serviceType: string; externalPort: uint16;\n                      proto: MappingProto): string		610
+nim	soapGetExternalIPAddress	cps/io/nat.html#soapGetExternalIPAddress,string	proc soapGetExternalIPAddress(serviceType: string): string		626
+nim	withTimeoutBool	cps/io/nat.html#withTimeoutBool,CpsFuture[T],int	proc withTimeoutBool[T](fut: CpsFuture[T]; timeoutMs: int): CpsFuture[bool]		641
+nim	withTimeoutBool	cps/io/nat.html#withTimeoutBool,CpsVoidFuture,int	proc withTimeoutBool(fut: CpsVoidFuture; timeoutMs: int): CpsFuture[bool]		669
+nim	newNatManager	cps/io/nat.html#newNatManager,string,int	proc newNatManager(gatewayIp: string = ""; maxDepth: int = 0): NatManager		933
+nim	discover	cps/io/nat.html#discover,NatManager	proc discover(mgr: NatManager): CpsVoidFuture		2410
+nim	addMapping	cps/io/nat.html#addMapping,NatManager,MappingProto,uint16,uint16,uint32	proc addMapping(mgr: NatManager; proto: MappingProto; internalPort: uint16;\n           externalPort: uint16 = 0; lifetime: uint32 = 7200): CpsFuture[\n    NatMapping]		2410
+nim	deleteMapping	cps/io/nat.html#deleteMapping,NatManager,NatMapping	proc deleteMapping(mgr: NatManager; mapping: NatMapping): CpsVoidFuture		2410
+nim	deleteAllMappings	cps/io/nat.html#deleteAllMappings,NatManager	proc deleteAllMappings(mgr: NatManager): CpsVoidFuture		2410
+nim	startRenewal	cps/io/nat.html#startRenewal,NatManager	proc startRenewal(mgr: NatManager): CpsVoidFuture		2410
+nim	shutdown	cps/io/nat.html#shutdown,NatManager	proc shutdown(mgr: NatManager): CpsVoidFuture		2410
+nim	getExternalIp	cps/io/nat.html#getExternalIp,NatManager	proc getExternalIp(mgr: NatManager): string		1366
+nimgrp	withtimeoutbool	cps/io/nat.html#withTimeoutBool-procs-all	proc		641

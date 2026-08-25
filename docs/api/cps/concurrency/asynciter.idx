@@ -1,0 +1,13 @@
+nimTitle	asynciter	cps/concurrency/asynciter.html	module cps/concurrency/asynciter		0
+nim	Sender	cps/concurrency/asynciter.html#Sender	type Sender		19
+nim	AsyncIterator	cps/concurrency/asynciter.html#AsyncIterator	type AsyncIterator		23
+nim	emit	cps/concurrency/asynciter.html#emit,Sender[T],sinkT	proc emit[T](sender: Sender[T]; value: sink T): CpsVoidFuture		37
+nim	newAsyncIterator	cps/concurrency/asynciter.html#newAsyncIterator,proc(Sender[T]),int	proc newAsyncIterator[T](producer: proc (s: Sender[T]): CpsVoidFuture;\n                    bufferSize: int = 1): AsyncIterator[T]		46
+nim	next	cps/concurrency/asynciter.html#next,AsyncIterator[T]	proc next[T](iter: AsyncIterator[T]): CpsFuture[Option[T]]		77
+nim	close	cps/concurrency/asynciter.html#close,AsyncIterator[T]	proc close[T](iter: AsyncIterator[T])		99
+nim	isClosed	cps/concurrency/asynciter.html#isClosed,AsyncIterator[T]	proc isClosed[T](iter: AsyncIterator[T]): bool		109
+nim	map	cps/concurrency/asynciter.html#map,AsyncIterator[T],proc(T)	proc map[T, U](iter: AsyncIterator[T]; f: proc (x: T): U): AsyncIterator[U]		129
+nim	filter	cps/concurrency/asynciter.html#filter,AsyncIterator[T],proc(T)	proc filter[T](iter: AsyncIterator[T]; pred: proc (x: T): bool): AsyncIterator[T]		148
+nim	take	cps/concurrency/asynciter.html#take,AsyncIterator[T],int	proc take[T](iter: AsyncIterator[T]; n: int): AsyncIterator[T]		167
+nim	collect	cps/concurrency/asynciter.html#collect,AsyncIterator[T]	proc collect[T](iter: AsyncIterator[T]): CpsFuture[seq[T]]		2410
+nim	forEach	cps/concurrency/asynciter.html#forEach,AsyncIterator[T],proc(T)	proc forEach[T](iter: AsyncIterator[T]; action: proc (x: T): CpsVoidFuture): CpsVoidFuture		2410

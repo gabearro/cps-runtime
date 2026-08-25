@@ -1,0 +1,18 @@
+nimTitle	proxy	cps/io/proxy.html	module cps/io/proxy		0
+nim	pkSocks4	cps/io/proxy.html#pkSocks4	ProxyKind.pkSocks4		22
+nim	pkSocks4a	cps/io/proxy.html#pkSocks4a	ProxyKind.pkSocks4a		22
+nim	pkSocks5	cps/io/proxy.html#pkSocks5	ProxyKind.pkSocks5		22
+nim	pkHttpConnect	cps/io/proxy.html#pkHttpConnect	ProxyKind.pkHttpConnect		22
+nim	ProxyKind	cps/io/proxy.html#ProxyKind	enum ProxyKind		22
+nim	ProxyAuth	cps/io/proxy.html#ProxyAuth	object ProxyAuth		28
+nim	ProxyConfig	cps/io/proxy.html#ProxyConfig	object ProxyConfig		32
+nim	ProxyError	cps/io/proxy.html#ProxyError	object ProxyError		38
+nim	socks4Proxy	cps/io/proxy.html#socks4Proxy,string,int,string	proc socks4Proxy(host: string; port: int; userId: string = ""): ProxyConfig		45
+nim	socks4aProxy	cps/io/proxy.html#socks4aProxy,string,int,string	proc socks4aProxy(host: string; port: int; userId: string = ""): ProxyConfig		50
+nim	socks5Proxy	cps/io/proxy.html#socks5Proxy,string,int,string,string	proc socks5Proxy(host: string; port: int; username: string = "";\n            password: string = ""): ProxyConfig		55
+nim	httpProxy	cps/io/proxy.html#httpProxy,string,int,string,string	proc httpProxy(host: string; port: int; username: string = ""; password: string = ""): ProxyConfig		61
+nim	ProxyStream	cps/io/proxy.html#ProxyStream	type ProxyStream		470
+nim	proxyConnect	cps/io/proxy.html#proxyConnect,ProxyConfig,string,int	proc proxyConnect(proxy: ProxyConfig; targetHost: string; targetPort: int): CpsFuture[\n    ProxyStream]		514
+nim	proxyChainConnect	cps/io/proxy.html#proxyChainConnect,openArray[ProxyConfig],string,int	proc proxyChainConnect(proxies: openArray[ProxyConfig]; targetHost: string;\n                  targetPort: int): CpsFuture[ProxyStream]		564
+nim	getUnderlyingFd	cps/io/proxy.html#getUnderlyingFd,ProxyStream	proc getUnderlyingFd(ps: ProxyStream): SocketHandle		657
+nim	getUnderlyingTcpStream	cps/io/proxy.html#getUnderlyingTcpStream,ProxyStream	proc getUnderlyingTcpStream(ps: ProxyStream): TcpStream		667

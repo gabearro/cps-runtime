@@ -1,0 +1,13 @@
+nimTitle	mpsc_queue	cps/private/mpsc_queue.html	module cps/private/mpsc_queue		0
+nim	CrossThreadCallback	cps/private/mpsc_queue.html#CrossThreadCallback	type CrossThreadCallback		22
+nim	MpscNode	cps/private/mpsc_queue.html#MpscNode	object MpscNode		24
+nim	MpscQueue	cps/private/mpsc_queue.html#MpscQueue	object MpscQueue		28
+nim	initMpscQueue	cps/private/mpsc_queue.html#initMpscQueue,MpscQueue[T]	proc initMpscQueue[T](q: var MpscQueue[T])		54
+nim	isInitialized	cps/private/mpsc_queue.html#isInitialized,MpscQueue[T]	proc isInitialized[T](q: var MpscQueue[T]): bool		60
+nim	enqueue	cps/private/mpsc_queue.html#enqueue,MpscQueue[T],ptr.MpscNode[T]	proc enqueue[T](q: var MpscQueue[T]; node: ptr MpscNode[T])		64
+nim	dequeue	cps/private/mpsc_queue.html#dequeue,MpscQueue[T]	proc dequeue[T](q: var MpscQueue[T]): ptr MpscNode[T]		70
+nim	isEmpty	cps/private/mpsc_queue.html#isEmpty,MpscQueue[T]	proc isEmpty[T](q: var MpscQueue[T]): bool		96
+nim	hasPending	cps/private/mpsc_queue.html#hasPending,MpscQueue[T]	proc hasPending[T](q: var MpscQueue[T]): bool		104
+nim	allocNode	cps/private/mpsc_queue.html#allocNode,T	proc allocNode[T](val: T): ptr MpscNode[T]		110
+nim	freeNode	cps/private/mpsc_queue.html#freeNode,ptr.MpscNode[T]	proc freeNode[T](node: ptr MpscNode[T])		117
+nim	discardAll	cps/private/mpsc_queue.html#discardAll,MpscQueue[T]	proc discardAll[T](q: var MpscQueue[T])		121

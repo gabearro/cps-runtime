@@ -1,0 +1,16 @@
+nimTitle	channels	cps/concurrency/channels.html	module cps/concurrency/channels		0
+nim	ChannelClosed	cps/concurrency/channels.html#ChannelClosed	object ChannelClosed		36
+nim	AsyncChannel	cps/concurrency/channels.html#AsyncChannel	type AsyncChannel		46
+nim	newAsyncChannel	cps/concurrency/channels.html#newAsyncChannel,int	proc newAsyncChannel[T](capacity: int): AsyncChannel[T]		70
+nim	newAsyncChannel	cps/concurrency/channels.html#newAsyncChannel	proc newAsyncChannel[T](): AsyncChannel[T]		85
+nim	len	cps/concurrency/channels.html#len,AsyncChannel[T]	proc len[T](ch: AsyncChannel[T]): int		100
+nim	capacity	cps/concurrency/channels.html#capacity,AsyncChannel[T]	proc capacity[T](ch: AsyncChannel[T]): int		105
+nim	isClosed	cps/concurrency/channels.html#isClosed,AsyncChannel[T]	proc isClosed[T](ch: AsyncChannel[T]): bool		109
+nim	isEmpty	cps/concurrency/channels.html#isEmpty,AsyncChannel[T]	proc isEmpty[T](ch: AsyncChannel[T]): bool		114
+nim	isFull	cps/concurrency/channels.html#isFull,AsyncChannel[T]	proc isFull[T](ch: AsyncChannel[T]): bool		119
+nim	close	cps/concurrency/channels.html#close,AsyncChannel[T]	proc close[T](ch: AsyncChannel[T])		161
+nim	trySend	cps/concurrency/channels.html#trySend,AsyncChannel[T],sinkT	proc trySend[T](ch: AsyncChannel[T]; value: sink T): bool		188
+nim	tryRecv	cps/concurrency/channels.html#tryRecv,AsyncChannel[T]	proc tryRecv[T](ch: AsyncChannel[T]): Option[T]		209
+nim	send	cps/concurrency/channels.html#send,AsyncChannel[T],sinkT	proc send[T](ch: AsyncChannel[T]; value: sink T): CpsVoidFuture		236
+nim	recv	cps/concurrency/channels.html#recv,AsyncChannel[T]	proc recv[T](ch: AsyncChannel[T]): CpsFuture[T]		274
+nimgrp	newasyncchannel	cps/concurrency/channels.html#newAsyncChannel-procs-all	proc		70

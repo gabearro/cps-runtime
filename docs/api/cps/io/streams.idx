@@ -1,0 +1,14 @@
+nimTitle	streams	cps/io/streams.html	module cps/io/streams		0
+nim	AsyncIoError	cps/io/streams.html#AsyncIoError	object AsyncIoError		12
+nim	IoError	cps/io/streams.html#IoError	type IoError		13
+nim	ConnectionClosedError	cps/io/streams.html#ConnectionClosedError	object ConnectionClosedError		14
+nim	TimeoutError	cps/io/streams.html#TimeoutError	object TimeoutError		15
+nim	AsyncStream	cps/io/streams.html#AsyncStream	type AsyncStream		17
+nim	read	cps/io/streams.html#read,AsyncStream,int	proc read(s: AsyncStream; size: int): CpsFuture[string]		35
+nim	write	cps/io/streams.html#write,AsyncStream,string	proc write(s: AsyncStream; data: string): CpsVoidFuture		45
+nim	close	cps/io/streams.html#close,AsyncStream	proc close(s: AsyncStream)		55
+nim	BufferStream	cps/io/streams.html#BufferStream	type BufferStream		71
+nim	newBufferStream	cps/io/streams.html#newBufferStream	proc newBufferStream(): BufferStream		124
+nim	signalEof	cps/io/streams.html#signalEof,BufferStream	proc signalEof(bs: BufferStream)		136
+nim	PrefixedStream	cps/io/streams.html#PrefixedStream	type PrefixedStream		147
+nim	newPrefixedStream	cps/io/streams.html#newPrefixedStream,AsyncStream,string	proc newPrefixedStream(inner: AsyncStream; prefix: string): PrefixedStream		168

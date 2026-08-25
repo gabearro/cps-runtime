@@ -1,0 +1,21 @@
+nimTitle	concurrent_table	cps/private/concurrent_table.html	module cps/private/concurrent_table		0
+nim	ConcurrentTable	cps/private/concurrent_table.html#ConcurrentTable	object ConcurrentTable		15
+nim	initConcurrentTable	cps/private/concurrent_table.html#initConcurrentTable	proc initConcurrentTable[K, V](): ConcurrentTable[K, V]		19
+nim	`[]=`	cps/private/concurrent_table.html#[]=,ConcurrentTable[K,V],K,V	proc `[]=`[K, V](ct: var ConcurrentTable[K, V]; key: K; val: V)		23
+nim	`[]`	cps/private/concurrent_table.html#[],ConcurrentTable[K,V],K	proc `[]`[K, V](ct: var ConcurrentTable[K, V]; key: K): V		28
+nim	getOrDefault	cps/private/concurrent_table.html#getOrDefault,ConcurrentTable[K,V],K	proc getOrDefault[K, V](ct: var ConcurrentTable[K, V]; key: K): V		33
+nim	getOrDefault	cps/private/concurrent_table.html#getOrDefault,ConcurrentTable[K,V],K,V	proc getOrDefault[K, V](ct: var ConcurrentTable[K, V]; key: K; default: V): V		38
+nim	contains	cps/private/concurrent_table.html#contains,ConcurrentTable[K,V],K	proc contains[K, V](ct: var ConcurrentTable[K, V]; key: K): bool		43
+nim	hasKey	cps/private/concurrent_table.html#hasKey,ConcurrentTable[K,V],K	proc hasKey[K, V](ct: var ConcurrentTable[K, V]; key: K): bool		48
+nim	del	cps/private/concurrent_table.html#del,ConcurrentTable[K,V],K	proc del[K, V](ct: var ConcurrentTable[K, V]; key: K)		52
+nim	tryGet	cps/private/concurrent_table.html#tryGet,ConcurrentTable[K,V],K,V	proc tryGet[K, V](ct: var ConcurrentTable[K, V]; key: K; val: var V): bool		57
+nim	take	cps/private/concurrent_table.html#take,ConcurrentTable[K,V],K,V	proc take[K, V](ct: var ConcurrentTable[K, V]; key: K; val: var V): bool		66
+nim	withValue	cps/private/concurrent_table.html#withValue.t,ConcurrentTable[K,V],K,untyped,untyped	template withValue[K, V](ct: var ConcurrentTable[K, V]; key: K; value, body: untyped)		71
+nim	withValue	cps/private/concurrent_table.html#withValue.t,ConcurrentTable[K,V],K,untyped,untyped,untyped	template withValue[K, V](ct: var ConcurrentTable[K, V]; key: K;\n                value, body, doElse: untyped)		79
+nim	len	cps/private/concurrent_table.html#len,ConcurrentTable[K,V]	proc len[K, V](ct: var ConcurrentTable[K, V]): int		88
+nim	clear	cps/private/concurrent_table.html#clear,ConcurrentTable[K,V]	proc clear[K, V](ct: var ConcurrentTable[K, V])		93
+nim	snapshotKeys	cps/private/concurrent_table.html#snapshotKeys,ConcurrentTable[K,V]	proc snapshotKeys[K, V](ct: var ConcurrentTable[K, V]): seq[K]		98
+nim	snapshotPairs	cps/private/concurrent_table.html#snapshotPairs,ConcurrentTable[K,V]	proc snapshotPairs[K, V](ct: var ConcurrentTable[K, V]): seq[(K, V)]		105
+nim	snapshotValues	cps/private/concurrent_table.html#snapshotValues,ConcurrentTable[K,V]	proc snapshotValues[K, V](ct: var ConcurrentTable[K, V]): seq[V]		112
+nimgrp	getordefault	cps/private/concurrent_table.html#getOrDefault-procs-all	proc		33
+nimgrp	withvalue	cps/private/concurrent_table.html#withValue-templates-all	template		71

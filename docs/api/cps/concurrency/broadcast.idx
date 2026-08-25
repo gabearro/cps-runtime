@@ -1,0 +1,26 @@
+nimTitle	broadcast	cps/concurrency/broadcast.html	module cps/concurrency/broadcast		0
+nim	BroadcastClosed	cps/concurrency/broadcast.html#BroadcastClosed	object BroadcastClosed		40
+nim	ReceiverLagged	cps/concurrency/broadcast.html#ReceiverLagged	object ReceiverLagged		43
+nim	BroadcastReceiver	cps/concurrency/broadcast.html#BroadcastReceiver	type BroadcastReceiver		46
+nim	BroadcastChannel	cps/concurrency/broadcast.html#BroadcastChannel	type BroadcastChannel		55
+nim	WatchReceiver	cps/concurrency/broadcast.html#WatchReceiver	type WatchReceiver		63
+nim	WatchChannel	cps/concurrency/broadcast.html#WatchChannel	type WatchChannel		71
+nim	newBroadcast	cps/concurrency/broadcast.html#newBroadcast,int	proc newBroadcast[T](capacity: int = 16): BroadcastChannel[T]		103
+nim	subscribe	cps/concurrency/broadcast.html#subscribe,BroadcastChannel[T]	proc subscribe[T](ch: BroadcastChannel[T]): BroadcastReceiver[T]		117
+nim	unsubscribe	cps/concurrency/broadcast.html#unsubscribe,BroadcastChannel[T],BroadcastReceiver[T]	proc unsubscribe[T](ch: BroadcastChannel[T]; rx: BroadcastReceiver[T])		136
+nim	send	cps/concurrency/broadcast.html#send,BroadcastChannel[T],T	proc send[T](ch: BroadcastChannel[T]; value: T)		152
+nim	recv	cps/concurrency/broadcast.html#recv,BroadcastReceiver[T]	proc recv[T](rx: BroadcastReceiver[T]): CpsFuture[T]		170
+nim	tryRecv	cps/concurrency/broadcast.html#tryRecv,BroadcastReceiver[T]	proc tryRecv[T](rx: BroadcastReceiver[T]): Option[T]		193
+nim	len	cps/concurrency/broadcast.html#len,BroadcastReceiver[T]	proc len[T](rx: BroadcastReceiver[T]): int		201
+nim	close	cps/concurrency/broadcast.html#close,BroadcastChannel[T]	proc close[T](ch: BroadcastChannel[T])		206
+nim	newWatch	cps/concurrency/broadcast.html#newWatch,T	proc newWatch[T](initial: T): WatchChannel[T]		225
+nim	subscribe	cps/concurrency/broadcast.html#subscribe,WatchChannel[T]	proc subscribe[T](ch: WatchChannel[T]): WatchReceiver[T]		237
+nim	send	cps/concurrency/broadcast.html#send,WatchChannel[T],T	proc send[T](ch: WatchChannel[T]; value: T)		252
+nim	borrow	cps/concurrency/broadcast.html#borrow,WatchReceiver[T]	proc borrow[T](rx: WatchReceiver[T]): T		272
+nim	hasChanged	cps/concurrency/broadcast.html#hasChanged,WatchReceiver[T]	proc hasChanged[T](rx: WatchReceiver[T]): bool		279
+nim	recv	cps/concurrency/broadcast.html#recv,WatchReceiver[T]	proc recv[T](rx: WatchReceiver[T]): CpsFuture[T]		286
+nim	close	cps/concurrency/broadcast.html#close,WatchChannel[T]	proc close[T](ch: WatchChannel[T])		312
+nimgrp	subscribe	cps/concurrency/broadcast.html#subscribe-procs-all	proc		117
+nimgrp	close	cps/concurrency/broadcast.html#close-procs-all	proc		206
+nimgrp	recv	cps/concurrency/broadcast.html#recv-procs-all	proc		170
+nimgrp	send	cps/concurrency/broadcast.html#send-procs-all	proc		152
