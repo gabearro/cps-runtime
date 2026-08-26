@@ -3,8 +3,7 @@
 ## Verifies that the MT event loop starts/stops correctly,
 ## timers and yield work, and CPS procs run properly.
 ##
-## NOTE: MT tests must be compiled with --mm:arc (not ORC)
-## because ORC's cycle collector is not thread-safe.
+## Run with --mm:arc, --mm:orc, or --mm:atomicArc.
 
 import cps/mt
 import cps/transform

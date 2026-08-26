@@ -58,7 +58,12 @@
   <details open>
     <summary><a class="reference reference-toplevel" href="#7" id="57">Types</a></summary>
     <ul class="simple simple-toc-section">
-      <li><a class="reference" href="#Scheduler" title="Scheduler = ref object">Scheduler</a></li>
+      <li><a class="reference" href="#Scheduler" title="Scheduler {.acyclic.} = ref object">Scheduler</a></li>
+<li><a class="reference" href="#SchedulerReactorHook" title="SchedulerReactorHook = proc (ctx: pointer; workerId: int) {.nimcall, gcsafe.}">SchedulerReactorHook</a></li>
+<li><a class="reference" href="#SchedulerReactorPollHook" title="SchedulerReactorPollHook = proc (ctx: pointer; workerId: int): bool {.nimcall,
+    gcsafe.}">SchedulerReactorPollHook</a></li>
+<li><a class="reference" href="#SchedulerReactorPredicateHook" title="SchedulerReactorPredicateHook = proc (ctx: pointer; workerId: int): bool {.
+    nimcall, gcsafe.}">SchedulerReactorPredicateHook</a></li>
 <li><a class="reference" href="#SchedulerTask" title="SchedulerTask = proc () {.closure, gcsafe.}">SchedulerTask</a></li>
 
     </ul>
@@ -69,17 +74,43 @@
     <summary><a class="reference reference-toplevel" href="#12" id="62">Procs</a></summary>
     <ul class="simple simple-toc-section">
       <ul class="simple nested-toc-section">newScheduler
-  <li><a class="reference" href="#newScheduler%2CCpsRuntime%2Cint%2Cint" title="newScheduler(runtime: CpsRuntime; numWorkers: int = 0;
-             maxGlobalQueue: int = 65536): Scheduler">newScheduler(runtime: CpsRuntime; numWorkers: int = 0;
-             maxGlobalQueue: int = 65536): Scheduler</a></li>
+  <li><a class="reference" href="#newScheduler%2CCpsRuntime%2Cint%2Cint%2Cpointer%2CSchedulerReactorHook%2CSchedulerReactorHook%2CSchedulerReactorPollHook%2CSchedulerReactorPredicateHook%2CSchedulerReactorHook%2CSchedulerReactorHook" title="newScheduler(runtime: CpsRuntime; numWorkers: int = 0;
+             maxGlobalQueue: int = DefaultGlobalQueueCapacity;
+             reactorCtx: pointer = nil;
+             reactorSetup: SchedulerReactorHook = nil;
+             reactorPoll: SchedulerReactorHook = nil;
+             reactorPollNow: SchedulerReactorPollHook = nil;
+             reactorShouldDrain: SchedulerReactorPredicateHook = nil;
+             reactorWake: SchedulerReactorHook = nil;
+             reactorTeardown: SchedulerReactorHook = nil): Scheduler">newScheduler(runtime: CpsRuntime; numWorkers: int = 0;
+             maxGlobalQueue: int = DefaultGlobalQueueCapacity;
+             reactorCtx: pointer = nil;
+             reactorSetup: SchedulerReactorHook = nil;
+             reactorPoll: SchedulerReactorHook = nil;
+             reactorPollNow: SchedulerReactorPollHook = nil;
+             reactorShouldDrain: SchedulerReactorPredicateHook = nil;
+             reactorWake: SchedulerReactorHook = nil;
+             reactorTeardown: SchedulerReactorHook = nil): Scheduler</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">schedule
-  <li><a class="reference" href="#schedule%2CScheduler%2CSchedulerTask" title="schedule(s: Scheduler; task: SchedulerTask)">schedule(s: Scheduler; task: SchedulerTask)</a></li>
+  <li><a class="reference" href="#schedule%2CScheduler%2CsinkSchedulerTask" title="schedule(s: Scheduler; taskArg: sink SchedulerTask)">schedule(s: Scheduler; taskArg: sink SchedulerTask)</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">scheduleClosureRelease
+  <li><a class="reference" href="#scheduleClosureRelease%2CScheduler%2Cint%2COwnedClosureTask" title="scheduleClosureRelease(s: Scheduler; workerId: int; closure: OwnedClosureTask): bool">scheduleClosureRelease(s: Scheduler; workerId: int; closure: OwnedClosureTask): bool</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">scheduleContinuation
+  <li><a class="reference" href="#scheduleContinuation%2CScheduler%2CsinkContinuation" title="scheduleContinuation(s: Scheduler; continuation: sink Continuation)">scheduleContinuation(s: Scheduler; continuation: sink Continuation)</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">scheduleOwnedClosure
+  <li><a class="reference" href="#scheduleOwnedClosure%2CScheduler%2Cint%2COwnedClosureTask" title="scheduleOwnedClosure(s: Scheduler; workerId: int; closure: OwnedClosureTask): bool">scheduleOwnedClosure(s: Scheduler; workerId: int; closure: OwnedClosureTask): bool</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">schedulePinned
-  <li><a class="reference" href="#schedulePinned%2CScheduler%2Cint%2CSchedulerTask" title="schedulePinned(s: Scheduler; workerId: int; task: SchedulerTask): bool">schedulePinned(s: Scheduler; workerId: int; task: SchedulerTask): bool</a></li>
+  <li><a class="reference" href="#schedulePinned%2CScheduler%2Cint%2CsinkSchedulerTask" title="schedulePinned(s: Scheduler; workerId: int; taskArg: sink SchedulerTask): bool">schedulePinned(s: Scheduler; workerId: int; taskArg: sink SchedulerTask): bool</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">shutdownScheduler
@@ -95,36 +126,62 @@
 
   </div>
   <div class="nine columns" id="content">
-    
+
     <div id="tocRoot"></div>
-    
+
     <p class="module-desc"><p>Work-Stealing Scheduler for CPS MT Runtime</p>
-<p>N worker threads execute CPS continuations with work-stealing load balancing. Each worker has a local deque; when empty, it tries the global inject queue, then steals from a random peer.</p>
-<p>Workers park on a condition variable when no work is available.</p>
+<p>N worker threads execute CPS continuations with work-stealing load balancing. Each worker has a local deque; when empty, it tries its sharded injection queue, then steals from a random peer.</p>
+<p>Workers park on cache-local atomic epochs when no work is available.</p>
 </p>
     <div class="section" id="6">
   <h1><a class="toc-backref" href="#6">Imports</a></h1>
   <dl class="item">
-    <a class="reference external" href="../runtime.html">../runtime</a>, <a class="reference external" href="../private/chase_lev.html">../private/chase_lev</a>, <a class="reference external" href="../private/mpmc_ring.html">../private/mpmc_ring</a>, <a class="reference external" href="../private/mpsc_queue.html">../private/mpsc_queue</a>, <a class="reference external" href="../private/xorshift.html">../private/xorshift</a>
+    <a class="reference external" href="../runtime.html">../runtime</a>, <a class="reference external" href="../private/chase_lev.html">../private/chase_lev</a>, <a class="reference external" href="../private/mpsc_queue.html">../private/mpsc_queue</a>, <a class="reference external" href="../private/mpsc_ring.html">../private/mpsc_ring</a>, <a class="reference external" href="../private/xorshift.html">../private/xorshift</a>, <a class="reference external" href="../private/atomic_parker.html">../private/atomic_parker</a>, <a class="reference external" href="../private/cross_thread_closure.html">../private/cross_thread_closure</a>
   </dl>
 </div>
 <div class="section" id="7">
   <h1><a class="toc-backref" href="#7">Types</a></h1>
   <dl class="item">
     <div id="Scheduler">
-  <dt><pre><a href="scheduler.html#Scheduler"><span class="Identifier">Scheduler</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
+  <dt><pre><a href="scheduler.html#Scheduler"><span class="Identifier">Scheduler</span></a> {.<span class="Identifier">acyclic</span>.} <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-    
-    
-    
+
+
+
+  </dd>
+</div>
+<div id="SchedulerReactorHook">
+  <dt><pre><a href="scheduler.html#SchedulerReactorHook"><span class="Identifier">SchedulerReactorHook</span></a> <span class="Other">=</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">ctx</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">;</span> <span class="Identifier">workerId</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span> {.<span class="Identifier">nimcall</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
+  <dd>
+
+
+
+  </dd>
+</div>
+<div id="SchedulerReactorPollHook">
+  <dt><pre><a href="scheduler.html#SchedulerReactorPollHook"><span class="Identifier">SchedulerReactorPollHook</span></a> <span class="Other">=</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">ctx</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">;</span> <span class="Identifier">workerId</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">nimcall</span><span class="Other">,</span>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
+  <dd>
+
+
+
+  </dd>
+</div>
+<div id="SchedulerReactorPredicateHook">
+  <dt><pre><a href="scheduler.html#SchedulerReactorPredicateHook"><span class="Identifier">SchedulerReactorPredicateHook</span></a> <span class="Other">=</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">ctx</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">;</span> <span class="Identifier">workerId</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.
+    <span class="Identifier">nimcall</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
+  <dd>
+
+
+
   </dd>
 </div>
 <div id="SchedulerTask">
   <dt><pre><a href="scheduler.html#SchedulerTask"><span class="Identifier">SchedulerTask</span></a> <span class="Other">=</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 
@@ -134,49 +191,96 @@
   <h1><a class="toc-backref" href="#12">Procs</a></h1>
   <dl class="item">
     <div id="newScheduler-procs-all">
-  <div id="newScheduler,CpsRuntime,int,int">
-  <dt><pre><span class="Keyword">proc</span> <a href="#newScheduler%2CCpsRuntime%2Cint%2Cint"><span class="Identifier">newScheduler</span></a><span class="Other">(</span><span class="Identifier">runtime</span><span class="Other">:</span> <a href="../runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a><span class="Other">;</span> <span class="Identifier">numWorkers</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">0</span><span class="Other">;</span>
-                  <span class="Identifier">maxGlobalQueue</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">65536</span><span class="Other">)</span><span class="Other">:</span> <a href="scheduler.html#Scheduler"><span class="Identifier">Scheduler</span></a> {.
+  <div id="newScheduler,CpsRuntime,int,int,pointer,SchedulerReactorHook,SchedulerReactorHook,SchedulerReactorPollHook,SchedulerReactorPredicateHook,SchedulerReactorHook,SchedulerReactorHook">
+  <dt><pre><span class="Keyword">proc</span> <a href="#newScheduler%2CCpsRuntime%2Cint%2Cint%2Cpointer%2CSchedulerReactorHook%2CSchedulerReactorHook%2CSchedulerReactorPollHook%2CSchedulerReactorPredicateHook%2CSchedulerReactorHook%2CSchedulerReactorHook"><span class="Identifier">newScheduler</span></a><span class="Other">(</span><span class="Identifier">runtime</span><span class="Other">:</span> <a href="../runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a><span class="Other">;</span> <span class="Identifier">numWorkers</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">0</span><span class="Other">;</span>
+                  <span class="Identifier">maxGlobalQueue</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="Identifier">DefaultGlobalQueueCapacity</span><span class="Other">;</span>
+                  <span class="Identifier">reactorCtx</span><span class="Other">:</span> <span class="Identifier">pointer</span> <span class="Other">=</span> <span class="Keyword">nil</span><span class="Other">;</span>
+                  <span class="Identifier">reactorSetup</span><span class="Other">:</span> <a href="scheduler.html#SchedulerReactorHook"><span class="Identifier">SchedulerReactorHook</span></a> <span class="Other">=</span> <span class="Keyword">nil</span><span class="Other">;</span>
+                  <span class="Identifier">reactorPoll</span><span class="Other">:</span> <a href="scheduler.html#SchedulerReactorHook"><span class="Identifier">SchedulerReactorHook</span></a> <span class="Other">=</span> <span class="Keyword">nil</span><span class="Other">;</span>
+                  <span class="Identifier">reactorPollNow</span><span class="Other">:</span> <a href="scheduler.html#SchedulerReactorPollHook"><span class="Identifier">SchedulerReactorPollHook</span></a> <span class="Other">=</span> <span class="Keyword">nil</span><span class="Other">;</span>
+                  <span class="Identifier">reactorShouldDrain</span><span class="Other">:</span> <a href="scheduler.html#SchedulerReactorPredicateHook"><span class="Identifier">SchedulerReactorPredicateHook</span></a> <span class="Other">=</span> <span class="Keyword">nil</span><span class="Other">;</span>
+                  <span class="Identifier">reactorWake</span><span class="Other">:</span> <a href="scheduler.html#SchedulerReactorHook"><span class="Identifier">SchedulerReactorHook</span></a> <span class="Other">=</span> <span class="Keyword">nil</span><span class="Other">;</span>
+                  <span class="Identifier">reactorTeardown</span><span class="Other">:</span> <a href="scheduler.html#SchedulerReactorHook"><span class="Identifier">SchedulerReactorHook</span></a> <span class="Other">=</span> <span class="Keyword">nil</span><span class="Other">)</span><span class="Other">:</span> <a href="scheduler.html#Scheduler"><span class="Identifier">Scheduler</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ResourceExhaustedError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
-    Create a new scheduler.
-    
+
+    Create a new scheduler. Non-positive queue capacities use the bounded default.
+
   </dd>
 </div>
 
 </div>
 <div id="schedule-procs-all">
-  <div id="schedule,Scheduler,SchedulerTask">
-  <dt><pre><span class="Keyword">proc</span> <a href="#schedule%2CScheduler%2CSchedulerTask"><span class="Identifier">schedule</span></a><span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="scheduler.html#Scheduler"><span class="Identifier">Scheduler</span></a><span class="Other">;</span> <span class="Identifier">task</span><span class="Other">:</span> <a href="scheduler.html#SchedulerTask"><span class="Identifier">SchedulerTask</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
+  <div id="schedule,Scheduler,sinkSchedulerTask">
+  <dt><pre><span class="Keyword">proc</span> <a href="#schedule%2CScheduler%2CsinkSchedulerTask"><span class="Identifier">schedule</span></a><span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="scheduler.html#Scheduler"><span class="Identifier">Scheduler</span></a><span class="Other">;</span> <span class="Identifier">taskArg</span><span class="Other">:</span> <span class="Identifier">sink</span> <a href="scheduler.html#SchedulerTask"><span class="Identifier">SchedulerTask</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
-    Schedule a task for execution. If called from a worker thread, pushes to the local deque (lock-free). Otherwise, pushes to the global inject queue and wakes a worker.
-    
+
+    Schedule a task for execution. If called from a worker thread, pushes to the local deque (lock-free). Otherwise, routes to a per-worker injection shard and wakes its owner.
+
+  </dd>
+</div>
+
+</div>
+<div id="scheduleClosureRelease-procs-all">
+  <div id="scheduleClosureRelease,Scheduler,int,OwnedClosureTask">
+  <dt><pre><span class="Keyword">proc</span> <a href="#scheduleClosureRelease%2CScheduler%2Cint%2COwnedClosureTask"><span class="Identifier">scheduleClosureRelease</span></a><span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="scheduler.html#Scheduler"><span class="Identifier">Scheduler</span></a><span class="Other">;</span> <span class="Identifier">workerId</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span>
+                            <span class="Identifier">closure</span><span class="Other">:</span> <a href="../private/cross_thread_closure.html#OwnedClosureTask"><span class="Identifier">OwnedClosureTask</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Return a previously invoked closure environment to its ARC/ORC owner. The release marker contains only raw words, so enqueueing it does not create another managed cross-thread ownership edge.
+
+  </dd>
+</div>
+
+</div>
+<div id="scheduleContinuation-procs-all">
+  <div id="scheduleContinuation,Scheduler,sinkContinuation">
+  <dt><pre><span class="Keyword">proc</span> <a href="#scheduleContinuation%2CScheduler%2CsinkContinuation"><span class="Identifier">scheduleContinuation</span></a><span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="scheduler.html#Scheduler"><span class="Identifier">Scheduler</span></a><span class="Other">;</span> <span class="Identifier">continuation</span><span class="Other">:</span> <span class="Identifier">sink</span> <a href="../runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    <p>Schedule a continuation without allocating a closure envelope.</p>
+<p>A resumed CPS graph can still be aliased by its pending future. ARC/ORC reference counts and ORC's cycle-root list are thread-local, so it must return to its owning worker rather than enter the stealable CPU deque. Fresh, isolated CPU jobs submitted through <tt class="docutils literal"><span class="pre">schedule</span></tt> remain stealable.</p>
+
+
+  </dd>
+</div>
+
+</div>
+<div id="scheduleOwnedClosure-procs-all">
+  <div id="scheduleOwnedClosure,Scheduler,int,OwnedClosureTask">
+  <dt><pre><span class="Keyword">proc</span> <a href="#scheduleOwnedClosure%2CScheduler%2Cint%2COwnedClosureTask"><span class="Identifier">scheduleOwnedClosure</span></a><span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="scheduler.html#Scheduler"><span class="Identifier">Scheduler</span></a><span class="Other">;</span> <span class="Identifier">workerId</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span> <span class="Identifier">closure</span><span class="Other">:</span> <a href="../private/cross_thread_closure.html#OwnedClosureTask"><span class="Identifier">OwnedClosureTask</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Enqueue a refcount-neutral closure on its designated ARC/ORC owner.
+
   </dd>
 </div>
 
 </div>
 <div id="schedulePinned-procs-all">
-  <div id="schedulePinned,Scheduler,int,SchedulerTask">
-  <dt><pre><span class="Keyword">proc</span> <a href="#schedulePinned%2CScheduler%2Cint%2CSchedulerTask"><span class="Identifier">schedulePinned</span></a><span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="scheduler.html#Scheduler"><span class="Identifier">Scheduler</span></a><span class="Other">;</span> <span class="Identifier">workerId</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span> <span class="Identifier">task</span><span class="Other">:</span> <a href="scheduler.html#SchedulerTask"><span class="Identifier">SchedulerTask</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <div id="schedulePinned,Scheduler,int,sinkSchedulerTask">
+  <dt><pre><span class="Keyword">proc</span> <a href="#schedulePinned%2CScheduler%2Cint%2CsinkSchedulerTask"><span class="Identifier">schedulePinned</span></a><span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="scheduler.html#Scheduler"><span class="Identifier">Scheduler</span></a><span class="Other">;</span> <span class="Identifier">workerId</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span> <span class="Identifier">taskArg</span><span class="Other">:</span> <span class="Identifier">sink</span> <a href="scheduler.html#SchedulerTask"><span class="Identifier">SchedulerTask</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Schedule a task to run on a specific worker's pinned inbox.
-    
+
   </dd>
 </div>
 
 </div>
 <div id="shutdownScheduler-procs-all">
   <div id="shutdownScheduler,Scheduler">
-  <dt><pre><span class="Keyword">proc</span> <a href="#shutdownScheduler%2CScheduler"><span class="Identifier">shutdownScheduler</span></a><span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="scheduler.html#Scheduler"><span class="Identifier">Scheduler</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dt><pre><span class="Keyword">proc</span> <a href="#shutdownScheduler%2CScheduler"><span class="Identifier">shutdownScheduler</span></a><span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="scheduler.html#Scheduler"><span class="Identifier">Scheduler</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
+                                       <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Shut down scheduler and release its runtime resources.
-    
+
   </dd>
 </div>
 
@@ -191,10 +295,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 20:56:14 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:22 UTC</small>
       </div>
     </div>
   </div>
-  
+
 </body>
 </html>

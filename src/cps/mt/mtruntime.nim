@@ -1,20 +1,42 @@
 ## CPS Multithreaded Runtime (Work-Stealing)
 ##
 ## Provides a Tokio-like multi-threaded runtime:
-## - Reactor thread: handles I/O + timers via the event loop
-## - N worker threads: trampoline CPS continuations with work-stealing
+## - N worker threads: each owns an I/O selector and CPS task queues
+## - Thread-affine I/O: readiness and continuations stay on their owning shard
+## - Work-stealing: idle workers can still balance CPU continuations
 ## - Blocking thread pool: for spawnBlocking (separate from workers)
 
-when not defined(gcAtomicArc) and not defined(useMalloc):
-  {.error: "MT CPS runtime requires --mm:atomicArc (recommended) or -d:useMalloc for thread-safe ref counting. ORC's non-atomic refcounting causes double-free/SIGSEGV when continuations cross thread boundaries.".}
+when not compileOption("gc", "atomicArc") and
+     not compileOption("gc", "arc") and
+     not compileOption("gc", "orc"):
+  {.error: "newMultiThreadRuntime requires --mm:arc, --mm:orc, or --mm:atomicArc.".}
 
-import std/[locks, atomics, sysatomics, os]
+import std/[locks, atomics, sysatomics, os, cpuinfo]
 import ../runtime
 import ../eventloop
 import ./threadpool
 import ./scheduler
 
 export eventloop, threadpool, scheduler
+
+when compileOption("gc", "orc"):
+  {.pragma: cpsMtShardAcyclic, acyclic.}
+else:
+  {.pragma: cpsMtShardAcyclic.}
+
+type
+  MtIoSetup* = proc(shardId: int) {.nimcall, gcsafe.}
+    ## Initialize I/O resources owned by one MT scheduler worker.
+
+  MtIoShardSet {.cpsMtShardAcyclic.} = ref object of RootObj
+    runtime {.cursor.}: CpsRuntime
+    loops: seq[EventLoop]
+
+  MtIoStartState = object
+    started: Atomic[int]
+    failed: Atomic[bool]
+
+const MtIoDrainHandleThreshold = 16
 
 var mtRuntimeLock: Lock
 var mtRuntimeLockInit: Atomic[int]  ## 0=uninit, 1=initializing, 2=ready
@@ -35,20 +57,55 @@ proc ensureMtRuntimeLockReady() {.inline.} =
       else:
         sleep(0)  # yield CPU — init should complete quickly
 
-proc asScheduler(rt: CpsRuntime): Scheduler {.inline.} =
-  if rt == nil or rt.schedulerPtr == nil:
-    return nil
-  cast[Scheduler](cast[pointer](rt.schedulerPtr))
+template asScheduler(rt: CpsRuntime): Scheduler =
+  cast[Scheduler](if rt == nil: nil else: cast[pointer](rt.schedulerPtr))
 
-proc asBlockingPool(rt: CpsRuntime): ThreadPool {.inline.} =
-  if rt == nil or rt.blockingPoolPtr == nil:
-    return nil
-  cast[ThreadPool](cast[pointer](rt.blockingPoolPtr))
+template asBlockingPool(rt: CpsRuntime): ThreadPool =
+  cast[ThreadPool](if rt == nil: nil else: cast[pointer](rt.blockingPoolPtr))
 
-proc asEventLoop(rt: CpsRuntime): EventLoop {.inline.} =
-  if rt == nil or rt.eventLoopPtr == nil:
-    return nil
-  cast[EventLoop](cast[pointer](rt.eventLoopPtr))
+template asEventLoop(rt: CpsRuntime): EventLoop =
+  cast[EventLoop](if rt == nil: nil else: cast[pointer](rt.eventLoopPtr))
+
+template asIoShardSet(rt: CpsRuntime): MtIoShardSet =
+  cast[MtIoShardSet](if rt == nil: nil else: cast[pointer](rt.ioShardSetPtr))
+
+proc ioShardSetup(ctx: pointer, workerId: int) {.nimcall, gcsafe.} =
+  {.cast(gcsafe).}:
+    let shards = cast[MtIoShardSet](ctx)
+    let loop = shards.loops[workerId]
+    loop.claimCurrentThread()
+    bindCurrentEventLoop(shards.runtime, cast[pointer](loop), workerId)
+    setLocalFutureDefault(true)
+    isReactorThread = true
+
+proc ioShardPoll(ctx: pointer, workerId: int) {.nimcall, gcsafe.} =
+  {.cast(gcsafe).}:
+    cast[MtIoShardSet](ctx).loops[workerId].tick()
+
+proc ioShardPollNow(ctx: pointer, workerId: int): bool {.nimcall, gcsafe.} =
+  {.cast(gcsafe).}:
+    let loop = cast[MtIoShardSet](ctx).loops[workerId]
+    if loop.hasUserIoWork():
+      return loop.poll()
+    false
+
+proc ioShardShouldDrain(ctx: pointer, workerId: int): bool {.nimcall, gcsafe.} =
+  ## Sparse selectors are cheaper to revisit through the normal blocking path;
+  ## busy selectors benefit from draining locally before remote deque probes.
+  {.cast(gcsafe).}:
+    cast[MtIoShardSet](ctx).loops[workerId].userIoHandleCount() >=
+      MtIoDrainHandleThreshold
+
+proc ioShardWake(ctx: pointer, workerId: int) {.nimcall, gcsafe.} =
+  {.cast(gcsafe).}:
+    cast[MtIoShardSet](ctx).loops[workerId].tryWakeSelector()
+
+proc ioShardTeardown(ctx: pointer, workerId: int) {.nimcall, gcsafe.} =
+  discard ctx
+  discard workerId
+  clearCurrentEventLoop()
+  setLocalFutureDefault(false)
+  isReactorThread = false
 
 proc ensureBlockingPool(rt: CpsRuntime): ThreadPool =
   ## Lazily create the blocking pool. Most asynchronous applications never
@@ -64,9 +121,10 @@ proc ensureBlockingPool(rt: CpsRuntime): ThreadPool =
       return nil
     result = asBlockingPool(rt)
     if result == nil:
+      let rtPtr = cast[pointer](rt)
       let workerSetup = proc() {.gcsafe.} =
         {.cast(gcsafe).}:
-          setCurrentRuntime(rt)
+          setCurrentRuntime(cast[CpsRuntime](rtPtr))
       result = newThreadPool(rt.blockingThreadCount, workerSetup,
                              rt.maxBlockingQueue)
       rt.blockingPoolPtr = cast[RootRef](cast[pointer](result))
@@ -81,49 +139,106 @@ proc runtimeFromHandle(handle: RuntimeHandle): CpsRuntime {.inline.} =
     return cur
   mainRuntime().runtime
 
+proc takeSchedulerTask[T](cb: var T): SchedulerTask {.inline.} =
+  ## Transfer a compatible Nim closure pair without creating an RC edge.
+  static: assert sizeof(T) == sizeof(SchedulerTask)
+  copyMem(addr result, addr cb, sizeof(result))
+  zeroMem(addr cb, sizeof(cb))
+
+proc closureWorker[T](cb: var T, workerCount: int): int {.inline.} =
+  ## Closures sharing an environment must be released on one ORC owner.
+  ## Hashing the environment also distributes unrelated callbacks uniformly.
+  var words: array[2, pointer]
+  static: assert sizeof(T) == sizeof(words)
+  copyMem(addr words, addr cb, sizeof(words))
+  if words[1] == nil or workerCount <= 1:
+    return 0
+  int((cast[uint](words[1]) shr 4) mod uint(workerCount))
+
 proc makeWakeDispatcher(rt: CpsRuntime): proc() {.closure, gcsafe.} =
+  let rtPtr = cast[pointer](rt)
   result = proc() {.closure, gcsafe.} =
     {.cast(gcsafe).}:
-      let loop = asEventLoop(rt)
+      let rt {.cursor.} = cast[CpsRuntime](rtPtr)
+      let loop {.cursor.} = asEventLoop(rt)
       if loop != nil:
         loop.tryWakeSelector()
 
-proc makeCallbackDispatcher(rt: CpsRuntime): proc(cb: proc() {.closure.}) {.closure, gcsafe.} =
-  result = proc(cb: proc() {.closure.}) {.closure, gcsafe.} =
+proc makeIoShardWakeDispatcher(rt: CpsRuntime):
+    proc(workerId: int) {.closure, gcsafe.} =
+  let rtPtr = cast[pointer](rt)
+  result = proc(workerId: int) {.closure, gcsafe.} =
     {.cast(gcsafe).}:
-      let sched = asScheduler(rt)
+      let rt {.cursor.} = cast[CpsRuntime](rtPtr)
+      let shards {.cursor.} = asIoShardSet(rt)
+      if shards != nil and workerId >= 0 and workerId < shards.loops.len:
+        shards.loops[workerId].tryWakeSelector()
+
+proc makeCallbackDispatcher(rt: CpsRuntime): proc(cb: sink proc() {.closure.}) {.closure, gcsafe.} =
+  let rtPtr = cast[pointer](rt)
+  result = proc(cb: sink proc() {.closure.}) {.closure, gcsafe.} =
+    {.cast(gcsafe).}:
+      let rt {.cursor.} = cast[CpsRuntime](rtPtr)
+      let sched {.cursor.} = asScheduler(rt)
       if sched != nil:
-        let task = cast[SchedulerTask](cb)
-        sched.schedule(task)
+        let workerId = closureWorker(cb, rt.ioShardCount)
+        var task = takeSchedulerTask(cb)
+        discard sched.schedulePinned(workerId, move(task))
 
 proc makeContinuationDispatcher(rt: CpsRuntime):
     proc(c: sink Continuation) {.closure, gcsafe.} =
+  let rtPtr = cast[pointer](rt)
   result = proc(c: sink Continuation) {.closure, gcsafe.} =
     {.cast(gcsafe).}:
-      let sched = asScheduler(rt)
+      let rt {.cursor.} = cast[CpsRuntime](rtPtr)
+      let sched {.cursor.} = asScheduler(rt)
       if sched == nil or c == nil:
         return
-      let continuation = c
-      sched.schedule(proc() {.closure, gcsafe.} =
-        {.cast(gcsafe).}:
-          discard runUntilSuspend(continuation)
-      )
+      sched.scheduleContinuation(move(c))
 
-proc makePinnedCallbackDispatcher(rt: CpsRuntime): proc(workerId: int, cb: proc() {.closure.}): bool {.closure, gcsafe.} =
-  result = proc(workerId: int, cb: proc() {.closure.}): bool {.closure, gcsafe.} =
+proc makePinnedCallbackDispatcher(rt: CpsRuntime): proc(workerId: int, cb: sink proc() {.closure.}): bool {.closure, gcsafe.} =
+  let rtPtr = cast[pointer](rt)
+  result = proc(workerId: int, cb: sink proc() {.closure.}): bool {.closure, gcsafe.} =
     {.cast(gcsafe).}:
-      let sched = asScheduler(rt)
+      let rt {.cursor.} = cast[CpsRuntime](rtPtr)
+      let sched {.cursor.} = asScheduler(rt)
       if sched == nil:
         return false
-      let task = cast[SchedulerTask](cb)
-      sched.schedulePinned(workerId, task)
+      var task = takeSchedulerTask(cb)
+      sched.schedulePinned(workerId, move(task))
 
-proc makeYieldDispatcher(rt: CpsRuntime): proc(cb: proc() {.closure, gcsafe.}) {.closure, gcsafe.} =
-  result = proc(cb: proc() {.closure, gcsafe.}) {.closure, gcsafe.} =
+proc makeClosureReleaseDispatcher(rt: CpsRuntime):
+    proc(workerId: int, task: OwnedClosureTask): bool {.closure, gcsafe.} =
+  let rtPtr = cast[pointer](rt)
+  result = proc(workerId: int, task: OwnedClosureTask): bool {.closure, gcsafe.} =
     {.cast(gcsafe).}:
-      let sched = asScheduler(rt)
+      let rt {.cursor.} = cast[CpsRuntime](rtPtr)
+      let sched {.cursor.} = asScheduler(rt)
+      if sched == nil:
+        return false
+      sched.scheduleClosureRelease(workerId, task)
+
+proc makeOwnedClosureDispatcher(rt: CpsRuntime):
+    proc(workerId: int, task: OwnedClosureTask): bool {.closure, gcsafe.} =
+  let rtPtr = cast[pointer](rt)
+  result = proc(workerId: int, task: OwnedClosureTask): bool {.closure, gcsafe.} =
+    {.cast(gcsafe).}:
+      let rt {.cursor.} = cast[CpsRuntime](rtPtr)
+      let sched {.cursor.} = asScheduler(rt)
+      if sched == nil:
+        return false
+      sched.scheduleOwnedClosure(workerId, task)
+
+proc makeYieldDispatcher(rt: CpsRuntime): proc(cb: sink proc() {.closure, gcsafe.}) {.closure, gcsafe.} =
+  let rtPtr = cast[pointer](rt)
+  result = proc(cb: sink proc() {.closure, gcsafe.}) {.closure, gcsafe.} =
+    {.cast(gcsafe).}:
+      let rt {.cursor.} = cast[CpsRuntime](rtPtr)
+      let sched {.cursor.} = asScheduler(rt)
       if sched != nil:
-        sched.schedule(cb)
+        let workerId = closureWorker(cb, rt.ioShardCount)
+        var task = takeSchedulerTask(cb)
+        discard sched.schedulePinned(workerId, move(task))
 
 proc createMtRuntime(config: RuntimeConfig): CpsRuntime {.nimcall.} =
   ## Factory used by runtime.newMultiThreadRuntime().
@@ -143,14 +258,41 @@ proc createMtRuntime(config: RuntimeConfig): CpsRuntime {.nimcall.} =
 
     loop.enableCrossThreadWake()
 
-    let sched = newScheduler(rt, config.numWorkers, config.maxSchedulerQueue)
-    rt.schedulerPtr = cast[RootRef](cast[pointer](sched))
+    let workerCount = max(1,
+      if config.numWorkers <= 0: countProcessors() else: config.numWorkers)
+    let shards = MtIoShardSet(runtime: rt,
+                              loops: newSeq[EventLoop](workerCount))
+    for workerId in 0 ..< workerCount:
+      let shardLoop = newEventLoop()
+      shardLoop.mtActive = true
+      shardLoop.ownerRuntime = rt
+      shardLoop.enableCrossThreadWake()
+      shards.loops[workerId] = shardLoop
+    rt.ioShardSetPtr = cast[RootRef](shards)
+    rt.ioShardCount = workerCount
 
+    # Publish every runtime hook before workers start. workerMain binds the
+    # runtime immediately, so installing these after newScheduler returned
+    # allowed workers to read the CpsRuntime while this thread was mutating it.
     rt.continuationDispatcher = makeContinuationDispatcher(rt)
     rt.callbackDispatcher = makeCallbackDispatcher(rt)
     rt.pinnedCallbackDispatcher = makePinnedCallbackDispatcher(rt)
+    rt.closureReleaseDispatcher = makeClosureReleaseDispatcher(rt)
+    rt.ownedClosureDispatcher = makeOwnedClosureDispatcher(rt)
     rt.yieldDispatcher = makeYieldDispatcher(rt)
     rt.wakeReactor = makeWakeDispatcher(rt)
+    rt.wakeIoShard = makeIoShardWakeDispatcher(rt)
+
+    let sched = newScheduler(rt, workerCount, config.maxSchedulerQueue,
+      reactorCtx = cast[pointer](shards),
+      reactorSetup = ioShardSetup,
+      reactorPoll = ioShardPoll,
+      reactorPollNow = ioShardPollNow,
+      reactorShouldDrain = ioShardShouldDrain,
+      reactorWake = ioShardWake,
+      reactorTeardown = ioShardTeardown)
+    GC_ref(sched)
+    copyMem(addr rt.schedulerPtr, unsafeAddr sched, sizeof(rt.schedulerPtr))
 
     result = rt
   finally:
@@ -176,6 +318,58 @@ proc initMtRuntime*(numWorkers: int = 0,
   setCurrentRuntime(rt)
   isReactorThread = true
   result = asEventLoop(rt)
+
+proc ioShardCount*(rt: CpsRuntime): int {.inline.} =
+  ## Return the number of worker-owned I/O reactor shards.
+  if rt == nil: 0 else: rt.ioShardCount
+
+proc ioShardLoop*(rt: CpsRuntime, shardId: int): EventLoop =
+  ## Return one worker-owned I/O loop for diagnostics and tests.
+  let shards = asIoShardSet(rt)
+  if shards == nil or shardId < 0 or shardId >= shards.loops.len:
+    raise newException(IndexDefect, "I/O shard index out of bounds")
+  shards.loops[shardId]
+
+proc startMtIoShards*(rt: CpsRuntime, setup: MtIoSetup) =
+  ## Run ``setup`` once on every scheduler worker and wait for initialization.
+  ## Each callback executes on the worker that owns the corresponding selector,
+  ## so listeners, sockets, timers, and their continuations remain thread-local.
+  if rt == nil or rt.flavor != rfMultiThread or not rt.mtActive:
+    raise newException(ValueError, "active MT runtime required")
+  if setup == nil:
+    raise newException(ValueError, "I/O shard setup callback required")
+  let sched = asScheduler(rt)
+  if sched == nil or rt.ioShardCount <= 0:
+    raise newException(ValueError, "MT runtime has no I/O shards")
+
+  let state = cast[ptr MtIoStartState](allocShared0(sizeof(MtIoStartState)))
+  state.started.store(0, moRelaxed)
+  state.failed.store(false, moRelaxed)
+
+  proc makeSetupTask(shardId: int): SchedulerTask =
+    result = proc() {.closure, gcsafe.} =
+      try:
+        setup(shardId)
+      except CatchableError:
+        state.failed.store(true, moRelease)
+      finally:
+        discard state.started.fetchAdd(1, moAcquireRelease)
+
+  for shardId in 0 ..< rt.ioShardCount:
+    if not sched.schedulePinned(shardId, makeSetupTask(shardId)):
+      state.failed.store(true, moRelease)
+      discard state.started.fetchAdd(1, moAcquireRelease)
+
+  while state.started.load(moAcquire) != rt.ioShardCount:
+    sleep(0)
+  let failed = state.failed.load(moAcquire)
+  deallocShared(state)
+  if failed:
+    raise newException(CatchableError, "one or more MT I/O shards failed to initialize")
+
+proc startMtIoShards*(handle: RuntimeHandle, setup: MtIoSetup) {.inline.} =
+  ## Initialize worker-owned I/O shards through a runtime handle.
+  startMtIoShards(handle.runtime, setup)
 
 proc spawnBlockingOn*[T](handle: RuntimeHandle, body: proc(): T {.gcsafe.}): CpsFuture[T] =
   ## Offload blocking work to a runtime's blocking pool.
@@ -249,29 +443,55 @@ proc shutdownMtRuntime*(rt: CpsRuntime) =
   ensureMtRuntimeLockReady()
   acquire(mtRuntimeLock)
   try:
+    # Keep typed roots alive while their type-erased runtime slots are cleared.
+    # Event-loop unregister releases callbacks that can recursively drop their
+    # owner, so shutdown deliberately pays one RC pair outside the hot path.
+    let shards = asIoShardSet(rt)
     let sched = asScheduler(rt)
-    if sched != nil:
-      shutdownScheduler(sched)
-      rt.schedulerPtr = nil
+    var pool = asBlockingPool(rt)
 
-    let pool = asBlockingPool(rt)
+    # Blocking jobs may complete futures by dispatching callbacks to scheduler
+    # workers, and the pool may have been lazily allocated by one of those
+    # workers. Drain and release it before joining the scheduler threads.
     if pool != nil:
       pool.shutdown()
       rt.blockingPoolPtr = nil
+      # The pool and its Thread sequence may have been allocated by the
+      # scheduler worker that first called spawnBlocking. Retire the typed
+      # owner before joining scheduler workers and tearing down that allocator.
+      pool = nil
+
+    if sched != nil:
+      shutdownScheduler(sched)
+      zeroMem(addr rt.schedulerPtr, sizeof(rt.schedulerPtr))
+      GC_unref(sched)
+
+    if shards != nil:
+      for loop in shards.loops:
+        if loop != nil:
+          loop.disableCrossThreadWake()
+      rt.ioShardSetPtr = nil
+      rt.ioShardCount = 0
 
     let loop = asEventLoop(rt)
     if loop != nil:
       loop.disableCrossThreadWake()
+      rt.eventLoopPtr = nil
 
     rt.continuationDispatcher = nil
     rt.callbackDispatcher = nil
     rt.pinnedCallbackDispatcher = nil
+    rt.closureReleaseDispatcher = nil
+    rt.ownedClosureDispatcher = nil
     rt.yieldDispatcher = nil
     rt.wakeReactor = nil
+    rt.wakeIoShard = nil
     rt.mtActive = false
 
     if currentRuntime().runtime == rt:
-      setCurrentRuntime(mainRuntime().runtime)
+      let replacement = newCurrentThreadRuntime()
+      setMainRuntime(replacement)
+      setCurrentRuntime(replacement)
       isReactorThread = false
   finally:
     release(mtRuntimeLock)

@@ -7,7 +7,8 @@
 ## - Timer interleaving proving non-blocking behavior
 ## - Error propagation from worker threads
 ##
-## Compile: nim c --mm:atomicArc --run examples/mt_sample.nim
+## Compile with ARC, ORC, or AtomicARC, for example:
+##   nim c --threads:on --mm:orc --run examples/mt_sample.nim
 
 import cps/mt
 import cps/transform

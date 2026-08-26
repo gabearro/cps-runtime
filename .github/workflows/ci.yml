@@ -16,5 +16,4 @@ jobs:
       - name: Install dependencies
         run: nimble install -d -y
       - name: Run tests
-        run: nimble test -y
-
+        run: nimble testMms -y

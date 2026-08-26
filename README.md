@@ -28,7 +28,7 @@ BitTorrent live in their own packages.
 ## Install
 
 ```sh
-nimble install https://github.com/gabearro/cps-runtime@#v1.1.0
+nimble install https://github.com/gabearro/cps-runtime@#v1.1.1
 ```
 
 ## Hello async
@@ -106,23 +106,41 @@ wrap any stream implementation.
 
 ## Multi-threaded runtime
 
-`cps/mt` moves continuations between threads, so the consuming project must
-use thread-safe reference counting. Put this in the project's `nim.cfg`:
+`cps/mt` supports regular ARC, ORC, and AtomicARC. Put one memory manager in
+the consuming project's `nim.cfg`:
 
 ```cfg
 --threads:on
---mm:atomicArc
---deepcopy:on
+--mm:arc
 ```
 
+Use `--mm:orc` when application graphs need cycle collection, or
+`--mm:atomicArc` when application-owned references are deliberately shared
+outside the runtime's owner-affine APIs.
+
 Core single-threaded programs do not need to import `cps/mt`.
+
+### Isolated reactor pools
+
+`cps/reactorpool` keeps each runtime, selector, future, callback, and
+application state on one owning reactor thread. Reactor-pool executables can
+therefore use regular ARC or ORC:
+
+```sh
+nim c --threads:on --mm:arc server.nim
+nim c --threads:on --mm:orc server.nim
+```
+
+`newMultiThreadRuntime` keeps resumed CPS and I/O graphs on their owner worker.
+Stealable closure tasks use a move-only two-word envelope and return destruction
+to the source worker. Blocking-pool completions use the same owner-return rule,
+so regular ARC and ORC do not require atomic refcounts.
 
 ## Compiler switches
 
 | Define | Effect |
 | --- | --- |
 | `-d:cpsTrace` | Enable event-loop metrics and task tracing |
-| `-d:useMalloc` | Use malloc-backed allocation for MT integration |
 
 ## Current constraints
 

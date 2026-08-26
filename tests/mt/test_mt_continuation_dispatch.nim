@@ -1,8 +1,9 @@
 ## Verify that the MT runtime executes CPS continuations on scheduler workers,
 ## leaving the reactor thread dedicated to readiness and timer processing.
 
-when not defined(gcAtomicArc) and not defined(useMalloc):
-  {.error: "test_mt_continuation_dispatch.nim requires --mm:atomicArc or -d:useMalloc".}
+when not (compileOption("gc", "atomicArc") or compileOption("gc", "arc") or
+          compileOption("gc", "orc")):
+  {.error: "test requires --mm:arc, --mm:orc, or --mm:atomicArc".}
 
 import cps/mt
 import cps/transform

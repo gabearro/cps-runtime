@@ -3,7 +3,7 @@
 ## Verifies mixed CPS + blocking tasks, tasks and allTasks on MT,
 ## and correct sequencing of async+blocking operations.
 ##
-## NOTE: Must be compiled with --mm:arc (ORC is not thread-safe).
+## Run with --mm:arc, --mm:orc, or --mm:atomicArc.
 
 import cps/mt
 import cps/transform
@@ -145,6 +145,32 @@ block testMtInterleave:
   let blockDoneIdx = events.find("block-done")
   assert timerFiredIdx < blockDoneIdx, "Timer should fire before blocking completes: " & $events
   echo "PASS: spawnBlocking + timer interleave"
+
+# Test 6: callback fan-out completed by a blocking worker
+block testCrossThreadCallbackOwnership:
+  var callbackHits: Atomic[int]
+  callbackHits.store(0, moRelaxed)
+
+  proc fanout(): CpsVoidFuture {.cps.} =
+    let gate = newCpsVoidFuture()
+    gate.ensureShared()
+    for callbackIdx in 0 ..< 16:
+      gate.addCallback(proc() =
+        discard callbackIdx
+        discard callbackHits.fetchAdd(1, moAcquireRelease)
+      )
+    let completer = spawnBlocking(proc() {.gcsafe.} =
+      {.cast(gcsafe).}:
+        gate.complete()
+    )
+    await gate
+    await completer
+    while callbackHits.load(moAcquire) != 16:
+      await cpsYield()
+
+  runCps(fanout())
+  assert callbackHits.load(moAcquire) == 16
+  echo "PASS: cross-thread callback ownership fan-out"
 
 loop.shutdownMtRuntime()
 

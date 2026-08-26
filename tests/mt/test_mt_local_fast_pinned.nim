@@ -3,8 +3,9 @@
 ## Validates that local-fast callbacks fire on the owner worker even when
 ## completion is initiated from a foreign blocking thread.
 
-when not defined(gcAtomicArc) and not defined(useMalloc):
-  {.error: "test_mt_local_fast_pinned.nim requires --mm:atomicArc (recommended) or -d:useMalloc.".}
+when not (compileOption("gc", "atomicArc") or compileOption("gc", "arc") or
+          compileOption("gc", "orc")):
+  {.error: "test requires --mm:arc, --mm:orc, or --mm:atomicArc".}
 
 import cps/mt
 import std/[atomics, monotimes, times, os]

@@ -5,6 +5,11 @@
 ## across cores. A minimal wake descriptor is used only to stop each shard;
 ## the data path never touches the MT callback queue.
 ##
+## Reactor pools support regular ARC and ORC because managed values never
+## cross reactor threads. The memory manager is still selected for the whole
+## executable; do not combine a non-atomic reactor-pool build with the shared
+## work-stealing MT runtime.
+##
 ## Futures constructed on a shard default to local-fast state. Applications
 ## must keep futures and GC-managed shard state on their owning reactor thread;
 ## use the work-stealing MT runtime when tasks need to cross threads.

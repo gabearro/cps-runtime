@@ -1715,9 +1715,18 @@ macro cps*(prc: untyped): untyped =
   for (target, expr) in collectAwaitTargets(segments):
     addAwaitTargetField(target, expr)
 
+  let envTypeDefName =
+    when compileOption("gc", "orc"):
+      nnkPragmaExpr.newTree(
+        envTypeName,
+        nnkPragma.newTree(ident"acyclic")
+      )
+    else:
+      envTypeName
+
   let typeSection = nnkTypeSection.newTree(
     nnkTypeDef.newTree(
-      envTypeName,
+      envTypeDefName,
       if isGeneric: genericParams.copyNimTree() else: newEmptyNode(),
       nnkRefTy.newTree(
         nnkObjectTy.newTree(
@@ -1741,7 +1750,8 @@ macro cps*(prc: untyped): untyped =
   let failSym = bindSym"fail"
   let completeSym = bindSym"complete"
   let runSym = bindSym"run"
-  let currentRuntimeSym = bindSym"currentRuntime"
+  let currentRuntimePointerSym = bindSym"currentRuntimePointer"
+  let cpsRuntimeTypeSym = bindSym"CpsRuntime"
   let setFutureRootContinuationSym = bindSym"setFutureRootContinuation"
 
   proc genHalt(envId: NimNode): NimNode =
@@ -2426,7 +2436,8 @@ macro cps*(prc: untyped): untyped =
     var `envLocal` = `envTypeInst`()
     `envLocal`.fn = `firstStep`
     `envLocal`.state = csRunning
-    `envLocal`.runtimeOwner = `currentRuntimeSym`().runtime
+    `envLocal`.runtimeOwner =
+      cast[`cpsRuntimeTypeSym`](`currentRuntimePointerSym`())
 
   if isVoid:
     wrapperBody.add quote do:

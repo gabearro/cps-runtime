@@ -1,7 +1,13 @@
 nimTitle	scheduler	cps/mt/scheduler.html	module cps/mt/scheduler		0
-nim	SchedulerTask	cps/mt/scheduler.html#SchedulerTask	type SchedulerTask		17
-nim	Scheduler	cps/mt/scheduler.html#Scheduler	type Scheduler		41
-nim	newScheduler	cps/mt/scheduler.html#newScheduler,CpsRuntime,int,int	proc newScheduler(runtime: CpsRuntime; numWorkers: int = 0;\n             maxGlobalQueue: int = 65536): Scheduler		205
-nim	schedule	cps/mt/scheduler.html#schedule,Scheduler,SchedulerTask	proc schedule(s: Scheduler; task: SchedulerTask)		231
-nim	schedulePinned	cps/mt/scheduler.html#schedulePinned,Scheduler,int,SchedulerTask	proc schedulePinned(s: Scheduler; workerId: int; task: SchedulerTask): bool		259
-nim	shutdownScheduler	cps/mt/scheduler.html#shutdownScheduler,Scheduler	proc shutdownScheduler(s: Scheduler)		276
+nim	SchedulerTask	cps/mt/scheduler.html#SchedulerTask	type SchedulerTask		21
+nim	SchedulerReactorHook	cps/mt/scheduler.html#SchedulerReactorHook	type SchedulerReactorHook		23
+nim	SchedulerReactorPollHook	cps/mt/scheduler.html#SchedulerReactorPollHook	type SchedulerReactorPollHook		24
+nim	SchedulerReactorPredicateHook	cps/mt/scheduler.html#SchedulerReactorPredicateHook	type SchedulerReactorPredicateHook		25
+nim	Scheduler	cps/mt/scheduler.html#Scheduler	type Scheduler		63
+nim	newScheduler	cps/mt/scheduler.html#newScheduler,CpsRuntime,int,int,pointer,SchedulerReactorHook,SchedulerReactorHook,SchedulerReactorPollHook,SchedulerReactorPredicateHook,SchedulerReactorHook,SchedulerReactorHook	proc newScheduler(runtime: CpsRuntime; numWorkers: int = 0;\n             maxGlobalQueue: int = DefaultGlobalQueueCapacity;\n             reactorCtx: pointer = nil;\n             reactorSetup: SchedulerReactorHook = nil;\n             reactorPoll: SchedulerReactorHook = nil;\n             reactorPollNow: SchedulerReactorPollHook = nil;\n             reactorShouldDrain: SchedulerReactorPredicateHook = nil;\n             reactorWake: SchedulerReactorHook = nil;\n             reactorTeardown: SchedulerReactorHook = nil): Scheduler		347
+nim	schedule	cps/mt/scheduler.html#schedule,Scheduler,sinkSchedulerTask	proc schedule(s: Scheduler; taskArg: sink SchedulerTask)		401
+nim	scheduleContinuation	cps/mt/scheduler.html#scheduleContinuation,Scheduler,sinkContinuation	proc scheduleContinuation(s: Scheduler; continuation: sink Continuation)		460
+nim	schedulePinned	cps/mt/scheduler.html#schedulePinned,Scheduler,int,sinkSchedulerTask	proc schedulePinned(s: Scheduler; workerId: int; taskArg: sink SchedulerTask): bool		482
+nim	scheduleClosureRelease	cps/mt/scheduler.html#scheduleClosureRelease,Scheduler,int,OwnedClosureTask	proc scheduleClosureRelease(s: Scheduler; workerId: int; closure: OwnedClosureTask): bool		522
+nim	scheduleOwnedClosure	cps/mt/scheduler.html#scheduleOwnedClosure,Scheduler,int,OwnedClosureTask	proc scheduleOwnedClosure(s: Scheduler; workerId: int; closure: OwnedClosureTask): bool		541
+nim	shutdownScheduler	cps/mt/scheduler.html#shutdownScheduler,Scheduler	proc shutdownScheduler(s: Scheduler)		554

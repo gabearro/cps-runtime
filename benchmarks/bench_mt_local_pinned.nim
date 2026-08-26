@@ -4,10 +4,11 @@
 ## same-worker local-fast completion.
 ##
 ## Run:
-##   nim c -r --mm:atomicArc -d:danger benchmarks/bench_mt_local_pinned.nim
+##   nim c -r --threads:on --mm:orc -d:danger benchmarks/bench_mt_local_pinned.nim
 
-when not defined(gcAtomicArc) and not defined(useMalloc):
-  {.error: "bench_mt_local_pinned.nim requires --mm:atomicArc (recommended) or -d:useMalloc.".}
+when not (compileOption("gc", "atomicArc") or compileOption("gc", "arc") or
+          compileOption("gc", "orc")):
+  {.error: "benchmark requires --mm:arc, --mm:orc, or --mm:atomicArc".}
 
 import criterion
 import cps/mt

@@ -12,12 +12,12 @@
 ## - pop: seq-cst fence between bottom store and top load (linearization point)
 ## - steal: acquire loads + seq-cst CAS on top (linearization point)
 ##
-## ARC safety: pop/steal use raw memory ops (copyMem/zeroMem) to bypass
-## ARC hooks, preventing double-ref-count when two threads read the same
-## slot during the last-element race. push uses normal ARC assignment
-## (=copy) since only the owner thread pushes — no concurrent writes.
+## ARC/ORC safety: every operation transfers one owned value without copying.
+## pop/steal use raw memory ops (copyMem/zeroMem) to bypass
+## hooks, preventing double-ref-count when two threads read the same slot
+## during the last-element race. push moves from its owner-provided value.
 ## Ref count protocol:
-## - push: ARC =copy increments ref count for the buffer slot
+## - push: move transfers the caller's ref count into the buffer slot
 ## - pop/steal success: rawRead (bitwise copy, no rc change) + rawClear
 ##   (zero without =destroy) transfers the slot's ref count to the caller
 ## - pop/steal failure: zeroMem on local copy (no =destroy, no rc change)
@@ -69,17 +69,13 @@ proc destroyChaseLevDeque*[T](d: var ChaseLevDeque[T]) =
     deallocShared(d.buffer)
     d.buffer = nil
 
-proc push*[T](d: var ChaseLevDeque[T], item: T): bool {.inline, discardable.} =
-  ## Owner: push an item to the bottom. Returns false if full.
+proc push*[T](d: var ChaseLevDeque[T], item: var T): bool {.inline, discardable.} =
+  ## Owner: move an item to the bottom, leaving it unchanged when full.
   let b = d.bottom.load(moRelaxed)
   let t = d.top.load(moAcquire)
   if b - t >= ChaseLevCapacity:
     return false
-  # Normal Nim assignment: ARC's =copy increments the ref count for the buffer.
-  # Safe because only the owner thread pushes (no concurrent writes).
-  # The slot is always zero (from allocShared0 or rawClear) so =destroy on the
-  # old value is a no-op.
-  d.buffer[b and ChaseLevMask] = item
+  d.buffer[b and ChaseLevMask] = move(item)
   fence(moRelease)
   d.bottom.store(b + 1, moRelaxed)
   result = true

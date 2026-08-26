@@ -3,10 +3,11 @@
 ## Validates that all producer threads make forward progress and that
 ## no producer is starved while the MPSC inject queue is saturated.
 ##
-## Must be compiled with --mm:atomicArc.
+## Run with --mm:arc, --mm:orc, or --mm:atomicArc.
 
-when not defined(gcAtomicArc) and not defined(useMalloc):
-  {.error: "test_mt_scheduler_fairness.nim requires --mm:atomicArc (recommended) or -d:useMalloc.".}
+when not (compileOption("gc", "atomicArc") or compileOption("gc", "arc") or
+          compileOption("gc", "orc")):
+  {.error: "test requires --mm:arc, --mm:orc, or --mm:atomicArc".}
 
 import std/[atomics, os, monotimes, times]
 import cps/runtime

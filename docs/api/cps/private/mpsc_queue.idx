@@ -8,6 +8,7 @@ nim	enqueue	cps/private/mpsc_queue.html#enqueue,MpscQueue[T],ptr.MpscNode[T]	pro
 nim	dequeue	cps/private/mpsc_queue.html#dequeue,MpscQueue[T]	proc dequeue[T](q: var MpscQueue[T]): ptr MpscNode[T]		70
 nim	isEmpty	cps/private/mpsc_queue.html#isEmpty,MpscQueue[T]	proc isEmpty[T](q: var MpscQueue[T]): bool		96
 nim	hasPending	cps/private/mpsc_queue.html#hasPending,MpscQueue[T]	proc hasPending[T](q: var MpscQueue[T]): bool		104
-nim	allocNode	cps/private/mpsc_queue.html#allocNode,T	proc allocNode[T](val: T): ptr MpscNode[T]		110
-nim	freeNode	cps/private/mpsc_queue.html#freeNode,ptr.MpscNode[T]	proc freeNode[T](node: ptr MpscNode[T])		117
-nim	discardAll	cps/private/mpsc_queue.html#discardAll,MpscQueue[T]	proc discardAll[T](q: var MpscQueue[T])		121
+nim	allocNode	cps/private/mpsc_queue.html#allocNode,T	proc allocNode[T](val: var T): ptr MpscNode[T]		110
+nim	takePayload	cps/private/mpsc_queue.html#takePayload,ptr.MpscNode[T]	proc takePayload[T](node: ptr MpscNode[T]): T		117
+nim	freeNode	cps/private/mpsc_queue.html#freeNode,ptr.MpscNode[T]	proc freeNode[T](node: ptr MpscNode[T])		121
+nim	discardAll	cps/private/mpsc_queue.html#discardAll,MpscQueue[T]	proc discardAll[T](q: var MpscQueue[T])		125

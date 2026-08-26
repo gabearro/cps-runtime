@@ -3,11 +3,12 @@
 ## Tests MPSC queue, Chase-Lev deque, and lock-free futures
 ## under concurrent load. Must be compiled with --mm:atomicArc.
 
-when not defined(gcAtomicArc) and not defined(useMalloc):
-  {.error: "test_lockfree.nim requires --mm:atomicArc (recommended) or -d:useMalloc for thread-safe ref counting.".}
+when not compileOption("gc", "atomicArc"):
+  {.error: "test_lockfree.nim requires --mm:atomicArc for thread-safe reference counting.".}
 
-import std/[atomics, os]
+import std/[atomics, os, sysatomics]
 import cps/private/mpsc_queue
+import cps/private/mpsc_ring
 import cps/private/chase_lev
 import cps/runtime
 import cps/eventloop
@@ -19,13 +20,16 @@ import cps/eventloop
 const MpscProducerCount = 4
 const MpscItemsPerProducer = 10000
 
-var gMpscQ: MpscQueue
+type CallbackMpscQueue = MpscQueue[CrossThreadCallback]
+
+var gMpscQ: CallbackMpscQueue
 var mpscTotalReceived: Atomic[int]
 
-proc mpscProducer(args: (ptr MpscQueue, int)) {.thread.} =
+proc mpscProducer(args: (ptr CallbackMpscQueue, int)) {.thread.} =
   let q = args[0]
   for i in 0 ..< MpscItemsPerProducer:
-    let node = allocNode(proc() {.closure, gcsafe.} = discard)
+    var cb: CrossThreadCallback = proc() {.closure, gcsafe.} = discard
+    let node = allocNode(cb)
     enqueue(q[], node)
 
 proc testMpscQueue() =
@@ -33,7 +37,8 @@ proc testMpscQueue() =
   initMpscQueue(gMpscQ)
   mpscTotalReceived.store(0, moRelaxed)
 
-  var threads: array[MpscProducerCount, Thread[(ptr MpscQueue, int)]]
+  var threads: array[MpscProducerCount,
+                     Thread[(ptr CallbackMpscQueue, int)]]
   for i in 0 ..< MpscProducerCount:
     createThread(threads[i], mpscProducer, (addr gMpscQ, i))
 
@@ -44,6 +49,7 @@ proc testMpscQueue() =
   while received < expected:
     let node = dequeue(gMpscQ)
     if node != nil:
+      var cb {.used.} = takePayload(node)
       freeNode(node)
       inc received
       spinCount = 0
@@ -58,6 +64,61 @@ proc testMpscQueue() =
 
   assert received == expected, "MPSC: expected " & $expected & " items, got " & $received
   echo "PASS: MPSC queue - " & $expected & " items from " & $MpscProducerCount & " producers"
+
+# ============================================================
+# Bounded MPSC Ring: 4 producers x 10000 items, 1 consumer
+# ============================================================
+
+const
+  MpscRingProducerCount = 4
+  MpscRingItemsPerProducer = 10000
+  MpscRingCapacity = 128
+
+type MpscRingProducerArg = object
+  queue: ptr MpscRingQueue[int]
+  producerIdx: int
+
+var gMpscRing: MpscRingQueue[int]
+
+proc mpscRingProducer(arg: MpscRingProducerArg) {.thread.} =
+  for itemIdx in 0 ..< MpscRingItemsPerProducer:
+    var value = arg.producerIdx * MpscRingItemsPerProducer + itemIdx + 1
+    var spins = 64
+    while not arg.queue[].tryEnqueue(value):
+      if spins > 0:
+        cpuRelax()
+        dec spins
+      else:
+        sleep(0)
+        spins = 64
+
+proc testMpscRing() =
+  echo "Testing bounded MPSC ring..."
+  initMpscRingQueue(gMpscRing, MpscRingCapacity)
+  let expected = MpscRingProducerCount * MpscRingItemsPerProducer
+  var seen = newSeq[bool](expected + 1)
+  var threads: array[MpscRingProducerCount, Thread[MpscRingProducerArg]]
+
+  for i in 0 ..< MpscRingProducerCount:
+    createThread(threads[i], mpscRingProducer,
+      MpscRingProducerArg(queue: addr gMpscRing, producerIdx: i))
+
+  var received = 0
+  while received < expected:
+    var value = 0
+    if gMpscRing.tryDequeue(value):
+      assert value > 0 and value <= expected, "MPSC ring produced invalid value"
+      assert not seen[value], "MPSC ring produced duplicate value " & $value
+      seen[value] = true
+      inc received
+    else:
+      cpuRelax()
+
+  for i in 0 ..< MpscRingProducerCount:
+    joinThread(threads[i])
+  assert gMpscRing.isEmpty(), "MPSC ring should be empty after draining"
+  deinitMpscRingQueue(gMpscRing)
+  echo "PASS: bounded MPSC ring - " & $expected & " unique items"
 
 # ============================================================
 # Chase-Lev Deque: 1 owner + 3 thieves, 50000 items
@@ -108,7 +169,8 @@ proc testChaseLevDeque() =
   const batchSize = 4096
   var pushed = 0
   for i in 1 .. ChaseLevTotalItems:  # Use 1-based to distinguish from default(0)
-    push(clDeque, i)
+    var item = i
+    discard push(clDeque, item)
     inc pushed
     # When batch is full, drain the local deque before pushing more
     if pushed mod batchSize == 0:
@@ -359,6 +421,12 @@ proc waiterThread(arg: WaiterArg) {.thread.} =
   {.cast(gcsafe).}:
     setCurrentRuntime(arg.runtime)
     runCps(arg.fut)
+    # The selector is thread-affine even under AtomicARC. Detach and retire it
+    # on the thread that created it before returning the runtime reference.
+    let loop = getEventLoop()
+    arg.runtime.eventLoopPtr = nil
+    setCurrentRuntime(nil)
+    discard loop
 
 proc testRunCpsWakeRace() =
   echo "Testing runCps wait/wake race..."
@@ -448,6 +516,7 @@ proc testCallbackNodeLifecycleNoLeak() =
 # ============================================================
 
 testMpscQueue()
+testMpscRing()
 testChaseLevDeque()
 testLockFreeFutures()
 testTypedFutures()

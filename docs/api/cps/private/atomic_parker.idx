@@ -1,0 +1,7 @@
+nimTitle	atomic_parker	cps/private/atomic_parker.html	module cps/private/atomic_parker		0
+nim	AtomicParker	cps/private/atomic_parker.html#AtomicParker	object AtomicParker		14
+nim	initAtomicParker	cps/private/atomic_parker.html#initAtomicParker,AtomicParker	proc initAtomicParker(parker: var AtomicParker)		17
+nim	prepareWait	cps/private/atomic_parker.html#prepareWait,AtomicParker	proc prepareWait(parker: var AtomicParker): int32		21
+nim	wait	cps/private/atomic_parker.html#wait,AtomicParker,int32	proc wait(parker: var AtomicParker; observedEpoch: int32)		124
+nim	notifyOne	cps/private/atomic_parker.html#notifyOne,AtomicParker	proc notifyOne(parker: var AtomicParker)		129
+nim	notifyAll	cps/private/atomic_parker.html#notifyAll,AtomicParker	proc notifyAll(parker: var AtomicParker)		134

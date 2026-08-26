@@ -90,9 +90,9 @@
 
   </div>
   <div class="nine columns" id="content">
-    
+
     <div id="tocRoot"></div>
-    
+
     <p class="module-desc"><p>XorShift32 PRNG</p>
 <p>Minimal pseudo-random number generator. Avoids importing std/random which loads macOS Security framework and clobbers Homebrew OpenSSL symbols (reduces available ciphers from 62 to 6).</p>
 </p>
@@ -102,9 +102,9 @@
     <div id="XorShift32">
   <dt><pre><a href="xorshift.html#XorShift32"><span class="Identifier">XorShift32</span></a> <span class="Other">=</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 
@@ -117,18 +117,18 @@
   <div id="initXorShift32,int">
   <dt><pre><span class="Keyword">proc</span> <a href="#initXorShift32%2Cint"><span class="Identifier">initXorShift32</span></a><span class="Other">(</span><span class="Identifier">seed</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="xorshift.html#XorShift32"><span class="Identifier">XorShift32</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Initialize xor shift32.
-    
+
   </dd>
 </div>
 <div id="initXorShift32,uint32">
   <dt><pre><span class="Keyword">proc</span> <a href="#initXorShift32%2Cuint32"><span class="Identifier">initXorShift32</span></a><span class="Other">(</span><span class="Identifier">seed</span><span class="Other">:</span> <span class="Identifier">uint32</span><span class="Other">)</span><span class="Other">:</span> <a href="xorshift.html#XorShift32"><span class="Identifier">XorShift32</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Initialize xor shift32.
-    
+
   </dd>
 </div>
 
@@ -137,9 +137,9 @@
   <div id="next,XorShift32">
   <dt><pre><span class="Keyword">proc</span> <a href="#next%2CXorShift32"><span class="Identifier">next</span></a><span class="Other">(</span><span class="Identifier">rng</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="xorshift.html#XorShift32"><span class="Identifier">XorShift32</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">uint32</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Advance the xorshift generator and return its next value.
-    
+
   </dd>
 </div>
 
@@ -149,9 +149,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#rand%2CXorShift32%2Cint"><span class="Identifier">rand</span></a><span class="Other">(</span><span class="Identifier">rng</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="xorshift.html#XorShift32"><span class="Identifier">XorShift32</span></a><span class="Other">;</span> <span class="Identifier">bound</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Return a pseudo-random int in [0, bound).
-    
+
   </dd>
 </div>
 
@@ -160,9 +160,9 @@
   <div id="seedFromTime">
   <dt><pre><span class="Keyword">proc</span> <a href="#seedFromTime"><span class="Identifier">seedFromTime</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">uint32</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Derive a seed from current epoch time.
-    
+
   </dd>
 </div>
 
@@ -177,10 +177,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 20:56:16 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:26 UTC</small>
       </div>
     </div>
   </div>
-  
+
 </body>
 </html>

@@ -3,7 +3,7 @@
 ## Verifies that existing TCP/UDP I/O works correctly when
 ## the MT runtime is active.
 ##
-## NOTE: Must be compiled with --mm:arc (ORC is not thread-safe).
+## Run with --mm:arc, --mm:orc, or --mm:atomicArc.
 
 import cps/mt
 import cps/transform

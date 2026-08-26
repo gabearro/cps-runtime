@@ -1,0 +1,12 @@
+nimTitle	cross_thread_closure	cps/private/cross_thread_closure.html	module cps/private/cross_thread_closure		0
+nim	OwnedClosureTask	cps/private/cross_thread_closure.html#OwnedClosureTask	object OwnedClosureTask		6
+nim	ClosureReturnProc	cps/private/cross_thread_closure.html#ClosureReturnProc	type ClosureReturnProc		11
+nim	ClosureRetainProc	cps/private/cross_thread_closure.html#ClosureRetainProc	type ClosureRetainProc		14
+nim	ClosureReturnRoute	cps/private/cross_thread_closure.html#ClosureReturnRoute	object ClosureReturnRoute		17
+nim	bindClosureReturnRoute	cps/private/cross_thread_closure.html#bindClosureReturnRoute,ClosureReturnRoute	proc bindClosureReturnRoute(route: ClosureReturnRoute)		42
+nim	clearClosureReturnRoute	cps/private/cross_thread_closure.html#clearClosureReturnRoute	proc clearClosureReturnRoute()		46
+nim	currentClosureReturnRoute	cps/private/cross_thread_closure.html#currentClosureReturnRoute	proc currentClosureReturnRoute(): ClosureReturnRoute		50
+nim	prepareCrossThreadClosure	cps/private/cross_thread_closure.html#prepareCrossThreadClosure,T	proc prepareCrossThreadClosure[T](cb: var T)		54
+nim	takeClosureTask	cps/private/cross_thread_closure.html#takeClosureTask,T	proc takeClosureTask[T](cb: var T): OwnedClosureTask		68
+nim	runClosureTask	cps/private/cross_thread_closure.html#runClosureTask,OwnedClosureTask,typedesc[T]	proc runClosureTask[T](task: var OwnedClosureTask; _: typedesc[T])		75
+nim	releaseClosureTask	cps/private/cross_thread_closure.html#releaseClosureTask,OwnedClosureTask,typedesc[T]	proc releaseClosureTask[T](task: var OwnedClosureTask; _: typedesc[T])		83

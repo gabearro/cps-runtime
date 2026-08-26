@@ -9,5 +9,5 @@ nim	isClosed	cps/concurrency/asynciter.html#isClosed,AsyncIterator[T]	proc isClo
 nim	map	cps/concurrency/asynciter.html#map,AsyncIterator[T],proc(T)	proc map[T, U](iter: AsyncIterator[T]; f: proc (x: T): U): AsyncIterator[U]		129
 nim	filter	cps/concurrency/asynciter.html#filter,AsyncIterator[T],proc(T)	proc filter[T](iter: AsyncIterator[T]; pred: proc (x: T): bool): AsyncIterator[T]		148
 nim	take	cps/concurrency/asynciter.html#take,AsyncIterator[T],int	proc take[T](iter: AsyncIterator[T]; n: int): AsyncIterator[T]		167
-nim	collect	cps/concurrency/asynciter.html#collect,AsyncIterator[T]	proc collect[T](iter: AsyncIterator[T]): CpsFuture[seq[T]]		2410
-nim	forEach	cps/concurrency/asynciter.html#forEach,AsyncIterator[T],proc(T)	proc forEach[T](iter: AsyncIterator[T]; action: proc (x: T): CpsVoidFuture): CpsVoidFuture		2410
+nim	collect	cps/concurrency/asynciter.html#collect,AsyncIterator[T]	proc collect[T](iter: AsyncIterator[T]): CpsFuture[seq[T]]		2420
+nim	forEach	cps/concurrency/asynciter.html#forEach,AsyncIterator[T],proc(T)	proc forEach[T](iter: AsyncIterator[T]; action: proc (x: T): CpsVoidFuture): CpsVoidFuture		2420

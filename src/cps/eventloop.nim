@@ -15,6 +15,11 @@ import ./runtime
 import ./private/mpsc_queue
 import ./private/platform
 
+when compileOption("gc", "orc"):
+  {.pragma: cpsMtLoopAcyclic, acyclic.}
+else:
+  {.pragma: cpsMtLoopAcyclic.}
+
 export runtime
 
 type LoopStats* = object
@@ -44,16 +49,22 @@ type
 
   IoCallback = proc() {.closure.}
 
-  EventLoop* = ref object
+  PostedCallback = object
+    task: OwnedClosureTask
+    sourceWorker: int
+    returnRoute: ClosureReturnRoute
+
+  EventLoop* {.cpsMtLoopAcyclic.} = ref object
     selector: Selector[IoCallback]
     timers: seq[TimerEntry]
     readyQueue: seq[proc() {.closure.}]
     readyScratch: seq[proc() {.closure.}]
     ioEvents: array[64, ReadyKey]
     running: bool
-    ownerRuntime*: CpsRuntime
+    ownerRuntime* {.cursor.}: CpsRuntime
+    ownerThreadToken: pointer
     # MT extensions (nil/default when single-threaded)
-    crossThreadQueue*: MpscQueue[CrossThreadCallback]   ## Lock-free MPSC queue for cross-thread callbacks
+    crossThreadQueue*: MpscQueue[PostedCallback]   ## Lock-free MPSC queue for cross-thread callbacks
     wakePipeRead*: SocketHandle   ## Read end of wake pipe (SocketHandle(-1) = not initialized)
     wakePipeWrite*: SocketHandle  ## Write end of wake pipe (SocketHandle(-1) = not initialized)
     wakePending: Atomic[bool]  ## Coalesce wake-pipe writes
@@ -102,6 +113,7 @@ proc newEventLoop*(): EventLoop =
   result.readyScratch = @[]
   result.running = false
   result.ownerRuntime = nil
+  result.ownerThreadToken = currentThreadIdentity()
   result.wakePipeRead = SocketHandle(-1)
   result.wakePipeWrite = SocketHandle(-1)
   result.mtActive = false
@@ -199,6 +211,9 @@ proc processTimersCount(loop: EventLoop): int =
 proc getEventLoopForRuntime*(rt: CpsRuntime): EventLoop =
   ## Resolve or lazily create the runtime's event loop.
   assert rt != nil, "runtime must not be nil"
+  if currentEventLoopPtr != nil and
+     currentEventLoopRuntimePtr == cast[pointer](rt):
+    return cast[EventLoop](currentEventLoopPtr)
   when defined(debugTimers):
     echo "[loop] resolve runtime=", rt.id, " ptr=", cast[int](cast[pointer](rt.eventLoopPtr))
   if rt.eventLoopPtr != nil:
@@ -227,7 +242,8 @@ proc getEventLoop*(handle: RuntimeHandle): EventLoop =
 
 proc getEventLoop*(): EventLoop =
   ## Return the event loop bound to the current thread.
-  getEventLoop(currentRuntime())
+  let rt {.cursor.} = cast[CpsRuntime](currentRuntimePointer())
+  getEventLoopForRuntime(rt)
 
 proc setEventLoop*(loop: EventLoop) =
   ## Compatibility helper: sets the main runtime's loop.
@@ -246,6 +262,14 @@ proc tryWakeSelector*(loop: EventLoop) =
     return  # Wake already in flight
   platform.wakePipeSignal(loop.wakePipeWrite)
 
+proc claimCurrentThread*(loop: EventLoop) {.inline.} =
+  ## Transfer selector ownership to the calling runtime worker.
+  loop.ownerThreadToken = currentThreadIdentity()
+
+proc isCurrentThreadOwner*(loop: EventLoop): bool {.inline.} =
+  ## Return whether the calling thread owns this selector.
+  loop.ownerThreadToken == currentThreadIdentity()
+
 proc markWakeDrained*(loop: EventLoop) {.inline.} =
   ## Mark the wake signal as drained so producers can signal again.
   loop.wakePending.store(false, moRelease)
@@ -254,11 +278,25 @@ proc recordWakeSignal*(loop: EventLoop) {.inline.} =
   ## Record that a wake callback was processed on the reactor thread.
   loop.stats.wakeSignalsSent += 1
 
-proc postToEventLoop*(loop: EventLoop, cb: CrossThreadCallback) =
+proc postToEventLoop*(loop: EventLoop, cbArg: sink CrossThreadCallback) =
   ## Thread-safe: post a callback to the event loop via lock-free MPSC queue.
   ## Writes a byte to the wake pipe to unblock the reactor's select().
   assert loop.mtActive, "postToEventLoop called on non-MT event loop"
-  let node = allocNode(cb)
+  var cb = move(cbArg)
+  var posted = PostedCallback(
+    task: takeClosureTask(cb),
+    sourceWorker: -1,
+    returnRoute: default(ClosureReturnRoute))
+  when not compileOption("gc", "atomicArc"):
+    if isSchedulerWorker and loop.ownerRuntime != nil and
+       currentSchedulerPtr == cast[pointer](loop.ownerRuntime.schedulerPtr):
+      posted.sourceWorker = currentWorkerId
+    else:
+      let route = currentClosureReturnRoute()
+      if route.release != nil:
+        route.retain(route.ctx)
+        posted.returnRoute = route
+  let node = allocNode(posted)
   enqueue(loop.crossThreadQueue, node)
   loop.tryWakeSelector()
 
@@ -266,7 +304,7 @@ proc shouldProxyToReactor*(loop: EventLoop): bool {.inline.} =
   ## In MT mode, selector/timer/ready-queue mutation must happen on the reactor
   ## thread. During bootstrap (queue/pipe not initialized) run inline.
   loop.mtActive and
-    not isReactorThread and
+    not loop.isCurrentThreadOwner() and
     loop.crossThreadQueue.isInitialized() and
     loop.wakePipeWrite != SocketHandle(-1)
 
@@ -438,10 +476,46 @@ proc drainCrossThreadQueue*(loop: EventLoop) =
         cpuRelax()
         continue
       break
-    let cb = node.payload
+    var posted = takePayload(node)
     freeNode(node)
-    if loop.runLoopCallback(cb):
-      inc drained
+    if posted.task.fn != nil:
+      when not compileOption("gc", "atomicArc"):
+        if posted.sourceWorker >= 0 and
+           (not isSchedulerWorker or currentWorkerId != posted.sourceWorker):
+          type RawClosureCall = proc(env: pointer) {.nimcall, gcsafe.}
+          try:
+            cast[RawClosureCall](posted.task.fn)(posted.task.env)
+            inc drained
+          except CatchableError:
+            loop.recordCallbackError()
+          let rt {.cursor.} = loop.ownerRuntime
+          if rt == nil or rt.closureReleaseDispatcher == nil or
+             not rt.closureReleaseDispatcher(posted.sourceWorker, posted.task):
+            # The owner runtime is already stopping. Leaking the environment
+            # is safer than destroying an ARC/ORC graph on the wrong thread.
+            posted.task = default(OwnedClosureTask)
+        elif posted.returnRoute.release != nil:
+          type RawClosureCall = proc(env: pointer) {.nimcall, gcsafe.}
+          try:
+            cast[RawClosureCall](posted.task.fn)(posted.task.env)
+            inc drained
+          except CatchableError:
+            loop.recordCallbackError()
+          posted.returnRoute.release(posted.returnRoute.ctx,
+                                     posted.returnRoute.owner, posted.task)
+          posted.task = default(OwnedClosureTask)
+        else:
+          try:
+            runClosureTask(posted.task, CrossThreadCallback)
+            inc drained
+          except CatchableError:
+            loop.recordCallbackError()
+      else:
+        try:
+          runClosureTask(posted.task, CrossThreadCallback)
+          inc drained
+        except CatchableError:
+          loop.recordCallbackError()
   when defined(debugMtIo):
     if drained > 0:
       debugEcho "[MT-IO] drainCrossThreadQueue: drained ", drained, " callbacks, selector.count=", loop.selector.count
@@ -533,9 +607,9 @@ proc processReady(loop: EventLoop): int =
       inc result
   loop.readyScratch.setLen(0)
 
-proc tick*(loop: EventLoop) =
-  ## Run one iteration of the event loop.
-  let prevRt = currentRuntime().runtime
+proc tickImpl(loop: EventLoop, nonBlocking: bool): bool =
+  ## Run one blocking or non-blocking event-loop iteration.
+  let prevRt {.cursor.} = cast[CpsRuntime](currentRuntimePointer())
   if loop.ownerRuntime != nil and loop.ownerRuntime != prevRt:
     setCurrentRuntime(loop.ownerRuntime)
   defer:
@@ -574,6 +648,7 @@ proc tick*(loop: EventLoop) =
     loop.stats.totalCallbacksRun += int64(readyRan1 + readyRan2)
     loop.stats.totalTimersFired += int64(firedTimers)
     loop.stats.totalIoEvents += int64(ioEventsThisTick)
+    result = readyRan1 + readyRan2 + firedTimers + ioEventsThisTick > 0
     when defined(cpsTrace):
       let tickEnd = getMonoTime()
       let durationUs = (tickEnd - tickStart).inMicroseconds
@@ -583,7 +658,7 @@ proc tick*(loop: EventLoop) =
     return
 
   # Calculate timeout for selector
-  var timeoutMs = -1  # Block indefinitely if nothing else to do
+  var timeoutMs = if nonBlocking: 0 else: -1
   if loop.readyQueue.len > 0:
     timeoutMs = 0
     loop.pruneCancelledTimerRoots()
@@ -593,16 +668,30 @@ proc tick*(loop: EventLoop) =
       let now = getMonoTime()
       let nextTimer = loop.timerHeapPeek()
       let delta = nextTimer.deadline - now
-      timeoutMs = max(0, int(delta.inMilliseconds))
+      let timerTimeout = max(0, int(delta.inMilliseconds))
+      if not nonBlocking:
+        timeoutMs = timerTimeout
 
   if not loop.selector.isEmpty:
+    # A non-worker manually driving the primary MT loop is a synchronous
+    # selector waiter just like blockOn/runCps. Track only the duration of the
+    # blocking poll so cross-thread completions wake it without reintroducing
+    # wake-pipe traffic on worker-local HTTP completions.
+    let tracksExternalWait = not nonBlocking and loop.ownerRuntime != nil and
+      loop.ownerRuntime.flavor == rfMultiThread and not isSchedulerWorker
+    if tracksExternalWait:
+      runCpsWaitEnter(loop.ownerRuntime)
     try:
-      ioEventsThisTick = loop.processIo(timeoutMs)
-    except IOSelectorsException:
-      # Recover from selector descriptor invalidation without taking down
-      # the runtime; timer and ready-queue work can still make progress.
-      loop.selector = newSelector[IoCallback]()
-      ioEventsThisTick = 0
+      try:
+        ioEventsThisTick = loop.processIo(timeoutMs)
+      except IOSelectorsException:
+        # Recover from selector descriptor invalidation without taking down
+        # the runtime; timer and ready-queue work can still make progress.
+        loop.selector = newSelector[IoCallback]()
+        ioEventsThisTick = 0
+    finally:
+      if tracksExternalWait:
+        runCpsWaitLeave(loop.ownerRuntime)
     # Drain cross-thread queue after waking from IO
     if loop.mtActive:
       loop.drainCrossThreadQueue()
@@ -615,12 +704,32 @@ proc tick*(loop: EventLoop) =
   loop.stats.totalCallbacksRun += int64(readyRan1)
   loop.stats.totalTimersFired += int64(firedTimers)
   loop.stats.totalIoEvents += int64(ioEventsThisTick)
+  result = readyRan1 + firedTimers + ioEventsThisTick > 0
   when defined(cpsTrace):
     let tickEnd = getMonoTime()
     let durationUs = (tickEnd - tickStart).inMicroseconds
     loop.stats.lastTickDurationUs = durationUs
     if durationUs > loop.stats.maxTickDurationUs:
       loop.stats.maxTickDurationUs = durationUs
+
+proc tick*(loop: EventLoop) {.inline.} =
+  ## Run one event-loop iteration, blocking until readiness when idle.
+  discard loop.tickImpl(false)
+
+proc poll*(loop: EventLoop): bool {.inline, discardable.} =
+  ## Run one non-blocking event-loop iteration and report whether work ran.
+  loop.tickImpl(true)
+
+proc userIoHandleCount*(loop: EventLoop): int {.inline.} =
+  ## Return selector handles excluding the runtime's internal wake descriptor.
+  let controlHandles = if loop.wakePipeRead == SocketHandle(-1): 0 else: 1
+  max(0, loop.selector.count - controlHandles)
+
+proc hasUserIoWork*(loop: EventLoop): bool {.inline.} =
+  ## Return whether a worker loop has work beyond its scheduler wake handle.
+  loop.readyQueue.len > 0 or loop.timers.len > 0 or
+    loop.userIoHandleCount() > 0 or
+    (loop.mtActive and loop.crossThreadQueue.hasPending())
 
 proc hasWork*(loop: EventLoop): bool =
   ## Return whether the event loop has work ready to run.
@@ -671,7 +780,7 @@ proc resetStats*(loop: EventLoop) =
 # ============================================================
 
 proc currentRuntimeIsMt(): bool {.inline.} =
-  let rt = currentRuntime().runtime
+  let rt {.cursor.} = cast[CpsRuntime](currentRuntimePointer())
   rt != nil and rt.flavor == rfMultiThread
 
 proc cpsSleep*(ms: int): CpsVoidFuture =
@@ -733,7 +842,7 @@ proc cpsYield*(): CpsVoidFuture =
   ## In MT mode, dispatches the completion to a worker thread
   ## instead of going through the reactor's ready queue.
   let fut = newCpsVoidFuture()
-  let rt = currentRuntime().runtime
+  let rt {.cursor.} = cast[CpsRuntime](currentRuntimePointer())
   if rt != nil and rt.yieldDispatcher != nil:
     fut.pinFutureRuntime()
     let cb = proc() {.closure, gcsafe.} =
@@ -770,6 +879,7 @@ proc blockOn*[T](handle: RuntimeHandle, fut: CpsFuture[T]): T =
   if targetRt != nil and targetRt.flavor == rfMultiThread and
      isSchedulerWorker and fut.isLocalFast():
     fut.ensureShared()
+  fut.pinFutureWaitWorker()
 
   let loop = getEventLoop(rtHandle)
   var guard = enter(rtHandle)
@@ -806,6 +916,7 @@ proc blockOn*(handle: RuntimeHandle, fut: CpsVoidFuture) =
   if targetRt != nil and targetRt.flavor == rfMultiThread and
      isSchedulerWorker and fut.isLocalFast():
     fut.ensureShared()
+  fut.pinFutureWaitWorker()
 
   let loop = getEventLoop(rtHandle)
   var guard = enter(rtHandle)

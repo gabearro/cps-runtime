@@ -141,9 +141,9 @@
 
   </div>
   <div class="nine columns" id="content">
-    
+
     <div id="tocRoot"></div>
-    
+
     <p class="module-desc"><p>CPS I/O Buffered</p>
 <p>Provides BufferedReader and BufferedWriter that wrap any AsyncStream with application-level buffering for efficient line-oriented and chunked I/O.</p>
 </p>
@@ -160,18 +160,18 @@
   <dt><pre><a href="buffered.html#BufferedReader"><span class="Identifier">BufferedReader</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span>
   <span class="Identifier">stream</span><span class="Operator">*</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a></pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 <div id="BufferedWriter">
   <dt><pre><a href="buffered.html#BufferedWriter"><span class="Identifier">BufferedWriter</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span>
   <span class="Identifier">stream</span><span class="Operator">*</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a></pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 
@@ -184,9 +184,9 @@
   <div id="atEof,BufferedReader">
   <dt><pre><span class="Keyword">proc</span> <a href="#atEof%2CBufferedReader"><span class="Identifier">atEof</span></a><span class="Other">(</span><span class="Identifier">br</span><span class="Other">:</span> <a href="buffered.html#BufferedReader"><span class="Identifier">BufferedReader</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Returns true if the underlying stream has reached EOF and no buffered data remains.
-    
+
   </dd>
 </div>
 
@@ -196,9 +196,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#close%2CBufferedWriter"><span class="Identifier">close</span></a><span class="Other">(</span><span class="Identifier">bw</span><span class="Other">:</span> <a href="buffered.html#BufferedWriter"><span class="Identifier">BufferedWriter</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Flush remaining data and close the underlying stream.
-    
+
   </dd>
 </div>
 
@@ -207,9 +207,9 @@
   <div id="drainBuffer,BufferedReader">
   <dt><pre><span class="Keyword">proc</span> <a href="#drainBuffer%2CBufferedReader"><span class="Identifier">drainBuffer</span></a><span class="Other">(</span><span class="Identifier">br</span><span class="Other">:</span> <a href="buffered.html#BufferedReader"><span class="Identifier">BufferedReader</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Return any unconsumed buffered data and reset the buffer. Useful when switching from buffered header reading to raw stream processing.
-    
+
   </dd>
 </div>
 
@@ -219,9 +219,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#extractHeaderBlock%2CBufferedReader%2Cint"><span class="Identifier">extractHeaderBlock</span></a><span class="Other">(</span><span class="Identifier">br</span><span class="Other">:</span> <a href="buffered.html#BufferedReader"><span class="Identifier">BufferedReader</span></a><span class="Other">;</span> <span class="Identifier">endIdx</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.<span class="Identifier">inline</span><span class="Other">,</span>
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Extract header block from buffer up to endIdx, advance past rnrn.
-    
+
   </dd>
 </div>
 
@@ -231,9 +231,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#fillBuffer%2CBufferedReader"><span class="Identifier">fillBuffer</span></a><span class="Other">(</span><span class="Identifier">br</span><span class="Other">:</span> <a href="buffered.html#BufferedReader"><span class="Identifier">BufferedReader</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">bool</span><span class="Other">]</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">CatchableError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Read a chunk from the underlying stream into the buffer. Returns true if data was read, false on EOF.
-    
+
   </dd>
 </div>
 
@@ -243,9 +243,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#flush%2CBufferedWriter"><span class="Identifier">flush</span></a><span class="Other">(</span><span class="Identifier">bw</span><span class="Other">:</span> <a href="buffered.html#BufferedWriter"><span class="Identifier">BufferedWriter</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Flush the internal buffer to the underlying stream.
-    
+
   </dd>
 </div>
 
@@ -255,9 +255,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#newBufferedReader%2CAsyncStream%2Cint"><span class="Identifier">newBufferedReader</span></a><span class="Other">(</span><span class="Identifier">stream</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">;</span> <span class="Identifier">bufSize</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">8192</span><span class="Other">)</span><span class="Other">:</span> <a href="buffered.html#BufferedReader"><span class="Identifier">BufferedReader</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Create a new buffered reader.
-    
+
   </dd>
 </div>
 
@@ -267,9 +267,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#newBufferedWriter%2CAsyncStream%2Cint"><span class="Identifier">newBufferedWriter</span></a><span class="Other">(</span><span class="Identifier">stream</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">;</span> <span class="Identifier">bufSize</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">8192</span><span class="Other">)</span><span class="Other">:</span> <a href="buffered.html#BufferedWriter"><span class="Identifier">BufferedWriter</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Create a new buffered writer.
-    
+
   </dd>
 </div>
 
@@ -279,9 +279,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#read%2CBufferedReader%2Cint"><span class="Identifier">read</span></a><span class="Other">(</span><span class="Identifier">br</span><span class="Other">:</span> <a href="buffered.html#BufferedReader"><span class="Identifier">BufferedReader</span></a><span class="Other">;</span> <span class="Identifier">size</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">string</span><span class="Other">]</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">CatchableError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Read up to <tt class="docutils literal"><span class="pre"><span class="Identifier">size</span></span></tt> bytes. Returns &quot;&quot; on EOF.
-    
+
   </dd>
 </div>
 
@@ -291,9 +291,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#readExact%2CBufferedReader%2Cint"><span class="Identifier">readExact</span></a><span class="Other">(</span><span class="Identifier">br</span><span class="Other">:</span> <a href="buffered.html#BufferedReader"><span class="Identifier">BufferedReader</span></a><span class="Other">;</span> <span class="Identifier">size</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">string</span><span class="Other">]</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">CatchableError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Read exactly <tt class="docutils literal"><span class="pre"><span class="Identifier">size</span></span></tt> bytes. Fails with ConnectionClosedError on short read.
-    
+
   </dd>
 </div>
 
@@ -304,9 +304,9 @@
               <span class="Identifier">maxLen</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">65536</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">string</span><span class="Other">]</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">CatchableError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Read until <tt class="docutils literal"><span class="pre"><span class="Identifier">delimiter</span></span></tt> is found. Returns the line without the delimiter. Returns &quot;&quot; on EOF (with no data remaining).
-    
+
   </dd>
 </div>
 
@@ -317,9 +317,9 @@
     <span class="Identifier">string</span><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">CatchableError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
               <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Read until rnrn is found. Returns the complete header block WITHOUT the trailing rnrn delimiter. On EOF, returns &quot;&quot; (empty headers).
-    
+
   </dd>
 </div>
 
@@ -329,9 +329,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#searchHeaderEnd%2CBufferedReader"><span class="Identifier">searchHeaderEnd</span></a><span class="Other">(</span><span class="Identifier">br</span><span class="Other">:</span> <a href="buffered.html#BufferedReader"><span class="Identifier">BufferedReader</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Search for rnrn in buffered data. Returns the index of the first r, or -1 if not found.
-    
+
   </dd>
 </div>
 
@@ -341,9 +341,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#write%2CBufferedWriter%2Cstring"><span class="Identifier">write</span></a><span class="Other">(</span><span class="Identifier">bw</span><span class="Other">:</span> <a href="buffered.html#BufferedWriter"><span class="Identifier">BufferedWriter</span></a><span class="Other">;</span> <span class="Identifier">data</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Write data to the buffer. Auto-flushes when buffer exceeds bufSize.
-    
+
   </dd>
 </div>
 
@@ -353,9 +353,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#writeLine%2CBufferedWriter%2Cstring%2Cstring"><span class="Identifier">writeLine</span></a><span class="Other">(</span><span class="Identifier">bw</span><span class="Other">:</span> <a href="buffered.html#BufferedWriter"><span class="Identifier">BufferedWriter</span></a><span class="Other">;</span> <span class="Identifier">line</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">delimiter</span><span class="Other">:</span> <span class="Identifier">string</span> <span class="Other">=</span> <span class="StringLit">&quot;\r\n&quot;</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Write a line followed by delimiter, then flush.
-    
+
   </dd>
 </div>
 
@@ -370,10 +370,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 20:56:05 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:14 UTC</small>
       </div>
     </div>
   </div>
-  
+
 </body>
 </html>

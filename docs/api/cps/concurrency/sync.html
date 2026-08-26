@@ -165,9 +165,9 @@
 
   </div>
   <div class="nine columns" id="content">
-    
+
     <div id="tocRoot"></div>
-    
+
     <p class="module-desc"><p>CPS Async Synchronization Primitives</p>
 <p>Provides async-aware synchronization primitives for coordinating concurrent CPS tasks:</p>
 <ul class="simple"><li>AsyncSemaphore: counting semaphore with FIFO fairness</li>
@@ -189,33 +189,33 @@
     <div id="AsyncEvent">
   <dt><pre><a href="sync.html#AsyncEvent"><span class="Identifier">AsyncEvent</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-    
+
     A manual-reset event for signaling between tasks. When set, all current and future waiters are woken immediately. When cleared, new waiters block until the event is set again.
-    
+
   </dd>
 </div>
 <div id="AsyncMutex">
   <dt><pre><a href="sync.html#AsyncMutex"><span class="Identifier">AsyncMutex</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-    
+
     An async-aware mutual exclusion lock. Only one task can hold the lock at a time. Waiters are served in FIFO order.
-    
+
   </dd>
 </div>
 <div id="AsyncSemaphore">
   <dt><pre><a href="sync.html#AsyncSemaphore"><span class="Identifier">AsyncSemaphore</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-    
+
     A counting semaphore for limiting concurrent access. Waiters are served in FIFO order.
-    
+
   </dd>
 </div>
 <div id="SyncClosed">
   <dt><pre><a href="sync.html#SyncClosed"><span class="Identifier">SyncClosed</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <span class="Identifier">CatchableError</span></pre></dt>
   <dd>
-    
+
     Raised when operating on a closed sync primitive.
-    
+
   </dd>
 </div>
 
@@ -229,9 +229,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#acquire%2CAsyncSemaphore"><span class="Identifier">acquire</span></a><span class="Other">(</span><span class="Identifier">sem</span><span class="Other">:</span> <a href="sync.html#AsyncSemaphore"><span class="Identifier">AsyncSemaphore</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Acquire a permit from the semaphore. If a permit is available, returns a pre-completed future (zero overhead). Otherwise, the returned future blocks until a permit is released.
-    
+
   </dd>
 </div>
 
@@ -241,9 +241,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#availablePermits%2CAsyncSemaphore"><span class="Identifier">availablePermits</span></a><span class="Other">(</span><span class="Identifier">sem</span><span class="Other">:</span> <a href="sync.html#AsyncSemaphore"><span class="Identifier">AsyncSemaphore</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Return the number of currently available permits.
-    
+
   </dd>
 </div>
 
@@ -252,9 +252,9 @@
   <div id="clear,AsyncEvent">
   <dt><pre><span class="Keyword">proc</span> <a href="#clear%2CAsyncEvent"><span class="Identifier">clear</span></a><span class="Other">(</span><span class="Identifier">ev</span><span class="Other">:</span> <a href="sync.html#AsyncEvent"><span class="Identifier">AsyncEvent</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Clear the event. New calls to wait() will block until set() is called.
-    
+
   </dd>
 </div>
 
@@ -264,26 +264,26 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#close%2CAsyncEvent"><span class="Identifier">close</span></a><span class="Other">(</span><span class="Identifier">ev</span><span class="Other">:</span> <a href="sync.html#AsyncEvent"><span class="Identifier">AsyncEvent</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
                              <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Close the event. All pending waiters are failed with SyncClosed.
-    
+
   </dd>
 </div>
 <div id="close,AsyncMutex">
   <dt><pre><span class="Keyword">proc</span> <a href="#close%2CAsyncMutex"><span class="Identifier">close</span></a><span class="Other">(</span><span class="Identifier">m</span><span class="Other">:</span> <a href="sync.html#AsyncMutex"><span class="Identifier">AsyncMutex</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Close the mutex. All pending waiters are failed with SyncClosed.
-    
+
   </dd>
 </div>
 <div id="close,AsyncSemaphore">
   <dt><pre><span class="Keyword">proc</span> <a href="#close%2CAsyncSemaphore"><span class="Identifier">close</span></a><span class="Other">(</span><span class="Identifier">sem</span><span class="Other">:</span> <a href="sync.html#AsyncSemaphore"><span class="Identifier">AsyncSemaphore</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
                                   <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Close the semaphore. All pending waiters are failed with SyncClosed.
-    
+
   </dd>
 </div>
 
@@ -292,9 +292,9 @@
   <div id="isLocked,AsyncMutex">
   <dt><pre><span class="Keyword">proc</span> <a href="#isLocked%2CAsyncMutex"><span class="Identifier">isLocked</span></a><span class="Other">(</span><span class="Identifier">m</span><span class="Other">:</span> <a href="sync.html#AsyncMutex"><span class="Identifier">AsyncMutex</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Check if the mutex is currently locked.
-    
+
   </dd>
 </div>
 
@@ -303,9 +303,9 @@
   <div id="isSet,AsyncEvent">
   <dt><pre><span class="Keyword">proc</span> <a href="#isSet%2CAsyncEvent"><span class="Identifier">isSet</span></a><span class="Other">(</span><span class="Identifier">ev</span><span class="Other">:</span> <a href="sync.html#AsyncEvent"><span class="Identifier">AsyncEvent</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Check if the event is currently set.
-    
+
   </dd>
 </div>
 
@@ -314,9 +314,9 @@
   <div id="lock,AsyncMutex">
   <dt><pre><span class="Keyword">proc</span> <a href="#lock%2CAsyncMutex"><span class="Identifier">lock</span></a><span class="Other">(</span><span class="Identifier">m</span><span class="Other">:</span> <a href="sync.html#AsyncMutex"><span class="Identifier">AsyncMutex</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Acquire the mutex. If unlocked, returns a pre-completed future. Otherwise, the returned future blocks until the mutex is released.
-    
+
   </dd>
 </div>
 
@@ -325,9 +325,9 @@
   <div id="newAsyncEvent">
   <dt><pre><span class="Keyword">proc</span> <a href="#newAsyncEvent"><span class="Identifier">newAsyncEvent</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="sync.html#AsyncEvent"><span class="Identifier">AsyncEvent</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Create a new unset event.
-    
+
   </dd>
 </div>
 
@@ -336,9 +336,9 @@
   <div id="newAsyncMutex">
   <dt><pre><span class="Keyword">proc</span> <a href="#newAsyncMutex"><span class="Identifier">newAsyncMutex</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="sync.html#AsyncMutex"><span class="Identifier">AsyncMutex</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Create a new unlocked mutex.
-    
+
   </dd>
 </div>
 
@@ -348,9 +348,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#newAsyncSemaphore%2Cint"><span class="Identifier">newAsyncSemaphore</span></a><span class="Other">(</span><span class="Identifier">permits</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="sync.html#AsyncSemaphore"><span class="Identifier">AsyncSemaphore</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Create a new semaphore with the given number of permits.
-    
+
   </dd>
 </div>
 
@@ -360,9 +360,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#release%2CAsyncSemaphore"><span class="Identifier">release</span></a><span class="Other">(</span><span class="Identifier">sem</span><span class="Other">:</span> <a href="sync.html#AsyncSemaphore"><span class="Identifier">AsyncSemaphore</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
                                     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Release a permit back to the semaphore. If there are waiters, the oldest waiter is woken (FIFO). Otherwise, the permit count is incremented.
-    
+
   </dd>
 </div>
 
@@ -371,9 +371,9 @@
   <div id="set,AsyncEvent">
   <dt><pre><span class="Keyword">proc</span> <a href="#set%2CAsyncEvent"><span class="Identifier">set</span></a><span class="Other">(</span><span class="Identifier">ev</span><span class="Other">:</span> <a href="sync.html#AsyncEvent"><span class="Identifier">AsyncEvent</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Set the event, waking all current waiters. Future calls to wait() will complete immediately until clear() is called.
-    
+
   </dd>
 </div>
 
@@ -382,9 +382,9 @@
   <div id="tryAcquire,AsyncSemaphore">
   <dt><pre><span class="Keyword">proc</span> <a href="#tryAcquire%2CAsyncSemaphore"><span class="Identifier">tryAcquire</span></a><span class="Other">(</span><span class="Identifier">sem</span><span class="Other">:</span> <a href="sync.html#AsyncSemaphore"><span class="Identifier">AsyncSemaphore</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Try to acquire a permit without blocking. Returns true if a permit was acquired, false otherwise.
-    
+
   </dd>
 </div>
 
@@ -393,9 +393,9 @@
   <div id="tryLock,AsyncMutex">
   <dt><pre><span class="Keyword">proc</span> <a href="#tryLock%2CAsyncMutex"><span class="Identifier">tryLock</span></a><span class="Other">(</span><span class="Identifier">m</span><span class="Other">:</span> <a href="sync.html#AsyncMutex"><span class="Identifier">AsyncMutex</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Try to acquire the mutex without blocking. Returns true if the lock was acquired, false otherwise.
-    
+
   </dd>
 </div>
 
@@ -405,9 +405,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#tryUnlock%2CAsyncMutex"><span class="Identifier">tryUnlock</span></a><span class="Other">(</span><span class="Identifier">m</span><span class="Other">:</span> <a href="sync.html#AsyncMutex"><span class="Identifier">AsyncMutex</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
                                       <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Try to release the mutex. Returns true if the mutex was locked and is now released. Returns false if the mutex was not locked (no-op). Safe to call in finally blocks where lock state is uncertain.
-    
+
   </dd>
 </div>
 
@@ -417,9 +417,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#unlock%2CAsyncMutex"><span class="Identifier">unlock</span></a><span class="Other">(</span><span class="Identifier">m</span><span class="Other">:</span> <a href="sync.html#AsyncMutex"><span class="Identifier">AsyncMutex</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ValueError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
                              <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Release the mutex. If there are waiters, the oldest waiter acquires the lock (FIFO). Otherwise, the mutex becomes unlocked. Raises ValueError if the mutex is not locked.
-    
+
   </dd>
 </div>
 
@@ -428,9 +428,9 @@
   <div id="wait,AsyncEvent">
   <dt><pre><span class="Keyword">proc</span> <a href="#wait%2CAsyncEvent"><span class="Identifier">wait</span></a><span class="Other">(</span><span class="Identifier">ev</span><span class="Other">:</span> <a href="sync.html#AsyncEvent"><span class="Identifier">AsyncEvent</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Wait for the event to be set. If already set, completes immediately. Otherwise, the returned future blocks until set() is called.
-    
+
   </dd>
 </div>
 
@@ -445,9 +445,9 @@
   <div id="withLock.t,AsyncMutex,untyped">
   <dt><pre><span class="Keyword">template</span> <a href="#withLock.t%2CAsyncMutex%2Cuntyped"><span class="Identifier">withLock</span></a><span class="Other">(</span><span class="Identifier">m</span><span class="Other">:</span> <a href="sync.html#AsyncMutex"><span class="Identifier">AsyncMutex</span></a><span class="Other">;</span> <span class="Identifier">body</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">)</span> {.<span class="Identifier">dirty</span>.}</pre></dt>
   <dd>
-    
+
     Acquire a mutex, execute body, then release. Must be used inside a {.cps.} proc.
-    
+
   </dd>
 </div>
 
@@ -456,9 +456,9 @@
   <div id="withPermit.t,AsyncSemaphore,untyped">
   <dt><pre><span class="Keyword">template</span> <a href="#withPermit.t%2CAsyncSemaphore%2Cuntyped"><span class="Identifier">withPermit</span></a><span class="Other">(</span><span class="Identifier">sem</span><span class="Other">:</span> <a href="sync.html#AsyncSemaphore"><span class="Identifier">AsyncSemaphore</span></a><span class="Other">;</span> <span class="Identifier">body</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">)</span> {.<span class="Identifier">dirty</span>.}</pre></dt>
   <dd>
-    
+
     Acquire a semaphore permit, execute body, then release. Must be used inside a {.cps.} proc.
-    
+
   </dd>
 </div>
 
@@ -473,10 +473,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 20:56:02 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:13 UTC</small>
       </div>
     </div>
   </div>
-  
+
 </body>
 </html>

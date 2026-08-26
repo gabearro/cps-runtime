@@ -13,6 +13,16 @@
 ## each step returns the next continuation to run, and a loop drives them.
 
 import std/[deques, atomics, locks, sysatomics, os]
+import ./private/cross_thread_closure
+
+export prepareCrossThreadClosure, OwnedClosureTask, ClosureReturnRoute,
+       currentClosureReturnRoute, takeClosureTask, runClosureTask,
+       releaseClosureTask
+
+when compileOption("gc", "orc"):
+  {.pragma: cpsMtAcyclic, acyclic.}
+else:
+  {.pragma: cpsMtAcyclic.}
 
 type
   CancellationError* = object of CatchableError
@@ -31,13 +41,13 @@ type
     csFinished   ## Completed successfully
     csError      ## Completed with an error
 
-  Continuation* = ref object of RootObj
+  Continuation* {.cpsMtAcyclic.} = ref object of RootObj
     ## Base type for all CPS continuations.
     ## Concrete continuations inherit from this and add their local state.
     fn*: proc(c: sink Continuation): Continuation {.nimcall.}
       ## The next step to execute. Returns the next continuation, or nil if done.
     state*: ContinuationState
-    runtimeOwner*: CpsRuntime
+    runtimeOwner* {.cursor.}: CpsRuntime
 
   RuntimeFlavor* = enum
     rfCurrentThread
@@ -50,20 +60,28 @@ type
     maxSchedulerQueue*: int
     maxBlockingQueue*: int
 
-  CpsRuntime* = ref object
+  CpsRuntime* {.cpsMtAcyclic.} = ref object
     ## Owning runtime object (Tokio-like Runtime).
     id*: int64
     flavor*: RuntimeFlavor
     eventLoopPtr*: RootRef
+    ioShardSetPtr*: RootRef
+    ioShardCount*: int
     schedulerPtr*: RootRef
     blockingPoolPtr*: RootRef
     blockingThreadCount*: int
     maxBlockingQueue*: int
     continuationDispatcher*: proc(c: sink Continuation) {.closure, gcsafe.}
-    callbackDispatcher*: proc(cb: proc() {.closure.}) {.closure, gcsafe.}
-    pinnedCallbackDispatcher*: proc(workerId: int, cb: proc() {.closure.}): bool {.closure, gcsafe.}
-    yieldDispatcher*: proc(cb: proc() {.closure, gcsafe.}) {.closure, gcsafe.}
+    callbackDispatcher*: proc(cb: sink proc() {.closure.}) {.closure, gcsafe.}
+    pinnedCallbackDispatcher*: proc(workerId: int,
+      cb: sink proc() {.closure.}): bool {.closure, gcsafe.}
+    closureReleaseDispatcher*: proc(workerId: int,
+      task: OwnedClosureTask): bool {.closure, gcsafe.}
+    ownedClosureDispatcher*: proc(workerId: int,
+      task: OwnedClosureTask): bool {.closure, gcsafe.}
+    yieldDispatcher*: proc(cb: sink proc() {.closure, gcsafe.}) {.closure, gcsafe.}
     wakeReactor*: proc() {.closure, gcsafe.}
+    wakeIoShard*: proc(workerId: int) {.closure, gcsafe.}
     waitWakeSeq: Atomic[uint64]
     waitInitState: Atomic[int]  ## 0=uninit, 1=initializing, 2=ready
     waiters: Atomic[int]
@@ -85,15 +103,21 @@ type
     ## Drives a continuation chain to completion without stack growth.
     current: Continuation
 
-  CallbackThunk = ref object
+  LocalCallbackThunk = object
     cb: proc() {.closure.}
-    targetRuntime: CpsRuntime
+    targetRuntime {.cursor.}: CpsRuntime
+    targetWorker: int16
+
+  SharedCallbackThunk = object
+    task: OwnedClosureTask
+    targetRuntime: pointer
+    targetWorker: int16
 
   CallbackNode = object
     next: pointer
     thunk: pointer
 
-  CpsFuture*[T] = ref object
+  CpsFuture*[T] {.cpsMtAcyclic.} = ref object
     ## A future value produced by a CPS computation.
     ## Uses atomic state + lock-free callback stack.
     perfMode: FuturePerfMode
@@ -102,17 +126,18 @@ type
     atomicState: Atomic[int]      ## 0=pending, 1=done, 2=cancelled, 3=completing, 4=cancelling
     callbackHead: Atomic[pointer]
     inlineCallback: proc() {.closure.}
-    inlineTargetRuntime: CpsRuntime
+    inlineTargetRuntime {.cursor.}: CpsRuntime
+    inlineTargetWorker: int16
     localState: int
     localOwnerThreadToken: pointer
     localOwnerSchedulerPtr: pointer
     localOwnerWorkerId: int
-    localCallbacks: seq[CallbackThunk]
-    ownerRuntime*: CpsRuntime
+    localCallbacks: seq[LocalCallbackThunk]
+    ownerRuntime* {.cursor.}: CpsRuntime
     runtimePinned: Atomic[bool]
     rootContinuationPtr: pointer
 
-  CpsVoidFuture* = ref object
+  CpsVoidFuture* {.cpsMtAcyclic.} = ref object
     ## A future for void-returning CPS computations.
     ## Uses atomic state + lock-free callback stack.
     perfMode: FuturePerfMode
@@ -120,13 +145,14 @@ type
     atomicState: Atomic[int]      ## 0=pending, 1=done, 2=cancelled, 3=completing, 4=cancelling
     callbackHead: Atomic[pointer]
     inlineCallback: proc() {.closure.}
-    inlineTargetRuntime: CpsRuntime
+    inlineTargetRuntime {.cursor.}: CpsRuntime
+    inlineTargetWorker: int16
     localState: int
     localOwnerThreadToken: pointer
     localOwnerSchedulerPtr: pointer
     localOwnerWorkerId: int
-    localCallbacks: seq[CallbackThunk]
-    ownerRuntime*: CpsRuntime
+    localCallbacks: seq[LocalCallbackThunk]
+    ownerRuntime* {.cursor.}: CpsRuntime
     runtimePinned: Atomic[bool]
     rootContinuationPtr: pointer
 
@@ -228,23 +254,44 @@ type
 var gRuntimeLock: Lock
 var gRuntimeLockInit: Atomic[int]  ## 0=uninit, 1=initializing, 2=ready
 var gMainRuntime: CpsRuntime = nil
+var gMainRuntimeRoot: pointer
 var gMainRuntimeFast: Atomic[pointer]
 var gMainRuntimeCallbacksInlineFast: Atomic[int]
 var gNextRuntimeId: Atomic[int64]
 var gMtRuntimeFactory: MtRuntimeFactoryProc = nil
 
-var currentRuntimeCtx {.threadvar.}: CpsRuntime
+var currentRuntimeCtx {.threadvar.}: pointer
 var localFutureDefault {.threadvar.}: bool
 var currentSchedulerPtr* {.threadvar.}: pointer
+var currentEventLoopPtr* {.threadvar.}: pointer
+var currentEventLoopRuntimePtr* {.threadvar.}: pointer
+var currentIoShardId* {.threadvar.}: int
 
 var mtModeEnabled* {.threadvar.}: bool
 var mtDispatcher* {.threadvar.}: proc(c: sink Continuation) {.nimcall, gcsafe.}
-var mtCallbackDispatcher*: proc(cb: proc() {.closure.}) {.closure, gcsafe.} = nil
-var mtYieldDispatcher*: proc(cb: proc() {.closure, gcsafe.}) {.closure, gcsafe.} = nil
-var mtWakeReactor*: proc() {.closure, gcsafe.} = nil
+var mtCallbackDispatcher* {.threadvar.}: proc(cb: sink proc() {.closure.}) {.closure, gcsafe.}
+var mtYieldDispatcher* {.threadvar.}: proc(cb: sink proc() {.closure, gcsafe.}) {.closure, gcsafe.}
+var mtWakeReactor* {.threadvar.}: proc() {.closure, gcsafe.}
 var isSchedulerWorker* {.threadvar.}: bool
 var currentWorkerId* {.threadvar.}: int
 var isReactorThread* {.threadvar.}: bool
+
+proc currentThreadIdentity*(): pointer {.inline.} =
+  ## Return a stable identity for the calling thread.
+  cast[pointer](addr currentRuntimeCtx)
+
+proc bindCurrentEventLoop*(rt: CpsRuntime, loopPtr: pointer,
+                           shardId: int) {.inline.} =
+  ## Bind a worker-owned event loop to the calling thread.
+  currentEventLoopRuntimePtr = cast[pointer](rt)
+  currentEventLoopPtr = loopPtr
+  currentIoShardId = shardId
+
+proc clearCurrentEventLoop*() {.inline.} =
+  ## Clear the worker-owned event-loop binding on the calling thread.
+  currentEventLoopRuntimePtr = nil
+  currentEventLoopPtr = nil
+  currentIoShardId = -1
 
 proc ensureRuntimeLockReady() {.inline.} =
   if gRuntimeLockInit.load(moAcquire) == 2:
@@ -310,14 +357,22 @@ proc runtimeFlavor*(h: RuntimeHandle): RuntimeFlavor {.inline.} =
 
 proc setCurrentRuntime*(rt: CpsRuntime) =
   ## Bind the supplied runtime to the current thread.
-  currentRuntimeCtx = rt
-  if not isSchedulerWorker:
+  currentRuntimeCtx = cast[pointer](rt)
+  if isSchedulerWorker:
+    # Workers use the runtime's direct dispatch fields. Copying those closure
+    # values into threadvars adds ref-count traffic and gives ORC closure roots
+    # another cross-thread lifetime to track.
+    mtModeEnabled = rt != nil and rt.flavor == rfMultiThread
+    mtCallbackDispatcher = nil
+    mtYieldDispatcher = nil
+    mtWakeReactor = nil
+  else:
     currentWorkerId = -1
-  applyCompatMtHooks(rt)
+    applyCompatMtHooks(rt)
 
 proc tryCurrentRuntime*(): RuntimeHandle =
   ## Return the runtime bound to this thread without creating one.
-  toHandle(currentRuntimeCtx)
+  toHandle(cast[CpsRuntime](currentRuntimeCtx))
 
 proc newCurrentThreadRuntime*(): CpsRuntime =
   ## Create a new current thread runtime.
@@ -325,6 +380,8 @@ proc newCurrentThreadRuntime*(): CpsRuntime =
   result.id = nextRuntimeId()
   result.flavor = rfCurrentThread
   result.eventLoopPtr = nil
+  result.ioShardSetPtr = nil
+  result.ioShardCount = 0
   result.schedulerPtr = nil
   result.blockingPoolPtr = nil
   result.blockingThreadCount = 0
@@ -332,8 +389,11 @@ proc newCurrentThreadRuntime*(): CpsRuntime =
   result.continuationDispatcher = nil
   result.callbackDispatcher = nil
   result.pinnedCallbackDispatcher = nil
+  result.closureReleaseDispatcher = nil
+  result.ownedClosureDispatcher = nil
   result.yieldDispatcher = nil
   result.wakeReactor = nil
+  result.wakeIoShard = nil
   result.waitInitState.store(0, moRelaxed)
   result.waiters.store(0, moRelaxed)
   result.waitWakeSeq.store(0'u64, moRelaxed)
@@ -380,17 +440,31 @@ proc ensureMainRuntime(): CpsRuntime =
   acquire(gRuntimeLock)
   if gMainRuntime == nil:
     gMainRuntime = newCurrentThreadRuntime()
+    # The final process-wide runtime deliberately keeps one manual root. Nim
+    # destroys module globals after main returns; allowing that last decrement
+    # to enter a callback-rich event-loop graph can recursively release the
+    # runtime while its destructor is active. Replacements release this root.
+    GC_ref(gMainRuntime)
+    gMainRuntimeRoot = cast[pointer](gMainRuntime)
     storeMainRuntimeFast(gMainRuntime)
   result = gMainRuntime
   release(gRuntimeLock)
 
 proc setMainRuntime*(rt: CpsRuntime) =
   ## Replace the process-wide main runtime binding.
+  var oldRoot: pointer
   ensureRuntimeLockReady()
   acquire(gRuntimeLock)
-  gMainRuntime = rt
+  if cast[pointer](rt) != gMainRuntimeRoot:
+    if rt != nil:
+      GC_ref(rt)
+    oldRoot = gMainRuntimeRoot
+    gMainRuntimeRoot = cast[pointer](rt)
+    gMainRuntime = rt
   storeMainRuntimeFast(rt)
   release(gRuntimeLock)
+  if oldRoot != nil:
+    GC_unref(cast[CpsRuntime](oldRoot))
 
 proc mainRuntime*(): RuntimeHandle =
   ## Return the process-wide main runtime handle.
@@ -399,13 +473,23 @@ proc mainRuntime*(): RuntimeHandle =
 proc currentRuntime*(): RuntimeHandle =
   ## Return the runtime bound to this thread, creating the main runtime when needed.
   if currentRuntimeCtx != nil:
-    toHandle(currentRuntimeCtx)
+    toHandle(cast[CpsRuntime](currentRuntimeCtx))
   else:
     let fast = loadMainRuntimeFast()
     if fast != nil:
       toHandle(fast)
     else:
       mainRuntime()
+
+proc currentRuntimePointer*(): pointer {.inline.} =
+  ## Borrow the current runtime without reference-count traffic. Internal
+  ## reactor code uses this while the active runtime is retained by its owner.
+  if currentRuntimeCtx != nil:
+    return currentRuntimeCtx
+  let fast = gMainRuntimeFast.load(moAcquire)
+  if fast != nil:
+    return fast
+  cast[pointer](ensureMainRuntime())
 
 proc setLocalFutureDefault*(enabled: bool) {.inline.} =
   ## Select local-fast futures for constructors called on this thread.
@@ -422,7 +506,7 @@ proc enter*(handle: RuntimeHandle): RuntimeGuard =
   ## Enter the referenced runtime and retain the previous thread-local binding.
   if handle.runtime == nil:
     raise newException(ValueError, "Cannot enter a nil runtime handle")
-  result.prev = currentRuntimeCtx
+  result.prev = cast[CpsRuntime](currentRuntimeCtx)
   result.active = true
   setCurrentRuntime(handle.runtime)
 
@@ -468,11 +552,13 @@ proc runCpsWaitLeave*(rt: CpsRuntime) {.inline.} =
 
 proc runCpsWaitEnter*() {.inline.} =
   ## Register a synchronous waiter with the runtime.
-  runCpsWaitEnter(currentRuntime().runtime)
+  let rt {.cursor.} = cast[CpsRuntime](currentRuntimePointer())
+  runCpsWaitEnter(rt)
 
 proc runCpsWaitLeave*() {.inline.} =
   ## Remove a synchronous waiter from the runtime.
-  runCpsWaitLeave(currentRuntime().runtime)
+  let rt {.cursor.} = cast[CpsRuntime](currentRuntimePointer())
+  runCpsWaitLeave(rt)
 
 proc waitRunCpsSignal*[T](rt: CpsRuntime, fut: CpsFuture[T]) =
   ## Wait until the future completes, fails, or is cancelled.
@@ -520,12 +606,14 @@ proc waitRunCpsSignal*(rt: CpsRuntime, fut: CpsVoidFuture) =
 
 proc waitRunCpsSignal*[T](fut: CpsFuture[T]) =
   ## Wait until the future completes, fails, or is cancelled.
-  let rt = if fut.ownerRuntime != nil: fut.ownerRuntime else: currentRuntime().runtime
+  let rt {.cursor.} = if fut.ownerRuntime != nil: fut.ownerRuntime
+    else: cast[CpsRuntime](currentRuntimePointer())
   waitRunCpsSignal(rt, fut)
 
 proc waitRunCpsSignal*(fut: CpsVoidFuture) =
   ## Wait until the future completes, fails, or is cancelled.
-  let rt = if fut.ownerRuntime != nil: fut.ownerRuntime else: currentRuntime().runtime
+  let rt {.cursor.} = if fut.ownerRuntime != nil: fut.ownerRuntime
+    else: cast[CpsRuntime](currentRuntimePointer())
   waitRunCpsSignal(rt, fut)
 
 # ============================================================
@@ -538,7 +626,7 @@ proc newContinuation*(T: typedesc[Continuation],
   result = T()
   result.fn = fn
   result.state = csRunning
-  result.runtimeOwner = currentRuntime().runtime
+  result.runtimeOwner = cast[CpsRuntime](currentRuntimePointer())
 
 proc pass*(c: sink Continuation): Continuation {.inline.} =
   ## Return the continuation as-is for the trampoline to execute next.
@@ -599,16 +687,16 @@ proc run*(c: sink Continuation): Continuation {.discardable.} =
   ## Uses a direct while loop — no Trampoline struct overhead.
   ## The fn pointer is loaded exactly once per iteration to prevent
   ## TOCTOU races when another thread modifies the continuation.
-  let targetRt = if c != nil: c.runtimeOwner else: nil
+  let targetRt {.cursor.} = if c != nil: c.runtimeOwner else: nil
   if targetRt != nil and targetRt.continuationDispatcher != nil and
-     (not isSchedulerWorker or currentRuntimeCtx != targetRt):
+     (not isSchedulerWorker or currentRuntimeCtx != cast[pointer](targetRt)):
     targetRt.continuationDispatcher(c)
     return nil
   # Compatibility hook for embedders using the original MT dispatcher API.
   if mtDispatcher != nil:
     mtDispatcher(c)
     return nil
-  let prevRt = currentRuntimeCtx
+  let prevRt {.cursor.} = cast[CpsRuntime](currentRuntimeCtx)
   if targetRt != nil and targetRt != prevRt:
     setCurrentRuntime(targetRt)
   try:
@@ -625,8 +713,8 @@ proc run*(c: sink Continuation): Continuation {.discardable.} =
 proc runUntilSuspend*(c: sink Continuation): Continuation =
   ## Run until the continuation suspends or finishes.
   ## Single-load fn to match run() TOCTOU fix.
-  let targetRt = if c != nil: c.runtimeOwner else: nil
-  let prevRt = currentRuntimeCtx
+  let targetRt {.cursor.} = if c != nil: c.runtimeOwner else: nil
+  let prevRt {.cursor.} = cast[CpsRuntime](currentRuntimeCtx)
   if targetRt != nil and targetRt != prevRt:
     setCurrentRuntime(targetRt)
   try:
@@ -756,7 +844,7 @@ proc newCpsFuture*[T](): CpsFuture[T] =
       result.perfMode = fpLocalFast
       result.localState = FutureStatePending
       result.captureLocalOwner()
-      result.ownerRuntime = currentRuntimeCtx
+      result.ownerRuntime = cast[CpsRuntime](currentRuntimeCtx)
       return
   result = CpsFuture[T]()
   # Atomic[int] zero-initializes to 0 (pending). No lock needed.
@@ -773,7 +861,7 @@ proc newCpsVoidFuture*(): CpsVoidFuture =
       result.perfMode = fpLocalFast
       result.localState = FutureStatePending
       result.captureLocalOwner()
-      result.ownerRuntime = currentRuntimeCtx
+      result.ownerRuntime = cast[CpsRuntime](currentRuntimeCtx)
       return
   result = CpsVoidFuture()
   # Atomic[int] zero-initializes to 0 (pending). No lock needed.
@@ -787,7 +875,7 @@ proc newLocalCpsFuture*[T](): CpsFuture[T] =
   when SharedFuturesOnly:
     result = newCpsFuture[T]()
   else:
-    let fastRt = currentRuntimeCtx
+    let fastRt = cast[CpsRuntime](currentRuntimeCtx)
     let rt =
       if fastRt != nil:
         fastRt
@@ -808,7 +896,7 @@ proc newLocalCpsVoidFuture*(): CpsVoidFuture =
   when SharedFuturesOnly:
     result = newCpsVoidFuture()
   else:
-    let fastRt = currentRuntimeCtx
+    let fastRt = cast[CpsRuntime](currentRuntimeCtx)
     let rt =
       if fastRt != nil:
         fastRt
@@ -910,10 +998,10 @@ proc finished*(fut: CpsVoidFuture): bool {.inline.} =
     return localTerminalState(fut.localState)
   isTerminalFutureState(fut.atomicState.load(moAcquire))
 
-proc ownerRuntimeRef[T](fut: CpsFuture[T]): CpsRuntime {.inline.} =
-  fut.ownerRuntime
-
-proc ownerRuntimeRef(fut: CpsVoidFuture): CpsRuntime {.inline.} =
+template ownerRuntimeRef(fut: typed): CpsRuntime =
+  ## Borrow the future's cursor field directly at the call site. Returning it
+  ## from a proc creates an owned temporary and races the shared runtime's
+  ## non-atomic ARC/ORC count on every completion.
   fut.ownerRuntime
 
 proc futureRuntime*[T](fut: CpsFuture[T]): RuntimeHandle {.inline.} =
@@ -957,7 +1045,7 @@ proc pinFutureRuntime*[T](fut: CpsFuture[T]) {.inline.} =
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("pinFutureRuntime")
   if fut.ownerRuntime == nil:
-    let rt = currentRuntimeCtx
+    let rt = cast[CpsRuntime](currentRuntimeCtx)
     if rt != nil:
       fut.ownerRuntime = rt
     else:
@@ -967,13 +1055,15 @@ proc pinFutureRuntime*[T](fut: CpsFuture[T]) {.inline.} =
       else:
         fut.ownerRuntime = ensureMainRuntime()
   fut.runtimePinned.store(true, moRelease)
+  if isSchedulerWorker and fut.localOwnerWorkerId < 0:
+    fut.localOwnerWorkerId = currentWorkerId
 
 proc pinFutureRuntime*(fut: CpsVoidFuture) {.inline.} =
   ## Pin the future and its root continuation to the supplied runtime.
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("pinFutureRuntime")
   if fut.ownerRuntime == nil:
-    let rt = currentRuntimeCtx
+    let rt = cast[CpsRuntime](currentRuntimeCtx)
     if rt != nil:
       fut.ownerRuntime = rt
     else:
@@ -983,6 +1073,8 @@ proc pinFutureRuntime*(fut: CpsVoidFuture) {.inline.} =
       else:
         fut.ownerRuntime = ensureMainRuntime()
   fut.runtimePinned.store(true, moRelease)
+  if isSchedulerWorker and fut.localOwnerWorkerId < 0:
+    fut.localOwnerWorkerId = currentWorkerId
 
 proc isRuntimePinned*[T](fut: CpsFuture[T]): bool {.inline.} =
   ## Return whether the future is pinned to a runtime.
@@ -991,6 +1083,16 @@ proc isRuntimePinned*[T](fut: CpsFuture[T]): bool {.inline.} =
 proc isRuntimePinned*(fut: CpsVoidFuture): bool {.inline.} =
   ## Return whether the future is pinned to a runtime.
   fut.runtimePinned.load(moAcquire)
+
+proc pinFutureWaitWorker*[T](fut: CpsFuture[T]) {.inline.} =
+  ## Record the scheduler worker whose nested ``runCps`` loop must be woken.
+  if isSchedulerWorker and fut.localOwnerWorkerId < 0:
+    fut.localOwnerWorkerId = currentWorkerId
+
+proc pinFutureWaitWorker*(fut: CpsVoidFuture) {.inline.} =
+  ## Record the scheduler worker whose nested ``runCps`` loop must be woken.
+  if isSchedulerWorker and fut.localOwnerWorkerId < 0:
+    fut.localOwnerWorkerId = currentWorkerId
 
 proc tryMigrateTo*[T](fut: CpsFuture[T], handle: RuntimeHandle): bool =
   ## Attempt to move the future to another runtime without blocking.
@@ -1034,12 +1136,8 @@ proc migrateTo*(fut: CpsVoidFuture, handle: RuntimeHandle) =
       "cannot migrate future to runtime " & $handle.runtimeId() &
       ": future is runtime-pinned")
 
-proc isCurrentRuntimeWorker(rt: CpsRuntime): bool {.inline.} =
-  rt != nil and isSchedulerWorker and currentSchedulerPtr != nil and
-    currentSchedulerPtr == cast[pointer](rt.schedulerPtr)
-
 proc schedulePinnedLocalCallback[T](fut: CpsFuture[T], targetRt: CpsRuntime,
-                                    cb: proc() {.closure.}): bool {.inline.} =
+                                    cb: sink proc() {.closure.}): bool {.inline.} =
   if targetRt == nil or cb == nil:
     return false
   if targetRt.pinnedCallbackDispatcher == nil:
@@ -1053,10 +1151,10 @@ proc schedulePinnedLocalCallback[T](fut: CpsFuture[T], targetRt: CpsRuntime,
     currentWorkerId == fut.localOwnerWorkerId
   if onOwnerWorker:
     return false
-  targetRt.pinnedCallbackDispatcher(fut.localOwnerWorkerId, cb)
+  targetRt.pinnedCallbackDispatcher(fut.localOwnerWorkerId, move(cb))
 
 proc schedulePinnedLocalCallback(fut: CpsVoidFuture, targetRt: CpsRuntime,
-                                 cb: proc() {.closure.}): bool {.inline.} =
+                                 cb: sink proc() {.closure.}): bool {.inline.} =
   if targetRt == nil or cb == nil:
     return false
   if targetRt.pinnedCallbackDispatcher == nil:
@@ -1070,28 +1168,22 @@ proc schedulePinnedLocalCallback(fut: CpsVoidFuture, targetRt: CpsRuntime,
     currentWorkerId == fut.localOwnerWorkerId
   if onOwnerWorker:
     return false
-  targetRt.pinnedCallbackDispatcher(fut.localOwnerWorkerId, cb)
+  targetRt.pinnedCallbackDispatcher(fut.localOwnerWorkerId, move(cb))
 
-proc dispatchCallback(rt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
+proc dispatchCallback(rt: CpsRuntime, targetWorker: int,
+                      cb: sink proc() {.closure.}) {.inline.} =
   ## Fire a single callback on the target runtime, dispatching to workers
   ## when the runtime has a scheduler dispatcher configured.
   statInc(rtCallbacksFired)
-  if rt != nil and rt.callbackDispatcher != nil and not isCurrentRuntimeWorker(rt):
-    let targetRt = rt
+  if rt != nil and targetWorker >= 0 and
+     rt.pinnedCallbackDispatcher != nil:
     {.cast(gcsafe).}:
-      rt.callbackDispatcher(proc() {.closure.} =
-        let prevRt = currentRuntimeCtx
-        setCurrentRuntime(targetRt)
-        try:
-          try:
-            cb()
-          except CatchableError:
-            statInc(rtCallbackErrors)
-        finally:
-          setCurrentRuntime(prevRt)
-      )
+      discard rt.pinnedCallbackDispatcher(targetWorker, move(cb))
+  elif rt != nil and rt.callbackDispatcher != nil:
+    {.cast(gcsafe).}:
+      rt.callbackDispatcher(move(cb))
   else:
-    let prevRt = currentRuntimeCtx
+    let prevRt {.cursor.} = cast[CpsRuntime](currentRuntimeCtx)
     var mustEnter = rt != nil and rt != prevRt
     # ST fast path: if this callback targets the default current-thread
     # runtime and no explicit runtime is entered, avoid enter/leave churn.
@@ -1108,15 +1200,48 @@ proc dispatchCallback(rt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
       if mustEnter:
         setCurrentRuntime(prevRt)
 
-proc allocCallbackThunk(cb: proc() {.closure.}, targetRt: CpsRuntime): CallbackThunk {.inline.} =
-  result = CallbackThunk(cb: cb, targetRuntime: targetRt)
-  GC_ref(result)
+proc allocCallbackThunk(cb: sink proc() {.closure.}, targetRt: CpsRuntime,
+                        targetWorker: int): ptr SharedCallbackThunk {.inline.} =
+  result = cast[ptr SharedCallbackThunk](
+    allocShared0(sizeof(SharedCallbackThunk)))
+  var owned = move(cb)
+  result.task = takeClosureTask(owned)
+  result.targetRuntime = cast[pointer](targetRt)
+  result.targetWorker = int16(targetWorker)
 
-proc allocCallbackNode(thunk: CallbackThunk): ptr CallbackNode {.inline.} =
+proc allocCallbackNode(thunk: ptr SharedCallbackThunk): ptr CallbackNode {.inline.} =
   result = cast[ptr CallbackNode](allocShared0(sizeof(CallbackNode)))
   result.next = nil
   result.thunk = cast[pointer](thunk)
   statInc(rtCallbackNodesAllocated)
+
+proc takeCallbackProc(thunk: ptr SharedCallbackThunk): proc() {.closure.} {.inline.} =
+  copyMem(addr result, addr thunk.task, sizeof(result))
+  thunk.task = default(OwnedClosureTask)
+
+proc fireCallbackThunk(thunk: ptr SharedCallbackThunk) {.inline.} =
+  if thunk == nil:
+    return
+  var task = thunk.task
+  thunk.task = default(OwnedClosureTask)
+  let targetRt {.cursor.} = cast[CpsRuntime](thunk.targetRuntime)
+  let targetWorker = int(thunk.targetWorker)
+  deallocShared(thunk)
+  if targetRt != nil and targetWorker >= 0 and
+     targetRt.ownedClosureDispatcher != nil:
+    {.cast(gcsafe).}:
+      if targetRt.ownedClosureDispatcher(targetWorker, task):
+        return
+    when compileOption("gc", "atomicArc"):
+      releaseClosureTask(task, proc() {.closure.})
+    return
+  var cb: proc() {.closure.}
+  copyMem(addr cb, addr task, sizeof(cb))
+  task = default(OwnedClosureTask)
+  if targetRt == nil:
+    cb()
+  else:
+    dispatchCallback(targetRt, targetWorker, move(cb))
 
 proc freeCallbackNode(node: ptr CallbackNode) {.inline.} =
   statInc(rtCallbackNodesFreed)
@@ -1144,16 +1269,16 @@ proc closeAndTakeCallbackStack(fut: CpsVoidFuture): pointer {.inline.} =
 
 proc fireCallbacks[T](fut: CpsFuture[T], head: pointer) {.inline.} =
   if head == CallbackInline:
-    let cb = fut.inlineCallback
+    var cb = move(fut.inlineCallback)
     let rt = fut.inlineTargetRuntime
-    fut.inlineCallback = nil
+    let worker = int(fut.inlineTargetWorker)
     fut.inlineTargetRuntime = nil
     if cb != nil:
       try:
         if rt == nil:
           cb()
         else:
-          dispatchCallback(rt, cb)
+          dispatchCallback(rt, worker, move(cb))
       except CatchableError:
         statInc(rtCallbackErrors)
     return
@@ -1161,32 +1286,26 @@ proc fireCallbacks[T](fut: CpsFuture[T], head: pointer) {.inline.} =
   while p != nil and p != CallbackClosed:
     let node = cast[ptr CallbackNode](p)
     p = node.next
-    let thunk = cast[CallbackThunk](node.thunk)
+    let thunk = cast[ptr SharedCallbackThunk](node.thunk)
     try:
-      if thunk != nil:
-        if thunk.targetRuntime == nil:
-          thunk.cb()
-        else:
-          dispatchCallback(thunk.targetRuntime, thunk.cb)
+      fireCallbackThunk(thunk)
     except CatchableError:
       statInc(rtCallbackErrors)
     finally:
-      if thunk != nil:
-        GC_unref(thunk)
       freeCallbackNode(node)
 
 proc fireCallbacks(fut: CpsVoidFuture, head: pointer) {.inline.} =
   if head == CallbackInline:
-    let cb = fut.inlineCallback
+    var cb = move(fut.inlineCallback)
     let rt = fut.inlineTargetRuntime
-    fut.inlineCallback = nil
+    let worker = int(fut.inlineTargetWorker)
     fut.inlineTargetRuntime = nil
     if cb != nil:
       try:
         if rt == nil:
           cb()
         else:
-          dispatchCallback(rt, cb)
+          dispatchCallback(rt, worker, move(cb))
       except CatchableError:
         statInc(rtCallbackErrors)
     return
@@ -1194,18 +1313,12 @@ proc fireCallbacks(fut: CpsVoidFuture, head: pointer) {.inline.} =
   while p != nil and p != CallbackClosed:
     let node = cast[ptr CallbackNode](p)
     p = node.next
-    let thunk = cast[CallbackThunk](node.thunk)
+    let thunk = cast[ptr SharedCallbackThunk](node.thunk)
     try:
-      if thunk != nil:
-        if thunk.targetRuntime == nil:
-          thunk.cb()
-        else:
-          dispatchCallback(thunk.targetRuntime, thunk.cb)
+      fireCallbackThunk(thunk)
     except CatchableError:
       statInc(rtCallbackErrors)
     finally:
-      if thunk != nil:
-        GC_unref(thunk)
       freeCallbackNode(node)
 
 proc fireLocalCallback[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
@@ -1219,7 +1332,7 @@ proc fireLocalCallback[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc() {.
     return
   if fut.schedulePinnedLocalCallback(targetRt, cb):
     return
-  dispatchCallback(targetRt, cb)
+  dispatchCallback(targetRt, fut.localOwnerWorkerId, cb)
 
 proc fireLocalCallback(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
   if cb == nil:
@@ -1232,14 +1345,14 @@ proc fireLocalCallback(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {.cl
     return
   if fut.schedulePinnedLocalCallback(targetRt, cb):
     return
-  dispatchCallback(targetRt, cb)
+  dispatchCallback(targetRt, fut.localOwnerWorkerId, cb)
 
 proc fireLocalCallbacks[T](fut: CpsFuture[T]) =
   if fut.localCallbacks.len == 0:
     let inlineCb = fut.inlineCallback
     if inlineCb == nil:
       return
-    let inlineRt = fut.inlineTargetRuntime
+    let inlineRt {.cursor.} = fut.inlineTargetRuntime
     fut.inlineCallback = nil
     fut.inlineTargetRuntime = nil
     fut.fireLocalCallback(inlineRt, inlineCb)
@@ -1249,14 +1362,13 @@ proc fireLocalCallbacks[T](fut: CpsFuture[T]) =
     var i = fut.localCallbacks.len - 1
     while true:
       let thunk = fut.localCallbacks[i]
-      if thunk != nil:
-        fut.fireLocalCallback(thunk.targetRuntime, thunk.cb)
+      fut.fireLocalCallback(thunk.targetRuntime, thunk.cb)
       if i == 0:
         break
       dec i
     fut.localCallbacks.setLen(0)
-  let inlineCb = fut.inlineCallback
-  let inlineRt = fut.inlineTargetRuntime
+  var inlineCb = move(fut.inlineCallback)
+  let inlineRt {.cursor.} = fut.inlineTargetRuntime
   fut.inlineCallback = nil
   fut.inlineTargetRuntime = nil
   fut.fireLocalCallback(inlineRt, inlineCb)
@@ -1266,7 +1378,7 @@ proc fireLocalCallbacks(fut: CpsVoidFuture) =
     let inlineCb = fut.inlineCallback
     if inlineCb == nil:
       return
-    let inlineRt = fut.inlineTargetRuntime
+    let inlineRt {.cursor.} = fut.inlineTargetRuntime
     fut.inlineCallback = nil
     fut.inlineTargetRuntime = nil
     fut.fireLocalCallback(inlineRt, inlineCb)
@@ -1276,20 +1388,25 @@ proc fireLocalCallbacks(fut: CpsVoidFuture) =
     var i = fut.localCallbacks.len - 1
     while true:
       let thunk = fut.localCallbacks[i]
-      if thunk != nil:
-        fut.fireLocalCallback(thunk.targetRuntime, thunk.cb)
+      fut.fireLocalCallback(thunk.targetRuntime, thunk.cb)
       if i == 0:
         break
       dec i
     fut.localCallbacks.setLen(0)
-  let inlineCb = fut.inlineCallback
-  let inlineRt = fut.inlineTargetRuntime
+  var inlineCb = move(fut.inlineCallback)
+  let inlineRt {.cursor.} = fut.inlineTargetRuntime
   fut.inlineCallback = nil
   fut.inlineTargetRuntime = nil
   fut.fireLocalCallback(inlineRt, inlineCb)
 
-proc wakeReactorIfNeeded(rt: CpsRuntime) {.inline.} =
-  if rt != nil and rt.wakeReactor != nil:
+proc wakeReactorIfNeeded(rt: CpsRuntime, workerId: int) {.inline.} =
+  ## Wake only synchronous runtime waiters. Normal async completion already
+  ## dispatches its callbacks directly or through the scheduler queue.
+  if rt == nil or rt.waiters.load(moAcquire) <= 0:
+    return
+  if workerId >= 0 and rt.wakeIoShard != nil:
+    rt.wakeIoShard(workerId)
+  elif rt.wakeReactor != nil:
     rt.wakeReactor()
 
 proc wakeRunCpsWaitersIfNeeded(rt: CpsRuntime) {.inline.} =
@@ -1317,7 +1434,7 @@ proc complete*[T](fut: CpsFuture[T], val: T) =
     statInc(rtCompletions)
     fut.fireLocalCallbacks()
     wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-    wakeReactorIfNeeded(ownerRuntimeRef(fut))
+    wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
     return
   ## Complete a typed future with a value. Lock-free.
   ## 1. CAS state pending→completing (exclusive ownership)
@@ -1333,7 +1450,7 @@ proc complete*[T](fut: CpsFuture[T], val: T) =
   statInc(rtCompletions)
   fireCallbacks(fut, closeAndTakeCallbackStack(fut))
   wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-  wakeReactorIfNeeded(ownerRuntimeRef(fut))
+  wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
 
 proc complete*(fut: CpsVoidFuture) =
   ## Complete the future and notify its waiters.
@@ -1351,7 +1468,7 @@ proc complete*(fut: CpsVoidFuture) =
     statInc(rtCompletions)
     fut.fireLocalCallbacks()
     wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-    wakeReactorIfNeeded(ownerRuntimeRef(fut))
+    wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
     return
   ## Complete a void future. Lock-free.
   var expected = FutureStatePending
@@ -1362,7 +1479,7 @@ proc complete*(fut: CpsVoidFuture) =
   statInc(rtCompletions)
   fireCallbacks(fut, closeAndTakeCallbackStack(fut))
   wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-  wakeReactorIfNeeded(ownerRuntimeRef(fut))
+  wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
 
 proc fail*[T](fut: CpsFuture[T], err: ref CatchableError) =
   ## Fail the future and notify its waiters.
@@ -1382,7 +1499,7 @@ proc fail*[T](fut: CpsFuture[T], err: ref CatchableError) =
     statInc(rtFailures)
     fut.fireLocalCallbacks()
     wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-    wakeReactorIfNeeded(ownerRuntimeRef(fut))
+    wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
     return
   ## Fail a typed future with an error. Lock-free.
   var expected = FutureStatePending
@@ -1394,7 +1511,7 @@ proc fail*[T](fut: CpsFuture[T], err: ref CatchableError) =
   statInc(rtFailures)
   fireCallbacks(fut, closeAndTakeCallbackStack(fut))
   wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-  wakeReactorIfNeeded(ownerRuntimeRef(fut))
+  wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
 
 proc fail*(fut: CpsVoidFuture, err: ref CatchableError) =
   ## Fail the future and notify its waiters.
@@ -1414,7 +1531,7 @@ proc fail*(fut: CpsVoidFuture, err: ref CatchableError) =
     statInc(rtFailures)
     fut.fireLocalCallbacks()
     wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-    wakeReactorIfNeeded(ownerRuntimeRef(fut))
+    wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
     return
   ## Fail a void future with an error. Lock-free.
   var expected = FutureStatePending
@@ -1426,7 +1543,7 @@ proc fail*(fut: CpsVoidFuture, err: ref CatchableError) =
   statInc(rtFailures)
   fireCallbacks(fut, closeAndTakeCallbackStack(fut))
   wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-  wakeReactorIfNeeded(ownerRuntimeRef(fut))
+  wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
 
 proc hasError*[T](fut: CpsFuture[T]): bool {.inline.} =
   ## Return whether the operation completed with an error.
@@ -1469,26 +1586,48 @@ proc read*(fut: CpsVoidFuture) =
   if fut.error != nil:
     raise fut.error
 
-proc fireCallbackInline(targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
+proc fireCallbackInline(targetRt: CpsRuntime, targetWorker: int,
+                        cb: proc() {.closure.}) {.inline.} =
   if targetRt == nil:
     try:
       cb()
     except CatchableError:
       statInc(rtCallbackErrors)
   else:
-    dispatchCallback(targetRt, cb)
+    dispatchCallback(targetRt, targetWorker, cb)
 
-proc defaultCallbackRuntime(): CpsRuntime {.inline.} =
-  let rt = currentRuntimeCtx
-  if rt != nil:
-    return rt
+proc defaultCallbackRuntimePtr(): pointer {.inline.} =
+  if currentRuntimeCtx != nil:
+    return currentRuntimeCtx
   if gMainRuntimeCallbacksInlineFast.load(moAcquire) != 0:
     return nil
-  result = loadMainRuntimeFast()
+  gMainRuntimeFast.load(moAcquire)
 
-proc addCallbackOnRuntime[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
+proc callbackAffinity(targetRt: CpsRuntime,
+                      cb: proc() {.closure.}): int {.inline.} =
+  ## Keep every alias of one closure environment on one worker. ORC cycle
+  ## roots are thread-local, so allowing aliases to retire on different
+  ## workers is unsafe even when the queue transfer itself is move-only.
+  if targetRt == nil or targetRt.flavor != rfMultiThread or
+     targetRt.ioShardCount <= 0:
+    return -1
+  var transferable = cb
+  prepareCrossThreadClosure(transferable)
+  if isSchedulerWorker and currentRuntimeCtx == cast[pointer](targetRt):
+    return currentWorkerId
+  var words: array[2, pointer]
+  static: assert sizeof(cb) == sizeof(words)
+  copyMem(addr words, unsafeAddr cb, sizeof(words))
+  if words[1] == nil:
+    return 0
+  int((cast[uint](words[1]) shr 4) mod uint(targetRt.ioShardCount))
+
+proc addCallbackOnRuntime[T](fut: CpsFuture[T], targetRt: CpsRuntime,
+                             cbArg: sink proc() {.closure.}) {.inline.} =
+  var cb = move(cbArg)
   if cb == nil:
     return
+  let targetWorker = callbackAffinity(targetRt, cb)
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("addCallback")
     statInc(rtCallbacksRegistered)
@@ -1496,16 +1635,18 @@ proc addCallbackOnRuntime[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc()
       fut.fireLocalCallback(targetRt, cb)
       return
     if fut.inlineCallback == nil and fut.localCallbacks.len == 0:
-      fut.inlineCallback = cb
+      fut.inlineCallback = move(cb)
       fut.inlineTargetRuntime = targetRt
+      fut.inlineTargetWorker = int16(targetWorker)
       return
-    fut.localCallbacks.add CallbackThunk(cb: cb, targetRuntime: targetRt)
+    fut.localCallbacks.add LocalCallbackThunk(cb: move(cb), targetRuntime: targetRt,
+      targetWorker: int16(targetWorker))
     return
   statInc(rtCallbacksRegistered)
   while true:
     let head = fut.callbackHead.load(moAcquire)
     if head == CallbackClosed:
-      fireCallbackInline(targetRt, cb)
+      fireCallbackInline(targetRt, targetWorker, cb)
       return
 
     if head == nil:
@@ -1516,8 +1657,9 @@ proc addCallbackOnRuntime[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc()
         moAcquireRelease,
         moAcquire
       ):
-        fut.inlineCallback = cb
+        fut.inlineCallback = move(cb)
         fut.inlineTargetRuntime = targetRt
+        fut.inlineTargetWorker = int16(targetWorker)
         fut.callbackHead.store(CallbackInline, moRelease)
         return
       continue
@@ -1535,23 +1677,25 @@ proc addCallbackOnRuntime[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc()
         moAcquire
       ):
         if expectedInline == CallbackClosed:
-          fireCallbackInline(targetRt, cb)
+          fireCallbackInline(targetRt, targetWorker, cb)
           return
         if expectedInline == CallbackInlineInit:
           cpuRelax()
         continue
 
-      let oldCb = fut.inlineCallback
-      let oldRt = fut.inlineTargetRuntime
+      var oldCb = move(fut.inlineCallback)
+      let oldRt {.cursor.} = fut.inlineTargetRuntime
+      let oldWorker = int(fut.inlineTargetWorker)
       if oldCb == nil:
-        fut.inlineCallback = cb
+        fut.inlineCallback = move(cb)
         fut.inlineTargetRuntime = targetRt
+        fut.inlineTargetWorker = int16(targetWorker)
         fut.callbackHead.store(CallbackInline, moRelease)
         return
 
-      let oldThunk = allocCallbackThunk(oldCb, oldRt)
+      let oldThunk = allocCallbackThunk(move(oldCb), oldRt, oldWorker)
       let oldNode = allocCallbackNode(oldThunk)
-      let newThunk = allocCallbackThunk(cb, targetRt)
+      let newThunk = allocCallbackThunk(move(cb), targetRt, targetWorker)
       let newNode = allocCallbackNode(newThunk)
       newNode.next = cast[pointer](oldNode)
       fut.inlineCallback = nil
@@ -1559,7 +1703,7 @@ proc addCallbackOnRuntime[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc()
       fut.callbackHead.store(cast[pointer](newNode), moRelease)
       return
 
-    let thunk = allocCallbackThunk(cb, targetRt)
+    let thunk = allocCallbackThunk(move(cb), targetRt, targetWorker)
     let node = allocCallbackNode(thunk)
     node.next = head
     var expected = head
@@ -1571,16 +1715,20 @@ proc addCallbackOnRuntime[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc()
     ):
       return
     freeCallbackNode(node)
-    GC_unref(thunk)
+    cb = takeCallbackProc(thunk)
+    deallocShared(thunk)
     if expected == CallbackClosed:
-      fireCallbackInline(targetRt, cb)
+      fireCallbackInline(targetRt, targetWorker, cb)
       return
     if expected == CallbackInlineInit:
       cpuRelax()
 
-proc addCallbackOnRuntime(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
+proc addCallbackOnRuntime(fut: CpsVoidFuture, targetRt: CpsRuntime,
+                          cbArg: sink proc() {.closure.}) {.inline.} =
+  var cb = move(cbArg)
   if cb == nil:
     return
+  let targetWorker = callbackAffinity(targetRt, cb)
   if fut.perfMode == fpLocalFast:
     fut.ensureLocalAffinity("addCallback")
     statInc(rtCallbacksRegistered)
@@ -1588,16 +1736,18 @@ proc addCallbackOnRuntime(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {
       fut.fireLocalCallback(targetRt, cb)
       return
     if fut.inlineCallback == nil and fut.localCallbacks.len == 0:
-      fut.inlineCallback = cb
+      fut.inlineCallback = move(cb)
       fut.inlineTargetRuntime = targetRt
+      fut.inlineTargetWorker = int16(targetWorker)
       return
-    fut.localCallbacks.add CallbackThunk(cb: cb, targetRuntime: targetRt)
+    fut.localCallbacks.add LocalCallbackThunk(cb: move(cb), targetRuntime: targetRt,
+      targetWorker: int16(targetWorker))
     return
   statInc(rtCallbacksRegistered)
   while true:
     let head = fut.callbackHead.load(moAcquire)
     if head == CallbackClosed:
-      fireCallbackInline(targetRt, cb)
+      fireCallbackInline(targetRt, targetWorker, cb)
       return
 
     if head == nil:
@@ -1608,8 +1758,9 @@ proc addCallbackOnRuntime(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {
         moAcquireRelease,
         moAcquire
       ):
-        fut.inlineCallback = cb
+        fut.inlineCallback = move(cb)
         fut.inlineTargetRuntime = targetRt
+        fut.inlineTargetWorker = int16(targetWorker)
         fut.callbackHead.store(CallbackInline, moRelease)
         return
       continue
@@ -1627,23 +1778,25 @@ proc addCallbackOnRuntime(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {
         moAcquire
       ):
         if expectedInline == CallbackClosed:
-          fireCallbackInline(targetRt, cb)
+          fireCallbackInline(targetRt, targetWorker, cb)
           return
         if expectedInline == CallbackInlineInit:
           cpuRelax()
         continue
 
-      let oldCb = fut.inlineCallback
-      let oldRt = fut.inlineTargetRuntime
+      var oldCb = move(fut.inlineCallback)
+      let oldRt {.cursor.} = fut.inlineTargetRuntime
+      let oldWorker = int(fut.inlineTargetWorker)
       if oldCb == nil:
-        fut.inlineCallback = cb
+        fut.inlineCallback = move(cb)
         fut.inlineTargetRuntime = targetRt
+        fut.inlineTargetWorker = int16(targetWorker)
         fut.callbackHead.store(CallbackInline, moRelease)
         return
 
-      let oldThunk = allocCallbackThunk(oldCb, oldRt)
+      let oldThunk = allocCallbackThunk(move(oldCb), oldRt, oldWorker)
       let oldNode = allocCallbackNode(oldThunk)
-      let newThunk = allocCallbackThunk(cb, targetRt)
+      let newThunk = allocCallbackThunk(move(cb), targetRt, targetWorker)
       let newNode = allocCallbackNode(newThunk)
       newNode.next = cast[pointer](oldNode)
       fut.inlineCallback = nil
@@ -1651,7 +1804,7 @@ proc addCallbackOnRuntime(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {
       fut.callbackHead.store(cast[pointer](newNode), moRelease)
       return
 
-    let thunk = allocCallbackThunk(cb, targetRt)
+    let thunk = allocCallbackThunk(move(cb), targetRt, targetWorker)
     let node = allocCallbackNode(thunk)
     node.next = head
     var expected = head
@@ -1663,28 +1816,35 @@ proc addCallbackOnRuntime(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {
     ):
       return
     freeCallbackNode(node)
-    GC_unref(thunk)
+    cb = takeCallbackProc(thunk)
+    deallocShared(thunk)
     if expected == CallbackClosed:
-      fireCallbackInline(targetRt, cb)
+      fireCallbackInline(targetRt, targetWorker, cb)
       return
     if expected == CallbackInlineInit:
       cpuRelax()
 
-proc addCallbackOn*[T](fut: CpsFuture[T], rt: RuntimeHandle, cb: proc() {.closure.}) {.inline.} =
+proc addCallbackOn*[T](fut: CpsFuture[T], rt: RuntimeHandle,
+                       cb: sink proc() {.closure.}) {.inline.} =
   ## Register a callback on the future's owning runtime.
-  addCallbackOnRuntime(fut, rt.runtime, cb)
+  addCallbackOnRuntime(fut, rt.runtime, move(cb))
 
-proc addCallbackOn*(fut: CpsVoidFuture, rt: RuntimeHandle, cb: proc() {.closure.}) {.inline.} =
+proc addCallbackOn*(fut: CpsVoidFuture, rt: RuntimeHandle,
+                    cb: sink proc() {.closure.}) {.inline.} =
   ## Register a callback on the future's owning runtime.
-  addCallbackOnRuntime(fut, rt.runtime, cb)
+  addCallbackOnRuntime(fut, rt.runtime, move(cb))
 
-proc addCallback*[T](fut: CpsFuture[T], cb: proc() {.closure.}) {.inline.} =
+proc addCallback*[T](fut: CpsFuture[T],
+                     cb: sink proc() {.closure.}) {.inline.} =
   ## Register a callback to run when the future completes.
-  addCallbackOnRuntime(fut, defaultCallbackRuntime(), cb)
+  addCallbackOnRuntime(fut,
+    cast[CpsRuntime](defaultCallbackRuntimePtr()), move(cb))
 
-proc addCallback*(fut: CpsVoidFuture, cb: proc() {.closure.}) {.inline.} =
+proc addCallback*(fut: CpsVoidFuture,
+                  cb: sink proc() {.closure.}) {.inline.} =
   ## Register a callback to run when the future completes.
-  addCallbackOnRuntime(fut, defaultCallbackRuntime(), cb)
+  addCallbackOnRuntime(fut,
+    cast[CpsRuntime](defaultCallbackRuntimePtr()), move(cb))
 
 proc ensureShared*[T](fut: CpsFuture[T]) =
   ## Promote the future to shared-safe state before it crosses a thread boundary.
@@ -1692,9 +1852,9 @@ proc ensureShared*[T](fut: CpsFuture[T]) =
     return
   fut.ensureLocalAffinity("ensureShared")
   let localState = fut.localState
-  let inlineCb = fut.inlineCallback
-  let inlineRt = fut.inlineTargetRuntime
-  let localCbs = fut.localCallbacks
+  var inlineCb = move(fut.inlineCallback)
+  let inlineRt {.cursor.} = fut.inlineTargetRuntime
+  var localCbs = move(fut.localCallbacks)
 
   fut.perfMode = fpSharedSafe
   fut.localOwnerThreadToken = nil
@@ -1709,11 +1869,11 @@ proc ensureShared*[T](fut: CpsFuture[T]) =
     fut.atomicState.store(FutureStatePending, moRelaxed)
     fut.callbackHead.store(nil, moRelaxed)
     if inlineCb != nil:
-      addCallbackOnRuntime(fut, inlineRt, inlineCb)
+      addCallbackOnRuntime(fut, inlineRt, move(inlineCb))
     if localCbs.len > 0:
-      for thunk in localCbs:
-        if thunk != nil and thunk.cb != nil:
-          addCallbackOnRuntime(fut, thunk.targetRuntime, thunk.cb)
+      for thunk in mitems(localCbs):
+        if thunk.cb != nil:
+          addCallbackOnRuntime(fut, thunk.targetRuntime, move(thunk.cb))
   of FutureStateCancelled:
     fut.atomicState.store(FutureStateCancelled, moRelaxed)
     fut.callbackHead.store(CallbackClosed, moRelaxed)
@@ -1727,9 +1887,9 @@ proc ensureShared*(fut: CpsVoidFuture) =
     return
   fut.ensureLocalAffinity("ensureShared")
   let localState = fut.localState
-  let inlineCb = fut.inlineCallback
-  let inlineRt = fut.inlineTargetRuntime
-  let localCbs = fut.localCallbacks
+  var inlineCb = move(fut.inlineCallback)
+  let inlineRt {.cursor.} = fut.inlineTargetRuntime
+  var localCbs = move(fut.localCallbacks)
 
   fut.perfMode = fpSharedSafe
   fut.localOwnerThreadToken = nil
@@ -1744,11 +1904,11 @@ proc ensureShared*(fut: CpsVoidFuture) =
     fut.atomicState.store(FutureStatePending, moRelaxed)
     fut.callbackHead.store(nil, moRelaxed)
     if inlineCb != nil:
-      addCallbackOnRuntime(fut, inlineRt, inlineCb)
+      addCallbackOnRuntime(fut, inlineRt, move(inlineCb))
     if localCbs.len > 0:
-      for thunk in localCbs:
-        if thunk != nil and thunk.cb != nil:
-          addCallbackOnRuntime(fut, thunk.targetRuntime, thunk.cb)
+      for thunk in mitems(localCbs):
+        if thunk.cb != nil:
+          addCallbackOnRuntime(fut, thunk.targetRuntime, move(thunk.cb))
   of FutureStateCancelled:
     fut.atomicState.store(FutureStateCancelled, moRelaxed)
     fut.callbackHead.store(CallbackClosed, moRelaxed)
@@ -1791,7 +1951,7 @@ proc cancel*[T](fut: CpsFuture[T]) =
     statInc(rtCancellations)
     fut.fireLocalCallbacks()
     wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-    wakeReactorIfNeeded(ownerRuntimeRef(fut))
+    wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
     return
   ## Cancel a future. If the future is already completed, this is a no-op.
   ## Uses CAS to atomically transition from pending to cancelling, then
@@ -1805,7 +1965,7 @@ proc cancel*[T](fut: CpsFuture[T]) =
   statInc(rtCancellations)
   fireCallbacks(fut, closeAndTakeCallbackStack(fut))
   wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-  wakeReactorIfNeeded(ownerRuntimeRef(fut))
+  wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
 
 proc cancel*(fut: CpsVoidFuture) =
   ## Cancel runtime and notify its waiters.
@@ -1824,7 +1984,7 @@ proc cancel*(fut: CpsVoidFuture) =
     statInc(rtCancellations)
     fut.fireLocalCallbacks()
     wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-    wakeReactorIfNeeded(ownerRuntimeRef(fut))
+    wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
     return
   ## Cancel a void future. If the future is already completed, this is a no-op.
   ## Uses CAS to atomically transition from pending to cancelling, then
@@ -1838,7 +1998,7 @@ proc cancel*(fut: CpsVoidFuture) =
   statInc(rtCancellations)
   fireCallbacks(fut, closeAndTakeCallbackStack(fut))
   wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-  wakeReactorIfNeeded(ownerRuntimeRef(fut))
+  wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
 
 # ============================================================
 # Atomic counter for thread-safe waitAll / allTasks

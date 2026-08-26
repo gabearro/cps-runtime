@@ -82,11 +82,11 @@
 
 </ul>
 <ul class="simple nested-toc-section">submit
-  <li><a class="reference" href="#submit%2CThreadPool%2CTaskProc" title="submit(pool: ThreadPool; task: TaskProc)">submit(pool: ThreadPool; task: TaskProc)</a></li>
+  <li><a class="reference" href="#submit%2CThreadPool%2CsinkTaskProc" title="submit(pool: ThreadPool; taskArg: sink TaskProc)">submit(pool: ThreadPool; taskArg: sink TaskProc)</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">trySubmit
-  <li><a class="reference" href="#trySubmit%2CThreadPool%2CTaskProc" title="trySubmit(pool: ThreadPool; task: TaskProc): bool">trySubmit(pool: ThreadPool; task: TaskProc): bool</a></li>
+  <li><a class="reference" href="#trySubmit%2CThreadPool%2CsinkTaskProc" title="trySubmit(pool: ThreadPool; taskArg: sink TaskProc): bool">trySubmit(pool: ThreadPool; taskArg: sink TaskProc): bool</a></li>
 
 </ul>
 
@@ -98,16 +98,16 @@
 
   </div>
   <div class="nine columns" id="content">
-    
+
     <div id="tocRoot"></div>
-    
+
     <p class="module-desc"><p>Thread Pool for CPS MT Runtime</p>
-<p>Worker thread pool using a lock-free MPMC ring queue for task dispatch. Workers park on a condition variable when idle. Used by spawnBlocking to offload blocking work without stalling the event loop.</p>
+<p>Worker thread pool using a lock-free MPMC ring queue for task dispatch. Workers park on an atomic wake epoch when idle. Used by spawnBlocking to offload blocking work without stalling the event loop.</p>
 </p>
     <div class="section" id="6">
   <h1><a class="toc-backref" href="#6">Imports</a></h1>
   <dl class="item">
-    <a class="reference external" href="../private/mpmc_ring.html">../private/mpmc_ring</a>
+    <a class="reference external" href="../private/mpmc_ring.html">../private/mpmc_ring</a>, <a class="reference external" href="../private/mpsc_queue.html">../private/mpsc_queue</a>, <a class="reference external" href="../private/atomic_parker.html">../private/atomic_parker</a>, <a class="reference external" href="../private/cross_thread_closure.html">../private/cross_thread_closure</a>
   </dl>
 </div>
 <div class="section" id="7">
@@ -116,9 +116,9 @@
     <div id="ThreadPool">
   <dt><pre><a href="threadpool.html#ThreadPool"><span class="Identifier">ThreadPool</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 
@@ -131,9 +131,9 @@
   <div id="len,ThreadPool">
   <dt><pre><span class="Keyword">proc</span> <a href="#len%2CThreadPool"><span class="Identifier">len</span></a><span class="Other">(</span><span class="Identifier">pool</span><span class="Other">:</span> <a href="threadpool.html#ThreadPool"><span class="Identifier">ThreadPool</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Number of worker threads.
-    
+
   </dd>
 </div>
 
@@ -144,9 +144,9 @@
                    <span class="Identifier">maxPendingTasks</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">65536</span><span class="Other">)</span><span class="Other">:</span> <a href="threadpool.html#ThreadPool"><span class="Identifier">ThreadPool</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ResourceExhaustedError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Create a thread pool with the given number of workers. If numThreads is 0, defaults to countProcessors(). workerSetup is called once on each worker thread before it starts processing.
-    
+
   </dd>
 </div>
 
@@ -155,33 +155,33 @@
   <div id="shutdown,ThreadPool">
   <dt><pre><span class="Keyword">proc</span> <a href="#shutdown%2CThreadPool"><span class="Identifier">shutdown</span></a><span class="Other">(</span><span class="Identifier">pool</span><span class="Other">:</span> <a href="threadpool.html#ThreadPool"><span class="Identifier">ThreadPool</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Signal all workers to stop and wait for them to finish.
-    
+
   </dd>
 </div>
 
 </div>
 <div id="submit-procs-all">
-  <div id="submit,ThreadPool,TaskProc">
-  <dt><pre><span class="Keyword">proc</span> <a href="#submit%2CThreadPool%2CTaskProc"><span class="Identifier">submit</span></a><span class="Other">(</span><span class="Identifier">pool</span><span class="Other">:</span> <a href="threadpool.html#ThreadPool"><span class="Identifier">ThreadPool</span></a><span class="Other">;</span> <span class="Identifier">task</span><span class="Other">:</span> <span class="Identifier">TaskProc</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+  <div id="submit,ThreadPool,sinkTaskProc">
+  <dt><pre><span class="Keyword">proc</span> <a href="#submit%2CThreadPool%2CsinkTaskProc"><span class="Identifier">submit</span></a><span class="Other">(</span><span class="Identifier">pool</span><span class="Other">:</span> <a href="threadpool.html#ThreadPool"><span class="Identifier">ThreadPool</span></a><span class="Other">;</span> <span class="Identifier">taskArg</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Identifier">TaskProc</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Submit a task. Spins briefly if the queue is full, then yields.
-    
+
   </dd>
 </div>
 
 </div>
 <div id="trySubmit-procs-all">
-  <div id="trySubmit,ThreadPool,TaskProc">
-  <dt><pre><span class="Keyword">proc</span> <a href="#trySubmit%2CThreadPool%2CTaskProc"><span class="Identifier">trySubmit</span></a><span class="Other">(</span><span class="Identifier">pool</span><span class="Other">:</span> <a href="threadpool.html#ThreadPool"><span class="Identifier">ThreadPool</span></a><span class="Other">;</span> <span class="Identifier">task</span><span class="Other">:</span> <span class="Identifier">TaskProc</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <div id="trySubmit,ThreadPool,sinkTaskProc">
+  <dt><pre><span class="Keyword">proc</span> <a href="#trySubmit%2CThreadPool%2CsinkTaskProc"><span class="Identifier">trySubmit</span></a><span class="Other">(</span><span class="Identifier">pool</span><span class="Other">:</span> <a href="threadpool.html#ThreadPool"><span class="Identifier">ThreadPool</span></a><span class="Other">;</span> <span class="Identifier">taskArg</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Identifier">TaskProc</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Non-blocking submit. Returns false if the queue is full or pool is shut down.
-    
+
   </dd>
 </div>
 
@@ -196,10 +196,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 20:56:14 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:23 UTC</small>
       </div>
     </div>
   </div>
-  
+
 </body>
 </html>

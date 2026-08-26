@@ -1,7 +1,8 @@
 ## Verify that the blocking pool consumes no threads until blocking work exists.
 
-when not defined(gcAtomicArc) and not defined(useMalloc):
-  {.error: "test_mt_lazy_blocking_pool.nim requires --mm:atomicArc or -d:useMalloc".}
+when not (compileOption("gc", "atomicArc") or compileOption("gc", "arc") or
+          compileOption("gc", "orc")):
+  {.error: "test requires --mm:arc, --mm:orc, or --mm:atomicArc".}
 
 import cps/mt
 

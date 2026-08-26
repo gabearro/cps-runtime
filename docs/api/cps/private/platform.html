@@ -108,9 +108,9 @@
 
   </div>
   <div class="nine columns" id="content">
-    
+
     <div id="tocRoot"></div>
-    
+
     <p class="module-desc"><p>CPS Platform Abstraction Layer</p>
 <p>Cross-platform abstractions for POSIX-specific APIs used throughout the CPS runtime. On POSIX (macOS/Linux), these delegate to std/posix. On Windows, they use WinSock2 / Win32 equivalents.</p>
 <p>Provides:</p>
@@ -129,9 +129,9 @@
   <div id="closePipeFd,SocketHandle">
   <dt><pre><span class="Keyword">proc</span> <a href="#closePipeFd%2CSocketHandle"><span class="Identifier">closePipeFd</span></a><span class="Other">(</span><span class="Identifier">fd</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Close a wake pipe file descriptor.
-    
+
   </dd>
 </div>
 
@@ -141,9 +141,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#createWakePipe"><span class="Identifier">createWakePipe</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <span class="Other">(</span><span class="Identifier">SocketHandle</span><span class="Other">,</span> <span class="Identifier">SocketHandle</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">OSError</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Create a wake pipe for event loop cross-thread signaling. Returns (readEnd, writeEnd) as SocketHandles.
-    
+
   </dd>
 </div>
 
@@ -152,9 +152,9 @@
   <div id="getProcessId">
   <dt><pre><span class="Keyword">proc</span> <a href="#getProcessId"><span class="Identifier">getProcessId</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Get the current process ID.
-    
+
   </dd>
 </div>
 
@@ -163,9 +163,9 @@
   <div id="hostsFilePath">
   <dt><pre><span class="Keyword">func</span> <a href="#hostsFilePath"><span class="Identifier">hostsFilePath</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Path to the system hosts file.
-    
+
   </dd>
 </div>
 
@@ -174,9 +174,9 @@
   <div id="isEPipe,OSErrorCode">
   <dt><pre><span class="Keyword">proc</span> <a href="#isEPipe%2COSErrorCode"><span class="Identifier">isEPipe</span></a><span class="Other">(</span><span class="Identifier">err</span><span class="Other">:</span> <span class="Identifier">OSErrorCode</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     True if the error indicates a broken pipe / connection reset.
-    
+
   </dd>
 </div>
 
@@ -186,9 +186,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#isInProgress%2COSErrorCode"><span class="Identifier">isInProgress</span></a><span class="Other">(</span><span class="Identifier">err</span><span class="Other">:</span> <span class="Identifier">OSErrorCode</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     True if the error indicates a connect() is in progress. Includes EWOULDBLOCK/WSAEWOULDBLOCK — some BSD implementations return it for non-blocking connect().
-    
+
   </dd>
 </div>
 
@@ -198,9 +198,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#isInterrupted%2COSErrorCode"><span class="Identifier">isInterrupted</span></a><span class="Other">(</span><span class="Identifier">err</span><span class="Other">:</span> <span class="Identifier">OSErrorCode</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     True if the error indicates a syscall was interrupted (EINTR).
-    
+
   </dd>
 </div>
 
@@ -210,9 +210,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#isWouldBlock%2COSErrorCode"><span class="Identifier">isWouldBlock</span></a><span class="Other">(</span><span class="Identifier">err</span><span class="Other">:</span> <span class="Identifier">OSErrorCode</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     True if the error indicates a non-blocking operation would block.
-    
+
   </dd>
 </div>
 
@@ -221,9 +221,9 @@
   <div id="resolvConfPath">
   <dt><pre><span class="Keyword">func</span> <a href="#resolvConfPath"><span class="Identifier">resolvConfPath</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Path to the DNS resolver config. Empty on Windows (no resolv.conf).
-    
+
   </dd>
 </div>
 
@@ -232,9 +232,9 @@
   <div id="wakePipeDrain,SocketHandle">
   <dt><pre><span class="Keyword">proc</span> <a href="#wakePipeDrain%2CSocketHandle"><span class="Identifier">wakePipeDrain</span></a><span class="Other">(</span><span class="Identifier">fd</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Read all pending bytes from the wake pipe.
-    
+
   </dd>
 </div>
 
@@ -243,9 +243,9 @@
   <div id="wakePipeSignal,SocketHandle">
   <dt><pre><span class="Keyword">proc</span> <a href="#wakePipeSignal%2CSocketHandle"><span class="Identifier">wakePipeSignal</span></a><span class="Other">(</span><span class="Identifier">fd</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Write 1 byte to the wake pipe to unblock the reactor's select(). Best-effort: if the pipe is full or closed, the reactor is already signaled (or shutting down).
-    
+
   </dd>
 </div>
 
@@ -260,10 +260,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 20:56:16 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:25 UTC</small>
       </div>
     </div>
   </div>
-  
+
 </body>
 </html>

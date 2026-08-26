@@ -132,9 +132,9 @@
 
   </div>
   <div class="nine columns" id="content">
-    
+
     <div id="tocRoot"></div>
-    
+
     <p class="module-desc"><p>CPS I/O TCP</p>
 <p>Provides TCP client (TcpStream) and server (TcpListener) sockets integrated with the CPS event loop.</p>
 </p>
@@ -150,17 +150,17 @@
     <div id="TcpAcceptErrorHandler">
   <dt><pre><a href="tcp.html#TcpAcceptErrorHandler"><span class="Identifier">TcpAcceptErrorHandler</span></a> <span class="Other">=</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">err</span><span class="Other">:</span> <span class="Keyword">ref</span> <span class="Identifier">CatchableError</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 <div id="TcpAcceptHandler">
   <dt><pre><a href="tcp.html#TcpAcceptHandler"><span class="Identifier">TcpAcceptHandler</span></a> <span class="Other">=</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">client</span><span class="Other">:</span> <a href="tcp.html#TcpStream"><span class="Identifier">TcpStream</span></a><span class="Other">)</span> {.<span class="Identifier">closure</span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 <div id="TcpListener">
@@ -168,18 +168,18 @@
   <span class="Identifier">fd</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span>
   <span class="Identifier">closed</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 <div id="TcpStream">
   <dt><pre><a href="tcp.html#TcpStream"><span class="Identifier">TcpStream</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a>
   <span class="Identifier">fd</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span></pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 
@@ -194,9 +194,9 @@
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">OSError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Accept a new connection asynchronously. Returns a TcpStream.
-    
+
   </dd>
 </div>
 
@@ -205,38 +205,39 @@
   <div id="acceptEach,TcpListener,TcpAcceptHandler,TcpAcceptErrorHandler,int">
   <dt><pre><span class="Keyword">proc</span> <a href="#acceptEach%2CTcpListener%2CTcpAcceptHandler%2CTcpAcceptErrorHandler%2Cint"><span class="Identifier">acceptEach</span></a><span class="Other">(</span><span class="Identifier">listener</span><span class="Other">:</span> <a href="tcp.html#TcpListener"><span class="Identifier">TcpListener</span></a><span class="Other">;</span> <span class="Identifier">onAccept</span><span class="Other">:</span> <a href="tcp.html#TcpAcceptHandler"><span class="Identifier">TcpAcceptHandler</span></a><span class="Other">;</span>
                 <span class="Identifier">onError</span><span class="Other">:</span> <a href="tcp.html#TcpAcceptErrorHandler"><span class="Identifier">TcpAcceptErrorHandler</span></a> <span class="Other">=</span> <span class="Keyword">nil</span><span class="Other">;</span> <span class="Identifier">maxBatch</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">64</span><span class="Other">)</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">,</span> <span class="Identifier">ValueError</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">,</span> <span class="Identifier">ValueError</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     <p>Register a persistent, allocation-light accept callback.</p>
 <p>This is intended for servers that continuously consume a listener. It avoids constructing and completing a Future for every accepted socket, while bounding each readiness callback so established connections and timers still get reactor time. A listener must have only one active accept consumer (<tt class="docutils literal"><span class="pre"><span class="Identifier">accept</span></span></tt> or <tt class="docutils literal"><span class="pre"><span class="Identifier">acceptEach</span></span></tt>) at a time.</p>
 
-    
+
   </dd>
 </div>
 
 </div>
 <div id="close-procs-all">
   <div id="close,TcpListener">
-  <dt><pre><span class="Keyword">proc</span> <a href="#close%2CTcpListener"><span class="Identifier">close</span></a><span class="Other">(</span><span class="Identifier">listener</span><span class="Other">:</span> <a href="tcp.html#TcpListener"><span class="Identifier">TcpListener</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dt><pre><span class="Keyword">proc</span> <a href="#close%2CTcpListener"><span class="Identifier">close</span></a><span class="Other">(</span><span class="Identifier">listener</span><span class="Other">:</span> <a href="tcp.html#TcpListener"><span class="Identifier">TcpListener</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Close the listening socket.
-    
+
   </dd>
 </div>
 
 </div>
 <div id="closeImmediately-procs-all">
   <div id="closeImmediately,TcpStream">
-  <dt><pre><span class="Keyword">proc</span> <a href="#closeImmediately%2CTcpStream"><span class="Identifier">closeImmediately</span></a><span class="Other">(</span><span class="Identifier">ts</span><span class="Other">:</span> <a href="tcp.html#TcpStream"><span class="Identifier">TcpStream</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dt><pre><span class="Keyword">proc</span> <a href="#closeImmediately%2CTcpStream"><span class="Identifier">closeImmediately</span></a><span class="Other">(</span><span class="Identifier">ts</span><span class="Other">:</span> <a href="tcp.html#TcpStream"><span class="Identifier">TcpStream</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
+                                       <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     <p>Close a TCP stream without half-close/drain processing.</p>
 <p>This is appropriate when a protocol implementation has consumed the complete inbound message and has already queued its complete response. Generic <tt class="docutils literal"><span class="pre"><span class="Identifier">close</span><span class="Punctuation">(</span><span class="Punctuation">)</span></span></tt> remains graceful for protocols such as IRC where unread peer data could otherwise turn the close into a reset.</p>
 
-    
+
   </dd>
 </div>
 
@@ -245,9 +246,9 @@
   <div id="localPort,TcpListener">
   <dt><pre><span class="Keyword">proc</span> <a href="#localPort%2CTcpListener"><span class="Identifier">localPort</span></a><span class="Other">(</span><span class="Identifier">listener</span><span class="Other">:</span> <a href="tcp.html#TcpListener"><span class="Identifier">TcpListener</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Return the port the listener is bound to. Useful when bound to port 0 (OS-assigned) to discover the actual port. Works for both IPv4 and IPv6 listeners.
-    
+
   </dd>
 </div>
 
@@ -257,9 +258,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#newTcpStream%2CSocketHandle%2CDomain"><span class="Identifier">newTcpStream</span></a><span class="Other">(</span><span class="Identifier">fd</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span><span class="Other">;</span> <span class="Identifier">domain</span><span class="Other">:</span> <span class="Identifier">Domain</span> <span class="Other">=</span> <span class="Identifier">AF_INET</span><span class="Other">)</span><span class="Other">:</span> <a href="tcp.html#TcpStream"><span class="Identifier">TcpStream</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Wrap a connected, non-blocking socket fd into a TcpStream.
-    
+
   </dd>
 </div>
 
@@ -269,9 +270,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#peerEndpoint%2CTcpStream"><span class="Identifier">peerEndpoint</span></a><span class="Other">(</span><span class="Identifier">stream</span><span class="Other">:</span> <a href="tcp.html#TcpStream"><span class="Identifier">TcpStream</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">[</span><span class="Identifier">ip</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">,</span> <span class="Identifier">port</span><span class="Other">:</span> <span class="Identifier">uint16</span><span class="Other">]</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Return the connected peer endpoint for this stream. On failure, returns (&quot;&quot;, 0).
-    
+
   </dd>
 </div>
 
@@ -282,9 +283,9 @@
     <a href="tcp.html#TcpStream"><span class="Identifier">TcpStream</span></a><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">OSError</span><span class="Other">,</span> <span class="Identifier">AsyncIoError</span><span class="Other">]</span><span class="Other">,</span>
                  <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Connect to a remote host:port asynchronously. Resolves the hostname via the async DNS resolver (with caching), then connects to the IP.
-    
+
   </dd>
 </div>
 
@@ -296,9 +297,9 @@
                           <span class="Identifier">AsyncIoError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
                  <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Connect to a pre-resolved IP:port asynchronously. Returns a TcpStream. Use this when you already have the IP address and want to skip DNS.
-    
+
   </dd>
 </div>
 
@@ -311,9 +312,9 @@
                <span class="Identifier">noDelay</span><span class="Other">:</span> <span class="Identifier">bool</span> <span class="Other">=</span> <span class="Identifier">false</span><span class="Other">)</span><span class="Other">:</span> <a href="tcp.html#TcpListener"><span class="Identifier">TcpListener</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">,</span> <span class="Identifier">OSError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ReadIOEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Create a TCP listening socket. Binds to host:port and starts listening. This is a synchronous operation — the socket is ready for accept() calls. When <tt class="docutils literal"><span class="pre"><span class="Identifier">dualStack</span></span></tt> is true and <tt class="docutils literal"><span class="pre"><span class="Identifier">domain</span></span></tt> is AF_INET6, sets IPV6_V6ONLY=0 so the socket accepts both IPv4 (as ::ffff:x.x.x.x) and IPv6 connections. <tt class="docutils literal"><span class="pre"><span class="Identifier">reusePort</span></span></tt> opts into kernel flow distribution across matching listeners. On Linux, <tt class="docutils literal"><span class="pre"><span class="Identifier">deferAcceptSeconds</span> <span class="Operator">&gt;</span> <span class="DecNumber">0</span></span></tt> delays accept readiness until request data arrives (or the timeout expires), avoiding empty-socket wakeups. <tt class="docutils literal"><span class="pre"><span class="Identifier">noDelay</span></span></tt> disables Nagle once on the listener. Linux inherits this option into accepted sockets, avoiding a setsockopt syscall for every connection.
-    
+
   </dd>
 </div>
 
@@ -328,10 +329,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 20:56:10 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:19 UTC</small>
       </div>
     </div>
   </div>
-  
+
 </body>
 </html>

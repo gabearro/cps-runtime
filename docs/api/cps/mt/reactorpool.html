@@ -97,11 +97,12 @@
 
   </div>
   <div class="nine columns" id="content">
-    
+
     <div id="tocRoot"></div>
-    
+
     <p class="module-desc"><p>Sharded reactor pool.</p>
 <p>Each thread owns its runtime, selector, callbacks, and connections. This keeps the normal I/O path thread-local while allowing a process to scale across cores. A minimal wake descriptor is used only to stop each shard; the data path never touches the MT callback queue.</p>
+<p>Reactor pools support regular ARC and ORC because managed values never cross reactor threads. The memory manager is still selected for the whole executable; do not combine a non-atomic reactor-pool build with the shared work-stealing MT runtime.</p>
 <p>Futures constructed on a shard default to local-fast state. Applications must keep futures and GC-managed shard state on their owning reactor thread; use the work-stealing MT runtime when tasks need to cross threads.</p>
 Shut down reactorpool and release its runtime resources.</p>
     <div class="section" id="6">
@@ -116,17 +117,17 @@ Shut down reactorpool and release its runtime resources.</p>
     <div id="ReactorPool">
   <dt><pre><a href="reactorpool.html#ReactorPool"><span class="Identifier">ReactorPool</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 <div id="ReactorSetup">
   <dt><pre><a href="reactorpool.html#ReactorSetup"><span class="Identifier">ReactorSetup</span></a> <span class="Other">=</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">shardId</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span> {.<span class="Identifier">nimcall</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
   <dd>
-    
+
     Setup must construct shard-owned state and must not capture GC-managed values. This permits isolated reactor pools to use ARC safely.
-    
+
   </dd>
 </div>
 
@@ -139,9 +140,9 @@ Shut down reactorpool and release its runtime resources.</p>
   <div id="join,ReactorPool">
   <dt><pre><span class="Keyword">proc</span> <a href="#join%2CReactorPool"><span class="Identifier">join</span></a><span class="Other">(</span><span class="Identifier">pool</span><span class="Other">:</span> <a href="reactorpool.html#ReactorPool"><span class="Identifier">ReactorPool</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Wait for every reactor thread to exit.
-    
+
   </dd>
 </div>
 
@@ -152,9 +153,9 @@ Shut down reactorpool and release its runtime resources.</p>
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ValueError</span><span class="Other">,</span> <span class="Identifier">ResourceExhaustedError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">CatchableError</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">,</span> <span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Start and join a long-running sharded reactor service.
-    
+
   </dd>
 </div>
 
@@ -163,9 +164,9 @@ Shut down reactorpool and release its runtime resources.</p>
   <div id="shutdown,ReactorPool">
   <dt><pre><span class="Keyword">proc</span> <a href="#shutdown%2CReactorPool"><span class="Identifier">shutdown</span></a><span class="Other">(</span><span class="Identifier">pool</span><span class="Other">:</span> <a href="reactorpool.html#ReactorPool"><span class="Identifier">ReactorPool</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 
@@ -176,9 +177,9 @@ Shut down reactorpool and release its runtime resources.</p>
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ValueError</span><span class="Other">,</span> <span class="Identifier">ResourceExhaustedError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">CatchableError</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">,</span> <span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Start one independent event-loop thread per requested reactor.
-    
+
   </dd>
 </div>
 
@@ -187,9 +188,9 @@ Shut down reactorpool and release its runtime resources.</p>
   <div id="stop,ReactorPool">
   <dt><pre><span class="Keyword">proc</span> <a href="#stop%2CReactorPool"><span class="Identifier">stop</span></a><span class="Other">(</span><span class="Identifier">pool</span><span class="Other">:</span> <a href="reactorpool.html#ReactorPool"><span class="Identifier">ReactorPool</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Request stop and wake every selector so its thread observes the request.
-    
+
   </dd>
 </div>
 
@@ -204,10 +205,10 @@ Shut down reactorpool and release its runtime resources.</p>
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 20:56:13 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:22 UTC</small>
       </div>
     </div>
   </div>
-  
+
 </body>
 </html>

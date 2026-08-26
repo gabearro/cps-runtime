@@ -1,7 +1,7 @@
 nimTitle	threadpool	cps/mt/threadpool.html	module cps/mt/threadpool		0
-nim	ThreadPool	cps/mt/threadpool.html#ThreadPool	type ThreadPool		24
-nim	newThreadPool	cps/mt/threadpool.html#newThreadPool,int,proc),int	proc newThreadPool(numThreads: int = 0; workerSetup: proc () {.gcsafe.} = nil;\n              maxPendingTasks: int = 65536): ThreadPool		71
-nim	trySubmit	cps/mt/threadpool.html#trySubmit,ThreadPool,TaskProc	proc trySubmit(pool: ThreadPool; task: TaskProc): bool		91
-nim	submit	cps/mt/threadpool.html#submit,ThreadPool,TaskProc	proc submit(pool: ThreadPool; task: TaskProc)		99
-nim	len	cps/mt/threadpool.html#len,ThreadPool	proc len(pool: ThreadPool): int		109
-nim	shutdown	cps/mt/threadpool.html#shutdown,ThreadPool	proc shutdown(pool: ThreadPool)		113
+nim	ThreadPool	cps/mt/threadpool.html#ThreadPool	type ThreadPool		29
+nim	newThreadPool	cps/mt/threadpool.html#newThreadPool,int,proc),int	proc newThreadPool(numThreads: int = 0; workerSetup: proc () {.gcsafe.} = nil;\n              maxPendingTasks: int = 65536): ThreadPool		105
+nim	trySubmit	cps/mt/threadpool.html#trySubmit,ThreadPool,sinkTaskProc	proc trySubmit(pool: ThreadPool; taskArg: sink TaskProc): bool		133
+nim	submit	cps/mt/threadpool.html#submit,ThreadPool,sinkTaskProc	proc submit(pool: ThreadPool; taskArg: sink TaskProc)		146
+nim	len	cps/mt/threadpool.html#len,ThreadPool	proc len(pool: ThreadPool): int		160
+nim	shutdown	cps/mt/threadpool.html#shutdown,ThreadPool	proc shutdown(pool: ThreadPool)		164

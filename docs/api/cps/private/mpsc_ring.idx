@@ -1,0 +1,7 @@
+nimTitle	mpsc_ring	cps/private/mpsc_ring.html	module cps/private/mpsc_ring		0
+nim	MpscRingQueue	cps/private/mpsc_ring.html#MpscRingQueue	object MpscRingQueue		16
+nim	initMpscRingQueue	cps/private/mpsc_ring.html#initMpscRingQueue,MpscRingQueue[T],int	proc initMpscRingQueue[T](q: var MpscRingQueue[T]; requestedCapacity: int)		25
+nim	tryEnqueue	cps/private/mpsc_ring.html#tryEnqueue,MpscRingQueue[T],T	proc tryEnqueue[T](q: var MpscRingQueue[T]; value: var T): bool		38
+nim	tryDequeue	cps/private/mpsc_ring.html#tryDequeue,MpscRingQueue[T],T	proc tryDequeue[T](q: var MpscRingQueue[T]; value: var T): bool		58
+nim	isEmpty	cps/private/mpsc_ring.html#isEmpty,MpscRingQueue[T]	proc isEmpty[T](q: var MpscRingQueue[T]): bool		69
+nim	deinitMpscRingQueue	cps/private/mpsc_ring.html#deinitMpscRingQueue,MpscRingQueue[T]	proc deinitMpscRingQueue[T](q: var MpscRingQueue[T])		74

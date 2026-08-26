@@ -58,9 +58,9 @@
   <details open>
     <summary><a class="reference reference-toplevel" href="#7" id="57">Types</a></summary>
     <ul class="simple simple-toc-section">
-      <li><a class="reference" href="#EventLoop" title="EventLoop = ref object
-  ownerRuntime*: CpsRuntime
-  crossThreadQueue*: MpscQueue[CrossThreadCallback] ## Lock-free MPSC queue for cross-thread callbacks
+      <li><a class="reference" href="#EventLoop" title="EventLoop {.acyclic.} = ref object
+  ownerRuntime* {.cursor.}: CpsRuntime
+  crossThreadQueue*: MpscQueue[PostedCallback] ## Lock-free MPSC queue for cross-thread callbacks
   wakePipeRead*: SocketHandle ## Read end of wake pipe (SocketHandle(-1) = not initialized)
   wakePipeWrite*: SocketHandle ## Write end of wake pipe (SocketHandle(-1) = not initialized)
   mtActive*: bool            ## Whether MT extensions are active
@@ -111,6 +111,10 @@
 <li><a class="reference" href="#cancel%2CTask%5BT%5D" title="cancel[T](t: Task[T])">cancel[T](t: Task[T])</a></li>
 
 </ul>
+<ul class="simple nested-toc-section">claimCurrentThread
+  <li><a class="reference" href="#claimCurrentThread%2CEventLoop" title="claimCurrentThread(loop: EventLoop)">claimCurrentThread(loop: EventLoop)</a></li>
+
+</ul>
 <ul class="simple nested-toc-section">cpsSleep
   <li><a class="reference" href="#cpsSleep%2Cint" title="cpsSleep(ms: int): CpsVoidFuture">cpsSleep(ms: int): CpsVoidFuture</a></li>
 
@@ -159,6 +163,10 @@
 <li><a class="reference" href="#hasError%2CTask%5BT%5D" title="hasError[T](t: Task[T]): bool">hasError[T](t: Task[T]): bool</a></li>
 
 </ul>
+<ul class="simple nested-toc-section">hasUserIoWork
+  <li><a class="reference" href="#hasUserIoWork%2CEventLoop" title="hasUserIoWork(loop: EventLoop): bool">hasUserIoWork(loop: EventLoop): bool</a></li>
+
+</ul>
 <ul class="simple nested-toc-section">hasWork
   <li><a class="reference" href="#hasWork%2CEventLoop" title="hasWork(loop: EventLoop): bool">hasWork(loop: EventLoop): bool</a></li>
 
@@ -167,6 +175,10 @@
   <li><a class="reference" href="#isCancelled%2CTimerHandle" title="isCancelled(h: TimerHandle): bool">isCancelled(h: TimerHandle): bool</a></li>
 <li><a class="reference" href="#isCancelled%2CVoidTask" title="isCancelled(t: VoidTask): bool">isCancelled(t: VoidTask): bool</a></li>
 <li><a class="reference" href="#isCancelled%2CTask%5BT%5D" title="isCancelled[T](t: Task[T]): bool">isCancelled[T](t: Task[T]): bool</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">isCurrentThreadOwner
+  <li><a class="reference" href="#isCurrentThreadOwner%2CEventLoop" title="isCurrentThreadOwner(loop: EventLoop): bool">isCurrentThreadOwner(loop: EventLoop): bool</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">markWakeDrained
@@ -182,8 +194,12 @@
   <li><a class="reference" href="#newEventLoop" title="newEventLoop(): EventLoop">newEventLoop(): EventLoop</a></li>
 
 </ul>
+<ul class="simple nested-toc-section">poll
+  <li><a class="reference" href="#poll%2CEventLoop" title="poll(loop: EventLoop): bool">poll(loop: EventLoop): bool</a></li>
+
+</ul>
 <ul class="simple nested-toc-section">postToEventLoop
-  <li><a class="reference" href="#postToEventLoop%2CEventLoop%2CCrossThreadCallback" title="postToEventLoop(loop: EventLoop; cb: CrossThreadCallback)">postToEventLoop(loop: EventLoop; cb: CrossThreadCallback)</a></li>
+  <li><a class="reference" href="#postToEventLoop%2CEventLoop%2CsinkCrossThreadCallback" title="postToEventLoop(loop: EventLoop; cbArg: sink CrossThreadCallback)">postToEventLoop(loop: EventLoop; cbArg: sink CrossThreadCallback)</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">read
@@ -282,6 +298,10 @@
 <li><a class="reference" href="#unregister%2CEventLoop%2CSocketHandle" title="unregister(loop: EventLoop; fd: SocketHandle)">unregister(loop: EventLoop; fd: SocketHandle)</a></li>
 
 </ul>
+<ul class="simple nested-toc-section">userIoHandleCount
+  <li><a class="reference" href="#userIoHandleCount%2CEventLoop" title="userIoHandleCount(loop: EventLoop): int">userIoHandleCount(loop: EventLoop): int</a></li>
+
+</ul>
 <ul class="simple nested-toc-section">waitAll
   <li><a class="reference" href="#waitAll" title="waitAll(): CpsVoidFuture">waitAll(): CpsVoidFuture</a></li>
 <li><a class="reference" href="#waitAll%2CCpsVoidFuture%2Cvarargs%5BCpsVoidFuture%5D" title="waitAll(first: CpsVoidFuture; rest: varargs[CpsVoidFuture]): CpsVoidFuture">waitAll(first: CpsVoidFuture; rest: varargs[CpsVoidFuture]): CpsVoidFuture</a></li>
@@ -328,9 +348,9 @@
 
   </div>
   <div class="nine columns" id="content">
-    
+
     <div id="tocRoot"></div>
-    
+
     <p class="module-desc"><p>CPS Event Loop</p>
 <p>Provides an event loop that drives CPS continuations. Integrates with the OS selector for async I/O (sockets, timers).</p>
 <p>The event loop manages:</p>
@@ -349,17 +369,17 @@ Return whether the task's future has completed.Return the completed task value o
   <h1><a class="toc-backref" href="#7">Types</a></h1>
   <dl class="item">
     <div id="EventLoop">
-  <dt><pre><a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span>
-  <span class="Identifier">ownerRuntime</span><span class="Operator">*</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a>
-  <span class="Identifier">crossThreadQueue</span><span class="Operator">*</span><span class="Other">:</span> <a href="private/mpsc_queue.html#MpscQueue"><span class="Identifier">MpscQueue</span></a><span class="Other">[</span><a href="private/mpsc_queue.html#CrossThreadCallback"><span class="Identifier">CrossThreadCallback</span></a><span class="Other">]</span> <span class="Comment">## Lock-free MPSC queue for cross-thread callbacks</span>
+  <dt><pre><a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a> {.<span class="Identifier">acyclic</span>.} <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span>
+  <span class="Identifier">ownerRuntime</span><span class="Operator">*</span> {.<span class="Identifier">cursor</span>.}<span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a>
+  <span class="Identifier">crossThreadQueue</span><span class="Operator">*</span><span class="Other">:</span> <a href="private/mpsc_queue.html#MpscQueue"><span class="Identifier">MpscQueue</span></a><span class="Other">[</span><span class="Identifier">PostedCallback</span><span class="Other">]</span> <span class="Comment">## Lock-free MPSC queue for cross-thread callbacks</span>
   <span class="Identifier">wakePipeRead</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span> <span class="Comment">## Read end of wake pipe (SocketHandle(-1) = not initialized)</span>
   <span class="Identifier">wakePipeWrite</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span> <span class="Comment">## Write end of wake pipe (SocketHandle(-1) = not initialized)</span>
   <span class="Identifier">mtActive</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span>            <span class="Comment">## Whether MT extensions are active</span>
   <span class="Identifier">stats</span><span class="Operator">*</span><span class="Other">:</span> <a href="eventloop.html#LoopStats"><span class="Identifier">LoopStats</span></a></pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 <div id="LoopStats">
@@ -374,9 +394,9 @@ Return whether the task's future has completed.Return the completed task value o
   <span class="Identifier">maxTickDurationUs</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int64</span>  <span class="Comment">## Maximum tick duration in microseconds</span>
   <span class="Identifier">lastTickDurationUs</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int64</span> <span class="Comment">## Last tick duration in microseconds</span></pre></dt>
   <dd>
-    
+
     Event loop performance counters.
-    
+
   </dd>
 </div>
 <div id="Task">
@@ -384,17 +404,17 @@ Return whether the task's future has completed.Return the completed task value o
   <span class="Identifier">future</span><span class="Operator">*</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span>
   <span class="Identifier">name</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">string</span>              <span class="Comment">## Optional human-readable name for debugging/tracing</span></pre></dt>
   <dd>
-    
+
     A spawned concurrent task that produces a value of type T. Can be awaited to retrieve the result, or left to run on the cooperative scheduler if the result isn't needed.
-    
+
   </dd>
 </div>
 <div id="TimerHandle">
   <dt><pre><a href="eventloop.html#TimerHandle"><span class="Identifier">TimerHandle</span></a> <span class="Other">=</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-    
+
     Handle for a scheduled timer. Call cancel() to suppress callback.
-    
+
   </dd>
 </div>
 <div id="VoidTask">
@@ -402,9 +422,9 @@ Return whether the task's future has completed.Return the completed task value o
   <span class="Identifier">future</span><span class="Operator">*</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a>
   <span class="Identifier">name</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">string</span>              <span class="Comment">## Optional human-readable name for debugging/tracing</span></pre></dt>
   <dd>
-    
+
     A spawned concurrent task that produces no value.
-    
+
   </dd>
 </div>
 
@@ -418,17 +438,17 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#addCallback%2CVoidTask%2Cproc%29"><span class="Identifier">addCallback</span></a><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#VoidTask"><span class="Identifier">VoidTask</span></a><span class="Other">;</span> <span class="Identifier">cb</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span>
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Register a callback to run when the task completes.
-    
+
   </dd>
 </div>
 <div id="addCallback,Task[T],proc)">
   <dt><pre><span class="Keyword">proc</span> <a href="#addCallback%2CTask%5BT%5D%2Cproc%29"><span class="Identifier">addCallback</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#Task"><span class="Identifier">Task</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">cb</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
+
     Register a callback to run when the task completes.
-    
+
   </dd>
 </div>
 
@@ -438,17 +458,17 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#allTasks%2CopenArray%5BVoidTask%5D"><span class="Identifier">allTasks</span></a><span class="Other">(</span><span class="Identifier">tasks</span><span class="Other">:</span> <span class="Identifier">openArray</span><span class="Other">[</span><a href="eventloop.html#VoidTask"><span class="Identifier">VoidTask</span></a><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Returns a future that completes when all void tasks finish. Thread-safe: uses atomic counter in MT mode.
-    
+
   </dd>
 </div>
 <div id="allTasks,openArray[Task[T]]">
   <dt><pre><span class="Keyword">proc</span> <a href="#allTasks%2CopenArray%5BTask%5BT%5D%5D"><span class="Identifier">allTasks</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">tasks</span><span class="Other">:</span> <span class="Identifier">openArray</span><span class="Other">[</span><a href="eventloop.html#Task"><span class="Identifier">Task</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">seq</span><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">]</span></pre></dt>
   <dd>
-    
+
     Returns a future that completes with all task results once every task finishes. If any task fails, the returned future fails with that error. Thread-safe: uses atomic counter in MT mode.
-    
+
   </dd>
 </div>
 
@@ -456,21 +476,20 @@ Return whether the task's future has completed.Return the completed task value o
 <div id="blockOn-procs-all">
   <div id="blockOn,RuntimeHandle,CpsVoidFuture">
   <dt><pre><span class="Keyword">proc</span> <a href="#blockOn%2CRuntimeHandle%2CCpsVoidFuture"><span class="Identifier">blockOn</span></a><span class="Other">(</span><span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">;</span> <span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span>
-    <span class="Identifier">RuntimeAffinityError</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">ValueError</span><span class="Other">,</span>
-    <span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span class="Identifier">RuntimeAffinityError</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">ValueError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span>
+    <span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Block until the void future completes, driving the event loop.
-    
+
   </dd>
 </div>
 <div id="blockOn,RuntimeHandle,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#blockOn%2CRuntimeHandle%2CCpsFuture%5BT%5D"><span class="Identifier">blockOn</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">;</span> <span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">T</span></pre></dt>
   <dd>
-    
+
     Block until the future completes, driving the event loop. In MT mode, complete()/fail() automatically wakes the reactor via mtWakeReactor so select() returns promptly.
-    
+
   </dd>
 </div>
 
@@ -479,38 +498,51 @@ Return whether the task's future has completed.Return the completed task value o
   <div id="cancel,TimerHandle">
   <dt><pre><span class="Keyword">proc</span> <a href="#cancel%2CTimerHandle"><span class="Identifier">cancel</span></a><span class="Other">(</span><span class="Identifier">h</span><span class="Other">:</span> <a href="eventloop.html#TimerHandle"><span class="Identifier">TimerHandle</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Cancel a timer callback if it has not fired yet. Marks the timer as cancelled. Callback release is performed on the event-loop thread when the entry is pruned from the timer heap.
-    
+
   </dd>
 </div>
 <div id="cancel,VoidTask">
   <dt><pre><span class="Keyword">proc</span> <a href="#cancel%2CVoidTask"><span class="Identifier">cancel</span></a><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#VoidTask"><span class="Identifier">VoidTask</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
                            <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 <div id="cancel,Task[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#cancel%2CTask%5BT%5D"><span class="Identifier">cancel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#Task"><span class="Identifier">Task</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
+  </dd>
+</div>
+
+</div>
+<div id="claimCurrentThread-procs-all">
+  <div id="claimCurrentThread,EventLoop">
+  <dt><pre><span class="Keyword">proc</span> <a href="#claimCurrentThread%2CEventLoop"><span class="Identifier">claimCurrentThread</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Transfer selector ownership to the calling runtime worker.
+
   </dd>
 </div>
 
 </div>
 <div id="cpsSleep-procs-all">
   <div id="cpsSleep,int">
-  <dt><pre><span class="Keyword">proc</span> <a href="#cpsSleep%2Cint"><span class="Identifier">cpsSleep</span></a><span class="Other">(</span><span class="Identifier">ms</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span>
-                                        <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dt><pre><span class="Keyword">proc</span> <a href="#cpsSleep%2Cint"><span class="Identifier">cpsSleep</span></a><span class="Other">(</span><span class="Identifier">ms</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
+                                        <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">,</span> <span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
+                                        <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Sleep for <tt class="docutils literal"><span class="pre"><span class="Identifier">ms</span></span></tt> milliseconds. Returns a void future.
-    
+
   </dd>
 </div>
 
@@ -520,44 +552,45 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#cpsYield"><span class="Identifier">cpsYield</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span>
                                  <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Yield control back to the event loop for one tick. In MT mode, dispatches the completion to a worker thread instead of going through the reactor's ready queue.
-    
+
   </dd>
 </div>
 
 </div>
 <div id="disableCrossThreadWake-procs-all">
   <div id="disableCrossThreadWake,EventLoop">
-  <dt><pre><span class="Keyword">proc</span> <a href="#disableCrossThreadWake%2CEventLoop"><span class="Identifier">disableCrossThreadWake</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dt><pre><span class="Keyword">proc</span> <a href="#disableCrossThreadWake%2CEventLoop"><span class="Identifier">disableCrossThreadWake</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Remove cross-thread control state and release its descriptors/closures.
-    
+
   </dd>
 </div>
 
 </div>
 <div id="drainCrossThreadQueue-procs-all">
   <div id="drainCrossThreadQueue,EventLoop">
-  <dt><pre><span class="Keyword">proc</span> <a href="#drainCrossThreadQueue%2CEventLoop"><span class="Identifier">drainCrossThreadQueue</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dt><pre><span class="Keyword">proc</span> <a href="#drainCrossThreadQueue%2CEventLoop"><span class="Identifier">drainCrossThreadQueue</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Drain all callbacks from the lock-free MPSC queue (event loop thread only).
-    
+
   </dd>
 </div>
 
 </div>
 <div id="enableCrossThreadWake-procs-all">
   <div id="enableCrossThreadWake,EventLoop">
-  <dt><pre><span class="Keyword">proc</span> <a href="#enableCrossThreadWake%2CEventLoop"><span class="Identifier">enableCrossThreadWake</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">OSError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dt><pre><span class="Keyword">proc</span> <a href="#enableCrossThreadWake%2CEventLoop"><span class="Identifier">enableCrossThreadWake</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">OSError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Add a wake descriptor and MPSC inbox to an event loop. Reactor pools use this for control messages while all normal I/O remains shard-local.
-    
+
   </dd>
 </div>
 
@@ -566,17 +599,17 @@ Return whether the task's future has completed.Return the completed task value o
   <div id="finished,VoidTask">
   <dt><pre><span class="Keyword">proc</span> <a href="#finished%2CVoidTask"><span class="Identifier">finished</span></a><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#VoidTask"><span class="Identifier">VoidTask</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 <div id="finished,Task[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#finished%2CTask%5BT%5D"><span class="Identifier">finished</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#Task"><span class="Identifier">Task</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 
@@ -586,17 +619,17 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#getError%2CVoidTask"><span class="Identifier">getError</span></a><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#VoidTask"><span class="Identifier">VoidTask</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Keyword">ref</span> <span class="Identifier">CatchableError</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 <div id="getError,Task[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#getError%2CTask%5BT%5D"><span class="Identifier">getError</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#Task"><span class="Identifier">Task</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Keyword">ref</span> <span class="Identifier">CatchableError</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 
@@ -606,18 +639,18 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#getEventLoop"><span class="Identifier">getEventLoop</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
                                  <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Return the event loop bound to the current thread.
-    
+
   </dd>
 </div>
 <div id="getEventLoop,RuntimeHandle">
   <dt><pre><span class="Keyword">proc</span> <a href="#getEventLoop%2CRuntimeHandle"><span class="Identifier">getEventLoop</span></a><span class="Other">(</span><span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Return the event loop bound to the current thread.
-    
+
   </dd>
 </div>
 
@@ -627,9 +660,9 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#getEventLoopForRuntime%2CCpsRuntime"><span class="Identifier">getEventLoopForRuntime</span></a><span class="Other">(</span><span class="Identifier">rt</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a><span class="Other">)</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Resolve or lazily create the runtime's event loop.
-    
+
   </dd>
 </div>
 
@@ -638,9 +671,9 @@ Return whether the task's future has completed.Return the completed task value o
   <div id="getStats,EventLoop">
   <dt><pre><span class="Keyword">proc</span> <a href="#getStats%2CEventLoop"><span class="Identifier">getStats</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span><span class="Other">:</span> <a href="eventloop.html#LoopStats"><span class="Identifier">LoopStats</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Get the current event loop performance statistics.
-    
+
   </dd>
 </div>
 
@@ -649,17 +682,29 @@ Return whether the task's future has completed.Return the completed task value o
   <div id="hasError,VoidTask">
   <dt><pre><span class="Keyword">proc</span> <a href="#hasError%2CVoidTask"><span class="Identifier">hasError</span></a><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#VoidTask"><span class="Identifier">VoidTask</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 <div id="hasError,Task[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#hasError%2CTask%5BT%5D"><span class="Identifier">hasError</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#Task"><span class="Identifier">Task</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
+  </dd>
+</div>
+
+</div>
+<div id="hasUserIoWork-procs-all">
+  <div id="hasUserIoWork,EventLoop">
+  <dt><pre><span class="Keyword">proc</span> <a href="#hasUserIoWork%2CEventLoop"><span class="Identifier">hasUserIoWork</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Return whether a worker loop has work beyond its scheduler wake handle.
+
   </dd>
 </div>
 
@@ -668,9 +713,9 @@ Return whether the task's future has completed.Return the completed task value o
   <div id="hasWork,EventLoop">
   <dt><pre><span class="Keyword">proc</span> <a href="#hasWork%2CEventLoop"><span class="Identifier">hasWork</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Return whether the event loop has work ready to run.
-    
+
   </dd>
 </div>
 
@@ -680,25 +725,37 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#isCancelled%2CTimerHandle"><span class="Identifier">isCancelled</span></a><span class="Other">(</span><span class="Identifier">h</span><span class="Other">:</span> <a href="eventloop.html#TimerHandle"><span class="Identifier">TimerHandle</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Return whether the operation was cancelled.
-    
+
   </dd>
 </div>
 <div id="isCancelled,VoidTask">
   <dt><pre><span class="Keyword">proc</span> <a href="#isCancelled%2CVoidTask"><span class="Identifier">isCancelled</span></a><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#VoidTask"><span class="Identifier">VoidTask</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 <div id="isCancelled,Task[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#isCancelled%2CTask%5BT%5D"><span class="Identifier">isCancelled</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#Task"><span class="Identifier">Task</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
+  </dd>
+</div>
+
+</div>
+<div id="isCurrentThreadOwner-procs-all">
+  <div id="isCurrentThreadOwner,EventLoop">
+  <dt><pre><span class="Keyword">proc</span> <a href="#isCurrentThreadOwner%2CEventLoop"><span class="Identifier">isCurrentThreadOwner</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Return whether the calling thread owns this selector.
+
   </dd>
 </div>
 
@@ -708,9 +765,9 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#markWakeDrained%2CEventLoop"><span class="Identifier">markWakeDrained</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
                                         <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Mark the wake signal as drained so producers can signal again.
-    
+
   </dd>
 </div>
 
@@ -720,17 +777,17 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#migrateTo%2CVoidTask%2CRuntimeHandle"><span class="Identifier">migrateTo</span></a><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#VoidTask"><span class="Identifier">VoidTask</span></a><span class="Other">;</span> <span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span>
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">RuntimeAffinityError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Move the future to another runtime.
-    
+
   </dd>
 </div>
 <div id="migrateTo,Task[T],RuntimeHandle">
   <dt><pre><span class="Keyword">proc</span> <a href="#migrateTo%2CTask%5BT%5D%2CRuntimeHandle"><span class="Identifier">migrateTo</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#Task"><span class="Identifier">Task</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
+
     Move the future to another runtime.
-    
+
   </dd>
 </div>
 
@@ -740,21 +797,34 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#newEventLoop"><span class="Identifier">newEventLoop</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
                                  <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Create a new EventLoop with default (single-threaded) configuration.
-    
+
+  </dd>
+</div>
+
+</div>
+<div id="poll-procs-all">
+  <div id="poll,EventLoop">
+  <dt><pre><span class="Keyword">proc</span> <a href="#poll%2CEventLoop"><span class="Identifier">poll</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span class="Identifier">discardable</span><span class="Other">,</span>
+                                   <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span>
+                                   <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Run one non-blocking event-loop iteration and report whether work ran.
+
   </dd>
 </div>
 
 </div>
 <div id="postToEventLoop-procs-all">
-  <div id="postToEventLoop,EventLoop,CrossThreadCallback">
-  <dt><pre><span class="Keyword">proc</span> <a href="#postToEventLoop%2CEventLoop%2CCrossThreadCallback"><span class="Identifier">postToEventLoop</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">;</span> <span class="Identifier">cb</span><span class="Other">:</span> <a href="private/mpsc_queue.html#CrossThreadCallback"><span class="Identifier">CrossThreadCallback</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <div id="postToEventLoop,EventLoop,sinkCrossThreadCallback">
+  <dt><pre><span class="Keyword">proc</span> <a href="#postToEventLoop%2CEventLoop%2CsinkCrossThreadCallback"><span class="Identifier">postToEventLoop</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">;</span> <span class="Identifier">cbArg</span><span class="Other">:</span> <span class="Identifier">sink</span> <a href="private/mpsc_queue.html#CrossThreadCallback"><span class="Identifier">CrossThreadCallback</span></a><span class="Other">)</span> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Thread-safe: post a callback to the event loop via lock-free MPSC queue. Writes a byte to the wake pipe to unblock the reactor's select().
-    
+
   </dd>
 </div>
 
@@ -763,9 +833,9 @@ Return whether the task's future has completed.Return the completed task value o
   <div id="read,Task[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#read%2CTask%5BT%5D"><span class="Identifier">read</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#Task"><span class="Identifier">Task</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">T</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 
@@ -775,9 +845,9 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#recordWakeSignal%2CEventLoop"><span class="Identifier">recordWakeSignal</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Record that a wake callback was processed on the reactor thread.
-    
+
   </dd>
 </div>
 
@@ -785,20 +855,20 @@ Return whether the task's future has completed.Return the completed task value o
 <div id="registerRead-procs-all">
   <div id="registerRead,EventLoop,int,proc)">
   <dt><pre><span class="Keyword">proc</span> <a href="#registerRead%2CEventLoop%2Cint%2Cproc%29"><span class="Identifier">registerRead</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">;</span> <span class="Identifier">fd</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span> <span class="Identifier">cb</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Register a one-shot socket-read callback.
-    
+
   </dd>
 </div>
 <div id="registerRead,EventLoop,SocketHandle,proc)">
   <dt><pre><span class="Keyword">proc</span> <a href="#registerRead%2CEventLoop%2CSocketHandle%2Cproc%29"><span class="Identifier">registerRead</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">;</span> <span class="Identifier">fd</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span><span class="Other">;</span> <span class="Identifier">cb</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Register a one-shot socket-read callback.
-    
+
   </dd>
 </div>
 
@@ -806,11 +876,12 @@ Return whether the task's future has completed.Return the completed task value o
 <div id="registerTimer-procs-all">
   <div id="registerTimer,EventLoop,int,proc)">
   <dt><pre><span class="Keyword">proc</span> <a href="#registerTimer%2CEventLoop%2Cint%2Cproc%29"><span class="Identifier">registerTimer</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">;</span> <span class="Identifier">delayMs</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span> <span class="Identifier">cb</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span><span class="Other">:</span> <a href="eventloop.html#TimerHandle"><span class="Identifier">TimerHandle</span></a> {.
-    <span class="Identifier">discardable</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span class="Identifier">discardable</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">,</span> <span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Register a one-shot timer with the event loop.
-    
+
   </dd>
 </div>
 
@@ -818,20 +889,20 @@ Return whether the task's future has completed.Return the completed task value o
 <div id="registerWrite-procs-all">
   <div id="registerWrite,EventLoop,int,proc)">
   <dt><pre><span class="Keyword">proc</span> <a href="#registerWrite%2CEventLoop%2Cint%2Cproc%29"><span class="Identifier">registerWrite</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">;</span> <span class="Identifier">fd</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span> <span class="Identifier">cb</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Register a one-shot socket-write callback.
-    
+
   </dd>
 </div>
 <div id="registerWrite,EventLoop,SocketHandle,proc)">
   <dt><pre><span class="Keyword">proc</span> <a href="#registerWrite%2CEventLoop%2CSocketHandle%2Cproc%29"><span class="Identifier">registerWrite</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">;</span> <span class="Identifier">fd</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span><span class="Other">;</span> <span class="Identifier">cb</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Register a one-shot socket-write callback.
-    
+
   </dd>
 </div>
 
@@ -840,9 +911,9 @@ Return whether the task's future has completed.Return the completed task value o
   <div id="resetStats,EventLoop">
   <dt><pre><span class="Keyword">proc</span> <a href="#resetStats%2CEventLoop"><span class="Identifier">resetStats</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Reset all event loop performance counters to zero.
-    
+
   </dd>
 </div>
 
@@ -853,9 +924,9 @@ Return whether the task's future has completed.Return the completed task value o
     <span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">ValueError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span>
                                   <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Run CPS until it completes or is stopped.
-    
+
   </dd>
 </div>
 <div id="runCps,VoidTask">
@@ -863,25 +934,25 @@ Return whether the task's future has completed.Return the completed task value o
                                     <span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">ValueError</span><span class="Other">]</span><span class="Other">,</span>
                            <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Block until a void task completes, driving the event loop.
-    
+
   </dd>
 </div>
 <div id="runCps,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#runCps%2CCpsFuture%5BT%5D"><span class="Identifier">runCps</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">T</span></pre></dt>
   <dd>
-    
+
     Run CPS until it completes or is stopped.
-    
+
   </dd>
 </div>
 <div id="runCps,Task[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#runCps%2CTask%5BT%5D"><span class="Identifier">runCps</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#Task"><span class="Identifier">Task</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">T</span></pre></dt>
   <dd>
-    
+
     Block until a task completes, driving the event loop.
-    
+
   </dd>
 </div>
 
@@ -892,59 +963,59 @@ Return whether the task's future has completed.Return the completed task value o
     <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">RuntimeAffinityError</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">ValueError</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Run CPS on until it completes or is stopped.
-    
+
   </dd>
 </div>
 <div id="runCpsOn,RuntimeHandle,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#runCpsOn%2CRuntimeHandle%2CCpsFuture%5BT%5D"><span class="Identifier">runCpsOn</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">;</span> <span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">T</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
+
     Run CPS on until it completes or is stopped.
-    
+
   </dd>
 </div>
 
 </div>
 <div id="runForever-procs-all">
   <div id="runForever">
-  <dt><pre><span class="Keyword">proc</span> <a href="#runForever"><span class="Identifier">runForever</span></a><span class="Other">(</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span>
+  <dt><pre><span class="Keyword">proc</span> <a href="#runForever"><span class="Identifier">runForever</span></a><span class="Other">(</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span>
                     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Run forever until it completes or is stopped.
-    
+
   </dd>
 </div>
 <div id="runForever,EventLoop">
-  <dt><pre><span class="Keyword">proc</span> <a href="#runForever%2CEventLoop"><span class="Identifier">runForever</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span>
+  <dt><pre><span class="Keyword">proc</span> <a href="#runForever%2CEventLoop"><span class="Identifier">runForever</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span>
                                    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Run forever until it completes or is stopped.
-    
+
   </dd>
 </div>
 
 </div>
 <div id="scheduleCallback-procs-all">
   <div id="scheduleCallback,proc)">
-  <dt><pre><span class="Keyword">proc</span> <a href="#scheduleCallback%2Cproc%29"><span class="Identifier">scheduleCallback</span></a><span class="Other">(</span><span class="Identifier">cb</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dt><pre><span class="Keyword">proc</span> <a href="#scheduleCallback%2Cproc%29"><span class="Identifier">scheduleCallback</span></a><span class="Other">(</span><span class="Identifier">cb</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Queue a callback for execution on the event-loop thread.
-    
+
   </dd>
 </div>
 <div id="scheduleCallback,EventLoop,proc)">
-  <dt><pre><span class="Keyword">proc</span> <a href="#scheduleCallback%2CEventLoop%2Cproc%29"><span class="Identifier">scheduleCallback</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">;</span> <span class="Identifier">cb</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dt><pre><span class="Keyword">proc</span> <a href="#scheduleCallback%2CEventLoop%2Cproc%29"><span class="Identifier">scheduleCallback</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">;</span> <span class="Identifier">cb</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Queue a callback for execution on the event-loop thread.
-    
+
   </dd>
 </div>
 
@@ -953,9 +1024,9 @@ Return whether the task's future has completed.Return the completed task value o
   <div id="setEventLoop,EventLoop">
   <dt><pre><span class="Keyword">proc</span> <a href="#setEventLoop%2CEventLoop"><span class="Identifier">setEventLoop</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Compatibility helper: sets the main runtime's loop.
-    
+
   </dd>
 </div>
 
@@ -965,9 +1036,9 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#shouldProxyToReactor%2CEventLoop"><span class="Identifier">shouldProxyToReactor</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     In MT mode, selector/timer/ready-queue mutation must happen on the reactor thread. During bootstrap (queue/pipe not initialized) run inline.
-    
+
   </dd>
 </div>
 
@@ -975,11 +1046,11 @@ Return whether the task's future has completed.Return the completed task value o
 <div id="shutdownGracefully-procs-all">
   <div id="shutdownGracefully,EventLoop,int">
   <dt><pre><span class="Keyword">proc</span> <a href="#shutdownGracefully%2CEventLoop%2Cint"><span class="Identifier">shutdownGracefully</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">;</span> <span class="Identifier">drainTimeoutMs</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">1000</span><span class="Other">)</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">,</span> <span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">,</span> <span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Stop accepting new work, drain pending callbacks, then stop. Processes ready-queue callbacks and fires due timers for up to drainTimeoutMs, then sets running = false.
-    
+
   </dd>
 </div>
 
@@ -990,9 +1061,9 @@ Return whether the task's future has completed.Return the completed task value o
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">,</span> <span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Sleep for <tt class="docutils literal"><span class="pre"><span class="Identifier">ms</span></span></tt> unless <tt class="docutils literal"><span class="pre"><span class="Identifier">signal</span></span></tt> completes first.
-    
+
   </dd>
 </div>
 
@@ -1002,17 +1073,17 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#spawn%2CCpsVoidFuture%2Cstring"><span class="Identifier">spawn</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">;</span> <span class="Identifier">name</span><span class="Other">:</span> <span class="Identifier">string</span> <span class="Other">=</span> <span class="StringLit">&quot;&quot;</span><span class="Other">)</span><span class="Other">:</span> <a href="eventloop.html#VoidTask"><span class="Identifier">VoidTask</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">RuntimeAffinityError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Schedule eventloop for asynchronous execution.
-    
+
   </dd>
 </div>
 <div id="spawn,CpsFuture[T],string">
   <dt><pre><span class="Keyword">proc</span> <a href="#spawn%2CCpsFuture%5BT%5D%2Cstring"><span class="Identifier">spawn</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">name</span><span class="Other">:</span> <span class="Identifier">string</span> <span class="Other">=</span> <span class="StringLit">&quot;&quot;</span><span class="Other">)</span><span class="Other">:</span> <a href="eventloop.html#Task"><span class="Identifier">Task</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-    
+
     Schedule eventloop for asynchronous execution.
-    
+
   </dd>
 </div>
 
@@ -1022,18 +1093,18 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#spawnOn%2CRuntimeHandle%2CCpsVoidFuture%2Cstring"><span class="Identifier">spawnOn</span></a><span class="Other">(</span><span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">;</span> <span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">;</span> <span class="Identifier">name</span><span class="Other">:</span> <span class="Identifier">string</span> <span class="Other">=</span> <span class="StringLit">&quot;&quot;</span><span class="Other">)</span><span class="Other">:</span> <a href="eventloop.html#VoidTask"><span class="Identifier">VoidTask</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">RuntimeAffinityError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Spawn a void CPS proc as a concurrent task. Optionally provide a name for debugging/tracing.
-    
+
   </dd>
 </div>
 <div id="spawnOn,RuntimeHandle,CpsFuture[T],string">
   <dt><pre><span class="Keyword">proc</span> <a href="#spawnOn%2CRuntimeHandle%2CCpsFuture%5BT%5D%2Cstring"><span class="Identifier">spawnOn</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">;</span> <span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">name</span><span class="Other">:</span> <span class="Identifier">string</span> <span class="Other">=</span> <span class="StringLit">&quot;&quot;</span><span class="Other">)</span><span class="Other">:</span> <a href="eventloop.html#Task"><span class="Identifier">Task</span></a><span class="Other">[</span>
     <span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-    
+
     Spawn a CPS proc as a concurrent task. The task runs cooperatively on the event loop. Can be awaited later to retrieve the result. Optionally provide a name for debugging/tracing.
-    
+
   </dd>
 </div>
 
@@ -1042,21 +1113,21 @@ Return whether the task's future has completed.Return the completed task value o
   <div id="stop,EventLoop">
   <dt><pre><span class="Keyword">proc</span> <a href="#stop%2CEventLoop"><span class="Identifier">stop</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Stop eventloop and wake any pending work.
-    
+
   </dd>
 </div>
 
 </div>
 <div id="tick-procs-all">
   <div id="tick,EventLoop">
-  <dt><pre><span class="Keyword">proc</span> <a href="#tick%2CEventLoop"><span class="Identifier">tick</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span>
+  <dt><pre><span class="Keyword">proc</span> <a href="#tick%2CEventLoop"><span class="Identifier">tick</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span>
                              <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
-    Run one iteration of the event loop.
-    
+
+    Run one event-loop iteration, blocking until readiness when idle.
+
   </dd>
 </div>
 
@@ -1066,17 +1137,17 @@ Return whether the task's future has completed.Return the completed task value o
   <dt><pre><span class="Keyword">proc</span> <a href="#tryMigrateTo%2CVoidTask%2CRuntimeHandle"><span class="Identifier">tryMigrateTo</span></a><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#VoidTask"><span class="Identifier">VoidTask</span></a><span class="Other">;</span> <span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span>
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Attempt to move the future to another runtime without blocking.
-    
+
   </dd>
 </div>
 <div id="tryMigrateTo,Task[T],RuntimeHandle">
   <dt><pre><span class="Keyword">proc</span> <a href="#tryMigrateTo%2CTask%5BT%5D%2CRuntimeHandle"><span class="Identifier">tryMigrateTo</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <a href="eventloop.html#Task"><span class="Identifier">Task</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
+
     Attempt to move the future to another runtime without blocking.
-    
+
   </dd>
 </div>
 
@@ -1085,29 +1156,42 @@ Return whether the task's future has completed.Return the completed task value o
   <div id="tryWakeSelector,EventLoop">
   <dt><pre><span class="Keyword">proc</span> <a href="#tryWakeSelector%2CEventLoop"><span class="Identifier">tryWakeSelector</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Coalesced wake for selector waiters. Safe from any thread.
-    
+
   </dd>
 </div>
 
 </div>
 <div id="unregister-procs-all">
   <div id="unregister,EventLoop,int">
-  <dt><pre><span class="Keyword">proc</span> <a href="#unregister%2CEventLoop%2Cint"><span class="Identifier">unregister</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">;</span> <span class="Identifier">fd</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dt><pre><span class="Keyword">proc</span> <a href="#unregister%2CEventLoop%2Cint"><span class="Identifier">unregister</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">;</span> <span class="Identifier">fd</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Remove the socket registration from the event loop.
-    
+
   </dd>
 </div>
 <div id="unregister,EventLoop,SocketHandle">
-  <dt><pre><span class="Keyword">proc</span> <a href="#unregister%2CEventLoop%2CSocketHandle"><span class="Identifier">unregister</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">;</span> <span class="Identifier">fd</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+  <dt><pre><span class="Keyword">proc</span> <a href="#unregister%2CEventLoop%2CSocketHandle"><span class="Identifier">unregister</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">;</span> <span class="Identifier">fd</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Remove the socket registration from the event loop.
+
+  </dd>
+</div>
+
+</div>
+<div id="userIoHandleCount-procs-all">
+  <div id="userIoHandleCount,EventLoop">
+  <dt><pre><span class="Keyword">proc</span> <a href="#userIoHandleCount%2CEventLoop"><span class="Identifier">userIoHandleCount</span></a><span class="Other">(</span><span class="Identifier">loop</span><span class="Other">:</span> <a href="eventloop.html#EventLoop"><span class="Identifier">EventLoop</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
-    Remove the socket registration from the event loop.
-    
+
+    Return selector handles excluding the runtime's internal wake descriptor.
+
   </dd>
 </div>
 
@@ -1116,44 +1200,44 @@ Return whether the task's future has completed.Return the completed task value o
   <div id="waitAll">
   <dt><pre><span class="Keyword">proc</span> <a href="#waitAll"><span class="Identifier">waitAll</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Varargs convenience overload for zero futures.
-    
+
   </dd>
 </div>
 <div id="waitAll,CpsVoidFuture,varargs[CpsVoidFuture]">
   <dt><pre><span class="Keyword">proc</span> <a href="#waitAll%2CCpsVoidFuture%2Cvarargs%5BCpsVoidFuture%5D"><span class="Identifier">waitAll</span></a><span class="Other">(</span><span class="Identifier">first</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">;</span> <span class="Identifier">rest</span><span class="Other">:</span> <span class="Identifier">varargs</span><span class="Other">[</span><a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.
     <span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Varargs convenience overload for void futures.
-    
+
   </dd>
 </div>
 <div id="waitAll,openArray[CpsVoidFuture]">
   <dt><pre><span class="Keyword">proc</span> <a href="#waitAll%2CopenArray%5BCpsVoidFuture%5D"><span class="Identifier">waitAll</span></a><span class="Other">(</span><span class="Identifier">futures</span><span class="Other">:</span> <span class="Identifier">openArray</span><span class="Other">[</span><a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Returns a future that completes when all non-nil void futures complete.
-    
+
   </dd>
 </div>
 <div id="waitAll,CpsFuture[T],varargs[CpsFuture[T]]">
   <dt><pre><span class="Keyword">proc</span> <a href="#waitAll%2CCpsFuture%5BT%5D%2Cvarargs%5BCpsFuture%5BT%5D%5D"><span class="Identifier">waitAll</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">first</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">rest</span><span class="Other">:</span> <span class="Identifier">varargs</span><span class="Other">[</span><a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.
     <span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
+
     Varargs convenience overload for typed futures.
-    
+
   </dd>
 </div>
 <div id="waitAll,openArray[CpsFuture[T]]">
   <dt><pre><span class="Keyword">proc</span> <a href="#waitAll%2CopenArray%5BCpsFuture%5BT%5D%5D"><span class="Identifier">waitAll</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">futures</span><span class="Other">:</span> <span class="Identifier">openArray</span><span class="Other">[</span><a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a></pre></dt>
   <dd>
-    
+
     Returns a void future that completes when all non-nil typed futures complete.
-    
+
   </dd>
 </div>
 
@@ -1165,18 +1249,18 @@ Return whether the task's future has completed.Return the completed task value o
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">,</span> <span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Complete when all void futures complete, timeout elapses, or signal fires.
-    
+
   </dd>
 </div>
 <div id="waitAllOrSignal,openArray[CpsFuture[T]],int,CpsVoidFuture">
   <dt><pre><span class="Keyword">proc</span> <a href="#waitAllOrSignal%2CopenArray%5BCpsFuture%5BT%5D%5D%2Cint%2CCpsVoidFuture"><span class="Identifier">waitAllOrSignal</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">futures</span><span class="Other">:</span> <span class="Identifier">openArray</span><span class="Other">[</span><a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">timeoutMs</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span>
                         <span class="Identifier">signal</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
+
     Complete when all typed futures complete, timeout elapses, or signal fires.
-    
+
   </dd>
 </div>
 
@@ -1187,18 +1271,18 @@ Return whether the task's future has completed.Return the completed task value o
     <span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">,</span> <span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Complete when all void futures complete or timeout elapses.
-    
+
   </dd>
 </div>
 <div id="waitAllOrTimeout,openArray[CpsFuture[T]],int">
   <dt><pre><span class="Keyword">proc</span> <a href="#waitAllOrTimeout%2CopenArray%5BCpsFuture%5BT%5D%5D%2Cint"><span class="Identifier">waitAllOrTimeout</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">futures</span><span class="Other">:</span> <span class="Identifier">openArray</span><span class="Other">[</span><a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">timeoutMs</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.
     <span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
+
     Complete when all typed futures complete or timeout elapses.
-    
+
   </dd>
 </div>
 
@@ -1213,9 +1297,9 @@ Return whether the task's future has completed.Return the completed task value o
   <div id="runOn.t,RuntimeHandle,untyped">
   <dt><pre><span class="Keyword">template</span> <a href="#runOn.t%2CRuntimeHandle%2Cuntyped"><span class="Identifier">runOn</span></a><span class="Other">(</span><span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">;</span> <span class="Identifier">expr</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">untyped</span></pre></dt>
   <dd>
-    
+
     Run on until it completes or is stopped.
-    
+
   </dd>
 </div>
 
@@ -1226,7 +1310,7 @@ Return whether the task's future has completed.Return the completed task value o
 <div class="section" id="19">
   <h1><a class="toc-backref" href="#19">Exports</a></h1>
   <dl class="item">
-    <a href="runtime.html#ensureShared,CpsFuture[T]"><span class="Identifier">ensureShared</span></a>, <a href="runtime.html#ensureShared,CpsVoidFuture"><span class="Identifier">ensureShared</span></a>, <a href="runtime.html#failedVoidFuture,ref.CatchableError"><span class="Identifier">failedVoidFuture</span></a>, <a href="runtime.html#cancel,CpsFuture[T]"><span class="Identifier">cancel</span></a>, <a href="runtime.html#completedVoidFuture"><span class="Identifier">completedVoidFuture</span></a>, <a href="runtime.html#pinFutureRuntime,CpsFuture[T]"><span class="Identifier">pinFutureRuntime</span></a>, <a href="runtime.html#newCpsFuture"><span class="Identifier">newCpsFuture</span></a>, <a href="runtime.html#leave,RuntimeGuard"><span class="Identifier">leave</span></a>, <a href="runtime.html#raceCancel,varargs[CpsFuture[T]]"><span class="Identifier">raceCancel</span></a>, <a href="runtime.html#cancel,CpsVoidFuture"><span class="Identifier">cancel</span></a>, <a href="runtime.html#fail,CpsVoidFuture,ref.CatchableError"><span class="Identifier">fail</span></a>, <a href="runtime.html#finished,CpsVoidFuture"><span class="Identifier">finished</span></a>, <a href="runtime.html#finished,CpsFuture[T]"><span class="Identifier">finished</span></a>, <a href="runtime.html#tryCurrentRuntime"><span class="Identifier">tryCurrentRuntime</span></a>, <a href="runtime.html#pinFutureRuntime,CpsVoidFuture"><span class="Identifier">pinFutureRuntime</span></a>, <a href="runtime.html#RuntimeFlavor"><span class="Identifier">RuntimeFlavor</span></a>, <a href="runtime.html#waitRunCpsSignal,CpsVoidFuture"><span class="Identifier">waitRunCpsSignal</span></a>, <a href="runtime.html#mtCallbackDispatcher"><span class="Identifier">mtCallbackDispatcher</span></a>, <a href="runtime.html#newCpsVoidFuture"><span class="Identifier">newCpsVoidFuture</span></a>, <a href="runtime.html#initTrampoline,sinkContinuation"><span class="Identifier">initTrampoline</span></a>, <a href="runtime.html#hasError,CpsFuture[T]"><span class="Identifier">hasError</span></a>, <a href="runtime.html#CpsContractError"><span class="Identifier">CpsContractError</span></a>, <a href="runtime.html#ContinuationState"><span class="Identifier">ContinuationState</span></a>, <a href="runtime.html#addCallbackOn,CpsVoidFuture,RuntimeHandle,proc)"><span class="Identifier">addCallbackOn</span></a>, <a href="runtime.html#tryMigrateTo,CpsVoidFuture,RuntimeHandle"><span class="Identifier">tryMigrateTo</span></a>, <a href="runtime.html#raceCancel,varargs[CpsVoidFuture]"><span class="Identifier">raceCancel</span></a>, <a href="runtime.html#pass,sinkContinuation"><span class="Identifier">pass</span></a>, <a href="runtime.html#newRuntime,RuntimeConfig"><span class="Identifier">newRuntime</span></a>, <a href="runtime.html#completedLocalFuture,T"><span class="Identifier">completedLocalFuture</span></a>, <a href="runtime.html#isSchedulerWorker"><span class="Identifier">isSchedulerWorker</span></a>, <a href="runtime.html#tryMigrateTo,CpsFuture[T],RuntimeHandle"><span class="Identifier">tryMigrateTo</span></a>, <a href="runtime.html#halt,sinkContinuation"><span class="Identifier">halt</span></a>, <a href="runtime.html#isSuspended,Continuation"><span class="Identifier">isSuspended</span></a>, <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a>, <a href="runtime.html#currentWorkerId"><span class="Identifier">currentWorkerId</span></a>, <a href="runtime.html#setFutureRootContinuation,CpsFuture[T],Continuation"><span class="Identifier">setFutureRootContinuation</span></a>, <a href="runtime.html#read,CpsVoidFuture"><span class="Identifier">read</span></a>, <a href="runtime.html#AtomicCounter"><span class="Identifier">AtomicCounter</span></a>, <a href="runtime.html#setLocalFutureDefault,bool"><span class="Identifier">setLocalFutureDefault</span></a>, <a href="runtime.html#select,varargs[CpsFuture[T]]"><span class="Identifier">select</span></a>, <a href="runtime.html#isFinished,Continuation"><span class="Identifier">isFinished</span></a>, <a href="runtime.html#newCurrentThreadRuntime"><span class="Identifier">newCurrentThreadRuntime</span></a>, <a href="runtime.html#completedFuture,T"><span class="Identifier">completedFuture</span></a>, <a href="runtime.html#isSharedSafe,CpsVoidFuture"><span class="Identifier">isSharedSafe</span></a>, <a href="runtime.html#newLocalCpsFuture"><span class="Identifier">newLocalCpsFuture</span></a>, <a href="runtime.html#fail,sinkContinuation,ref.CatchableError"><span class="Identifier">fail</span></a>, <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a>, <a href="runtime.html#bounce,Trampoline"><span class="Identifier">bounce</span></a>, <a href="runtime.html#migrateTo,CpsFuture[T],RuntimeHandle"><span class="Identifier">migrateTo</span></a>, <a href="runtime.html#complete,CpsVoidFuture"><span class="Identifier">complete</span></a>, <a href="runtime.html#setFutureRootContinuation,CpsVoidFuture,Continuation"><span class="Identifier">setFutureRootContinuation</span></a>, <a href="runtime.html#addCallback,CpsFuture[T],proc)"><span class="Identifier">addCallback</span></a>, <a href="runtime.html#run,sinkContinuation"><span class="Identifier">run</span></a>, <a href="runtime.html#runUntilSuspend,sinkContinuation"><span class="Identifier">runUntilSuspend</span></a>, <a href="runtime.html#withRuntime.t,RuntimeHandle,untyped"><span class="Identifier">withRuntime</span></a>, <a href="runtime.html#failedLocalFuture,ref.CatchableError"><span class="Identifier">failedLocalFuture</span></a>, <a href="runtime.html#FuturePerfMode"><span class="Identifier">FuturePerfMode</span></a>, <a href="runtime.html#isRuntimePinned,CpsVoidFuture"><span class="Identifier">isRuntimePinned</span></a>, <a href="runtime.html#runCpsWaitLeave"><span class="Identifier">runCpsWaitLeave</span></a>, <a href="runtime.html#getRuntimeStats"><span class="Identifier">getRuntimeStats</span></a>, <a href="runtime.html#complete,CpsFuture[T],T"><span class="Identifier">complete</span></a>, <a href="runtime.html#setMainRuntime,CpsRuntime"><span class="Identifier">setMainRuntime</span></a>, <a href="runtime.html#Trampoline"><span class="Identifier">Trampoline</span></a>, <a href="runtime.html#isCancelled,CpsVoidFuture"><span class="Identifier">isCancelled</span></a>, <a href="runtime.html#isNil,RuntimeHandle"><span class="Identifier">isNil</span></a>, <a href="runtime.html#race,varargs[CpsFuture[T]]"><span class="Identifier">race</span></a>, <a href="runtime.html#registerMtRuntimeFactory,MtRuntimeFactoryProc"><span class="Identifier">registerMtRuntimeFactory</span></a>, <a href="runtime.html#bindFutureRuntime,CpsFuture[T],RuntimeHandle"><span class="Identifier">bindFutureRuntime</span></a>, <a href="runtime.html#enter,RuntimeHandle"><span class="Identifier">enter</span></a>, <a href="runtime.html#runCpsWaitEnter,CpsRuntime"><span class="Identifier">runCpsWaitEnter</span></a>, <a href="runtime.html#isRunning,Continuation"><span class="Identifier">isRunning</span></a>, <a href="runtime.html#setCurrentRuntime,CpsRuntime"><span class="Identifier">setCurrentRuntime</span></a>, <a href="runtime.html#mtDispatcher"><span class="Identifier">mtDispatcher</span></a>, <a href="runtime.html#mtYieldDispatcher"><span class="Identifier">mtYieldDispatcher</span></a>, <a href="runtime.html#RuntimeStats"><span class="Identifier">RuntimeStats</span></a>, <a href="runtime.html#RuntimeGuard"><span class="Identifier">RuntimeGuard</span></a>, <a href="runtime.html#setContinuation.t,Continuation,untyped"><span class="Identifier">setContinuation</span></a>, <a href="runtime.html#freeAtomicCounter,ptr.AtomicCounter"><span class="Identifier">freeAtomicCounter</span></a>, <a href="runtime.html#read,CpsFuture[T]"><span class="Identifier">read</span></a>, <a href="runtime.html#isCancelled,CpsFuture[T]"><span class="Identifier">isCancelled</span></a>, <a href="runtime.html#runtimeId,RuntimeHandle"><span class="Identifier">runtimeId</span></a>, <a href="runtime.html#mainRuntime"><span class="Identifier">mainRuntime</span></a>, <a href="runtime.html#resetRuntimeStats"><span class="Identifier">resetRuntimeStats</span></a>, <a href="runtime.html#isRuntimePinned,CpsFuture[T]"><span class="Identifier">isRuntimePinned</span></a>, <a href="runtime.html#completedLocalVoidFuture"><span class="Identifier">completedLocalVoidFuture</span></a>, <a href="runtime.html#toHandle,CpsRuntime"><span class="Identifier">toHandle</span></a>, <a href="runtime.html#currentRuntime"><span class="Identifier">currentRuntime</span></a>, <a href="runtime.html#isReactorThread"><span class="Identifier">isReactorThread</span></a>, <a href="runtime.html#hasError,CpsVoidFuture"><span class="Identifier">hasError</span></a>, <a href="runtime.html#mtWakeReactor"><span class="Identifier">mtWakeReactor</span></a>, <a href="runtime.html#race,varargs[CpsVoidFuture]"><span class="Identifier">race</span></a>, <a href="runtime.html#isSharedSafe,CpsFuture[T]"><span class="Identifier">isSharedSafe</span></a>, <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a>, <a href="runtime.html#getError,CpsVoidFuture"><span class="Identifier">getError</span></a>, <a href="runtime.html#newAtomicCounter,int"><span class="Identifier">newAtomicCounter</span></a>, <a href="runtime.html#waitRunCpsSignal,CpsRuntime,CpsFuture[T]"><span class="Identifier">waitRunCpsSignal</span></a>, <a href="runtime.html#RuntimeConfig"><span class="Identifier">RuntimeConfig</span></a>, <a href="runtime.html#fail,CpsFuture[T],ref.CatchableError"><span class="Identifier">fail</span></a>, <a href="runtime.html#getError,CpsFuture[T]"><span class="Identifier">getError</span></a>, <a href="runtime.html#waitRunCpsSignal,CpsFuture[T]"><span class="Identifier">waitRunCpsSignal</span></a>, <a href="runtime.html#isLocalFast,CpsFuture[T]"><span class="Identifier">isLocalFast</span></a>, <a href="runtime.html#defaultRuntimeConfig"><span class="Identifier">defaultRuntimeConfig</span></a>, <a href="runtime.html#newContinuation,typedesc[Continuation],proc(sinkContinuation)"><span class="Identifier">newContinuation</span></a>, <a href="runtime.html#failedLocalVoidFuture,ref.CatchableError"><span class="Identifier">failedLocalVoidFuture</span></a>, <a href="runtime.html#runCpsWaitEnter"><span class="Identifier">runCpsWaitEnter</span></a>, <a href="runtime.html#runtimeFlavor,RuntimeHandle"><span class="Identifier">runtimeFlavor</span></a>, <a href="runtime.html#futureRuntime,CpsVoidFuture"><span class="Identifier">futureRuntime</span></a>, <a href="runtime.html#addCallbackOn,CpsFuture[T],RuntimeHandle,proc)"><span class="Identifier">addCallbackOn</span></a>, <a href="runtime.html#waitRunCpsSignal,CpsRuntime,CpsVoidFuture"><span class="Identifier">waitRunCpsSignal</span></a>, <a href="runtime.html#failedFuture,ref.CatchableError"><span class="Identifier">failedFuture</span></a>, <a href="runtime.html#newLocalCpsVoidFuture"><span class="Identifier">newLocalCpsVoidFuture</span></a>, <a href="runtime.html#migrateTo,CpsVoidFuture,RuntimeHandle"><span class="Identifier">migrateTo</span></a>, <a href="runtime.html#bindFutureRuntime,CpsVoidFuture,RuntimeHandle"><span class="Identifier">bindFutureRuntime</span></a>, <a href="runtime.html#runCpsWaitLeave,CpsRuntime"><span class="Identifier">runCpsWaitLeave</span></a>, <a href="runtime.html#CancellationError"><span class="Identifier">CancellationError</span></a>, <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a>, <a href="runtime.html#isLocalFast,CpsVoidFuture"><span class="Identifier">isLocalFast</span></a>, <a href="runtime.html#currentSchedulerPtr"><span class="Identifier">currentSchedulerPtr</span></a>, <a href="runtime.html#suspend,sinkContinuation"><span class="Identifier">suspend</span></a>, <a href="runtime.html#newMultiThreadRuntime,int,int,int,int"><span class="Identifier">newMultiThreadRuntime</span></a>, <a href="runtime.html#mtModeEnabled"><span class="Identifier">mtModeEnabled</span></a>, <a href="runtime.html#RuntimeAffinityError"><span class="Identifier">RuntimeAffinityError</span></a>, <a href="runtime.html#localFutureDefaultEnabled"><span class="Identifier">localFutureDefaultEnabled</span></a>, <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a>, <a href="runtime.html#futureRuntime,CpsFuture[T]"><span class="Identifier">futureRuntime</span></a>, <a href="runtime.html#addCallback,CpsVoidFuture,proc)"><span class="Identifier">addCallback</span></a>
+    <a href="runtime.html#ensureShared,CpsFuture[T]"><span class="Identifier">ensureShared</span></a>, <a href="runtime.html#ensureShared,CpsVoidFuture"><span class="Identifier">ensureShared</span></a>, <a href="runtime.html#failedVoidFuture,ref.CatchableError"><span class="Identifier">failedVoidFuture</span></a>, <a href="runtime.html#cancel,CpsFuture[T]"><span class="Identifier">cancel</span></a>, <a href="runtime.html#completedVoidFuture"><span class="Identifier">completedVoidFuture</span></a>, <a href="runtime.html#pinFutureRuntime,CpsFuture[T]"><span class="Identifier">pinFutureRuntime</span></a>, <a href="runtime.html#newCpsFuture"><span class="Identifier">newCpsFuture</span></a>, <a href="runtime.html#leave,RuntimeGuard"><span class="Identifier">leave</span></a>, <a href="runtime.html#clearCurrentEventLoop"><span class="Identifier">clearCurrentEventLoop</span></a>, <a href="runtime.html#raceCancel,varargs[CpsFuture[T]]"><span class="Identifier">raceCancel</span></a>, <a href="runtime.html#freeAtomicCounter,ptr.AtomicCounter"><span class="Identifier">freeAtomicCounter</span></a>, <a href="runtime.html#cancel,CpsVoidFuture"><span class="Identifier">cancel</span></a>, <a href="runtime.html#fail,sinkContinuation,ref.CatchableError"><span class="Identifier">fail</span></a>, <a href="runtime.html#finished,CpsVoidFuture"><span class="Identifier">finished</span></a>, <a href="private/cross_thread_closure.html#runClosureTask,OwnedClosureTask,typedesc[T]"><span class="Identifier">runClosureTask</span></a>, <a href="runtime.html#finished,CpsFuture[T]"><span class="Identifier">finished</span></a>, <a href="runtime.html#tryCurrentRuntime"><span class="Identifier">tryCurrentRuntime</span></a>, <a href="runtime.html#pinFutureRuntime,CpsVoidFuture"><span class="Identifier">pinFutureRuntime</span></a>, <a href="private/cross_thread_closure.html#ClosureReturnRoute"><span class="Identifier">ClosureReturnRoute</span></a>, <a href="runtime.html#waitRunCpsSignal,CpsRuntime,CpsFuture[T]"><span class="Identifier">waitRunCpsSignal</span></a>, <a href="runtime.html#newCpsVoidFuture"><span class="Identifier">newCpsVoidFuture</span></a>, <a href="runtime.html#toHandle,CpsRuntime"><span class="Identifier">toHandle</span></a>, <a href="runtime.html#hasError,CpsFuture[T]"><span class="Identifier">hasError</span></a>, <a href="runtime.html#CpsContractError"><span class="Identifier">CpsContractError</span></a>, <a href="runtime.html#ContinuationState"><span class="Identifier">ContinuationState</span></a>, <a href="runtime.html#addCallbackOn,CpsVoidFuture,RuntimeHandle,sinkproc)"><span class="Identifier">addCallbackOn</span></a>, <a href="runtime.html#addCallback,CpsVoidFuture,sinkproc)"><span class="Identifier">addCallback</span></a>, <a href="runtime.html#tryMigrateTo,CpsVoidFuture,RuntimeHandle"><span class="Identifier">tryMigrateTo</span></a>, <a href="runtime.html#raceCancel,varargs[CpsVoidFuture]"><span class="Identifier">raceCancel</span></a>, <a href="private/cross_thread_closure.html#currentClosureReturnRoute"><span class="Identifier">currentClosureReturnRoute</span></a>, <a href="runtime.html#pass,sinkContinuation"><span class="Identifier">pass</span></a>, <a href="runtime.html#bindCurrentEventLoop,CpsRuntime,pointer,int"><span class="Identifier">bindCurrentEventLoop</span></a>, <a href="runtime.html#newRuntime,RuntimeConfig"><span class="Identifier">newRuntime</span></a>, <a href="runtime.html#pinFutureWaitWorker,CpsFuture[T]"><span class="Identifier">pinFutureWaitWorker</span></a>, <a href="runtime.html#completedLocalFuture,T"><span class="Identifier">completedLocalFuture</span></a>, <a href="runtime.html#isSchedulerWorker"><span class="Identifier">isSchedulerWorker</span></a>, <a href="runtime.html#tryMigrateTo,CpsFuture[T],RuntimeHandle"><span class="Identifier">tryMigrateTo</span></a>, <a href="runtime.html#waitRunCpsSignal,CpsVoidFuture"><span class="Identifier">waitRunCpsSignal</span></a>, <a href="runtime.html#isSuspended,Continuation"><span class="Identifier">isSuspended</span></a>, <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a>, <a href="runtime.html#currentWorkerId"><span class="Identifier">currentWorkerId</span></a>, <a href="runtime.html#setFutureRootContinuation,CpsFuture[T],Continuation"><span class="Identifier">setFutureRootContinuation</span></a>, <a href="runtime.html#read,CpsVoidFuture"><span class="Identifier">read</span></a>, <a href="runtime.html#AtomicCounter"><span class="Identifier">AtomicCounter</span></a>, <a href="runtime.html#setLocalFutureDefault,bool"><span class="Identifier">setLocalFutureDefault</span></a>, <a href="runtime.html#select,varargs[CpsFuture[T]]"><span class="Identifier">select</span></a>, <a href="runtime.html#isFinished,Continuation"><span class="Identifier">isFinished</span></a>, <a href="runtime.html#newCurrentThreadRuntime"><span class="Identifier">newCurrentThreadRuntime</span></a>, <a href="private/cross_thread_closure.html#prepareCrossThreadClosure,T"><span class="Identifier">prepareCrossThreadClosure</span></a>, <a href="runtime.html#completedFuture,T"><span class="Identifier">completedFuture</span></a>, <a href="runtime.html#runCpsWaitLeave,CpsRuntime"><span class="Identifier">runCpsWaitLeave</span></a>, <a href="runtime.html#newLocalCpsFuture"><span class="Identifier">newLocalCpsFuture</span></a>, <a href="runtime.html#fail,CpsFuture[T],ref.CatchableError"><span class="Identifier">fail</span></a>, <a href="runtime.html#defaultRuntimeConfig"><span class="Identifier">defaultRuntimeConfig</span></a>, <a href="runtime.html#runtimeFlavor,RuntimeHandle"><span class="Identifier">runtimeFlavor</span></a>, <a href="runtime.html#bounce,Trampoline"><span class="Identifier">bounce</span></a>, <a href="runtime.html#migrateTo,CpsFuture[T],RuntimeHandle"><span class="Identifier">migrateTo</span></a>, <a href="runtime.html#currentRuntimePointer"><span class="Identifier">currentRuntimePointer</span></a>, <a href="runtime.html#complete,CpsVoidFuture"><span class="Identifier">complete</span></a>, <a href="runtime.html#setFutureRootContinuation,CpsVoidFuture,Continuation"><span class="Identifier">setFutureRootContinuation</span></a>, <a href="runtime.html#pinFutureWaitWorker,CpsVoidFuture"><span class="Identifier">pinFutureWaitWorker</span></a>, <a href="runtime.html#currentThreadIdentity"><span class="Identifier">currentThreadIdentity</span></a>, <a href="private/cross_thread_closure.html#takeClosureTask,T"><span class="Identifier">takeClosureTask</span></a>, <a href="runtime.html#run,sinkContinuation"><span class="Identifier">run</span></a>, <a href="runtime.html#runUntilSuspend,sinkContinuation"><span class="Identifier">runUntilSuspend</span></a>, <a href="runtime.html#withRuntime.t,RuntimeHandle,untyped"><span class="Identifier">withRuntime</span></a>, <a href="private/cross_thread_closure.html#OwnedClosureTask"><span class="Identifier">OwnedClosureTask</span></a>, <a href="runtime.html#failedLocalFuture,ref.CatchableError"><span class="Identifier">failedLocalFuture</span></a>, <a href="runtime.html#currentEventLoopRuntimePtr"><span class="Identifier">currentEventLoopRuntimePtr</span></a>, <a href="runtime.html#FuturePerfMode"><span class="Identifier">FuturePerfMode</span></a>, <a href="runtime.html#isRuntimePinned,CpsVoidFuture"><span class="Identifier">isRuntimePinned</span></a>, <a href="runtime.html#runCpsWaitLeave"><span class="Identifier">runCpsWaitLeave</span></a>, <a href="runtime.html#getRuntimeStats"><span class="Identifier">getRuntimeStats</span></a>, <a href="runtime.html#complete,CpsFuture[T],T"><span class="Identifier">complete</span></a>, <a href="runtime.html#setMainRuntime,CpsRuntime"><span class="Identifier">setMainRuntime</span></a>, <a href="runtime.html#Trampoline"><span class="Identifier">Trampoline</span></a>, <a href="runtime.html#isCancelled,CpsFuture[T]"><span class="Identifier">isCancelled</span></a>, <a href="runtime.html#isNil,RuntimeHandle"><span class="Identifier">isNil</span></a>, <a href="runtime.html#initTrampoline,sinkContinuation"><span class="Identifier">initTrampoline</span></a>, <a href="runtime.html#race,varargs[CpsFuture[T]]"><span class="Identifier">race</span></a>, <a href="runtime.html#registerMtRuntimeFactory,MtRuntimeFactoryProc"><span class="Identifier">registerMtRuntimeFactory</span></a>, <a href="runtime.html#bindFutureRuntime,CpsFuture[T],RuntimeHandle"><span class="Identifier">bindFutureRuntime</span></a>, <a href="runtime.html#enter,RuntimeHandle"><span class="Identifier">enter</span></a>, <a href="runtime.html#runCpsWaitEnter,CpsRuntime"><span class="Identifier">runCpsWaitEnter</span></a>, <a href="runtime.html#mtCallbackDispatcher"><span class="Identifier">mtCallbackDispatcher</span></a>, <a href="runtime.html#isSharedSafe,CpsFuture[T]"><span class="Identifier">isSharedSafe</span></a>, <a href="runtime.html#setCurrentRuntime,CpsRuntime"><span class="Identifier">setCurrentRuntime</span></a>, <a href="runtime.html#mtDispatcher"><span class="Identifier">mtDispatcher</span></a>, <a href="runtime.html#mtYieldDispatcher"><span class="Identifier">mtYieldDispatcher</span></a>, <a href="runtime.html#RuntimeStats"><span class="Identifier">RuntimeStats</span></a>, <a href="runtime.html#RuntimeGuard"><span class="Identifier">RuntimeGuard</span></a>, <a href="runtime.html#currentEventLoopPtr"><span class="Identifier">currentEventLoopPtr</span></a>, <a href="runtime.html#isCancelled,CpsVoidFuture"><span class="Identifier">isCancelled</span></a>, <a href="runtime.html#read,CpsFuture[T]"><span class="Identifier">read</span></a>, <a href="runtime.html#RuntimeFlavor"><span class="Identifier">RuntimeFlavor</span></a>, <a href="runtime.html#runtimeId,RuntimeHandle"><span class="Identifier">runtimeId</span></a>, <a href="runtime.html#mainRuntime"><span class="Identifier">mainRuntime</span></a>, <a href="runtime.html#resetRuntimeStats"><span class="Identifier">resetRuntimeStats</span></a>, <a href="runtime.html#isRuntimePinned,CpsFuture[T]"><span class="Identifier">isRuntimePinned</span></a>, <a href="runtime.html#completedLocalVoidFuture"><span class="Identifier">completedLocalVoidFuture</span></a>, <a href="runtime.html#currentRuntime"><span class="Identifier">currentRuntime</span></a>, <a href="runtime.html#isReactorThread"><span class="Identifier">isReactorThread</span></a>, <a href="runtime.html#hasError,CpsVoidFuture"><span class="Identifier">hasError</span></a>, <a href="runtime.html#isLocalFast,CpsVoidFuture"><span class="Identifier">isLocalFast</span></a>, <a href="private/cross_thread_closure.html#releaseClosureTask,OwnedClosureTask,typedesc[T]"><span class="Identifier">releaseClosureTask</span></a>, <a href="runtime.html#race,varargs[CpsVoidFuture]"><span class="Identifier">race</span></a>, <a href="runtime.html#isRunning,Continuation"><span class="Identifier">isRunning</span></a>, <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a>, <a href="runtime.html#getError,CpsVoidFuture"><span class="Identifier">getError</span></a>, <a href="runtime.html#newAtomicCounter,int"><span class="Identifier">newAtomicCounter</span></a>, <a href="runtime.html#waitRunCpsSignal,CpsFuture[T]"><span class="Identifier">waitRunCpsSignal</span></a>, <a href="runtime.html#RuntimeConfig"><span class="Identifier">RuntimeConfig</span></a>, <a href="runtime.html#fail,CpsVoidFuture,ref.CatchableError"><span class="Identifier">fail</span></a>, <a href="runtime.html#getError,CpsFuture[T]"><span class="Identifier">getError</span></a>, <a href="runtime.html#RuntimeAffinityError"><span class="Identifier">RuntimeAffinityError</span></a>, <a href="runtime.html#isLocalFast,CpsFuture[T]"><span class="Identifier">isLocalFast</span></a>, <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a>, <a href="runtime.html#newContinuation,typedesc[Continuation],proc(sinkContinuation)"><span class="Identifier">newContinuation</span></a>, <a href="runtime.html#failedLocalVoidFuture,ref.CatchableError"><span class="Identifier">failedLocalVoidFuture</span></a>, <a href="runtime.html#runCpsWaitEnter"><span class="Identifier">runCpsWaitEnter</span></a>, <a href="runtime.html#futureRuntime,CpsVoidFuture"><span class="Identifier">futureRuntime</span></a>, <a href="runtime.html#addCallbackOn,CpsFuture[T],RuntimeHandle,sinkproc)"><span class="Identifier">addCallbackOn</span></a>, <a href="runtime.html#setContinuation.t,Continuation,untyped"><span class="Identifier">setContinuation</span></a>, <a href="runtime.html#halt,sinkContinuation"><span class="Identifier">halt</span></a>, <a href="runtime.html#failedFuture,ref.CatchableError"><span class="Identifier">failedFuture</span></a>, <a href="runtime.html#newLocalCpsVoidFuture"><span class="Identifier">newLocalCpsVoidFuture</span></a>, <a href="runtime.html#migrateTo,CpsVoidFuture,RuntimeHandle"><span class="Identifier">migrateTo</span></a>, <a href="runtime.html#bindFutureRuntime,CpsVoidFuture,RuntimeHandle"><span class="Identifier">bindFutureRuntime</span></a>, <a href="runtime.html#isSharedSafe,CpsVoidFuture"><span class="Identifier">isSharedSafe</span></a>, <a href="runtime.html#currentIoShardId"><span class="Identifier">currentIoShardId</span></a>, <a href="runtime.html#CancellationError"><span class="Identifier">CancellationError</span></a>, <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a>, <a href="runtime.html#currentSchedulerPtr"><span class="Identifier">currentSchedulerPtr</span></a>, <a href="runtime.html#suspend,sinkContinuation"><span class="Identifier">suspend</span></a>, <a href="runtime.html#newMultiThreadRuntime,int,int,int,int"><span class="Identifier">newMultiThreadRuntime</span></a>, <a href="runtime.html#mtModeEnabled"><span class="Identifier">mtModeEnabled</span></a>, <a href="runtime.html#waitRunCpsSignal,CpsRuntime,CpsVoidFuture"><span class="Identifier">waitRunCpsSignal</span></a>, <a href="runtime.html#localFutureDefaultEnabled"><span class="Identifier">localFutureDefaultEnabled</span></a>, <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a>, <a href="runtime.html#mtWakeReactor"><span class="Identifier">mtWakeReactor</span></a>, <a href="runtime.html#futureRuntime,CpsFuture[T]"><span class="Identifier">futureRuntime</span></a>, <a href="runtime.html#addCallback,CpsFuture[T],sinkproc)"><span class="Identifier">addCallback</span></a>
   </dl>
 </div>
 
@@ -1236,10 +1320,10 @@ Return whether the task's future has completed.Return the completed task value o
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 20:56:04 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:14 UTC</small>
       </div>
     </div>
   </div>
-  
+
 </body>
 </html>

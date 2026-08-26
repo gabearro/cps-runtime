@@ -107,12 +107,16 @@ proc hasPending*[T](q: var MpscQueue[T]): bool {.inline.} =
   ## ``dequeue() == nil`` as permanently empty.
   not q.isEmpty() or q.head != loadTail(q)
 
-proc allocNode*[T](val: T): ptr MpscNode[T] =
+proc allocNode*[T](val: var T): ptr MpscNode[T] =
   ## Allocate and initialize a queue node with the given payload.
   ## Uses allocShared0 so ref-counted payload types start from nil.
   result = cast[ptr MpscNode[T]](allocShared0(sizeof(MpscNode[T])))
   result.next.store(nil, moRelaxed)
-  result.payload = val
+  result.payload = move(val)
+
+proc takePayload*[T](node: ptr MpscNode[T]): T {.inline.} =
+  ## Move the payload out before releasing the raw shared node.
+  result = move(node.payload)
 
 proc freeNode*[T](node: ptr MpscNode[T]) =
   ## Free a dequeued node. Must be called after extracting the payload.
@@ -123,4 +127,5 @@ proc discardAll*[T](q: var MpscQueue[T]) =
   while true:
     let node = dequeue(q)
     if node == nil: break
+    var payload {.used.} = takePayload(node)
     freeNode(node)

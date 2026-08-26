@@ -1,105 +1,110 @@
 nimTitle	eventloop	cps/eventloop.html	module cps/eventloop		0
-nim	LoopStats	cps/eventloop.html#LoopStats	object LoopStats		20
-nim	TimerHandle	cps/eventloop.html#TimerHandle	object TimerHandle		36
-nim	EventLoop	cps/eventloop.html#EventLoop	type EventLoop		47
-nim	cancel	cps/eventloop.html#cancel,TimerHandle	proc cancel(h: TimerHandle)		85
-nim	isCancelled	cps/eventloop.html#isCancelled,TimerHandle	proc isCancelled(h: TimerHandle): bool		92
-nim	newEventLoop	cps/eventloop.html#newEventLoop	proc newEventLoop(): EventLoop		96
-nim	getEventLoopForRuntime	cps/eventloop.html#getEventLoopForRuntime,CpsRuntime	proc getEventLoopForRuntime(rt: CpsRuntime): EventLoop		199
-nim	getEventLoop	cps/eventloop.html#getEventLoop,RuntimeHandle	proc getEventLoop(handle: RuntimeHandle): EventLoop		223
-nim	getEventLoop	cps/eventloop.html#getEventLoop	proc getEventLoop(): EventLoop		228
-nim	setEventLoop	cps/eventloop.html#setEventLoop,EventLoop	proc setEventLoop(loop: EventLoop)		232
-nim	tryWakeSelector	cps/eventloop.html#tryWakeSelector,EventLoop	proc tryWakeSelector(loop: EventLoop)		241
-nim	markWakeDrained	cps/eventloop.html#markWakeDrained,EventLoop	proc markWakeDrained(loop: EventLoop)		249
-nim	recordWakeSignal	cps/eventloop.html#recordWakeSignal,EventLoop	proc recordWakeSignal(loop: EventLoop)		253
-nim	postToEventLoop	cps/eventloop.html#postToEventLoop,EventLoop,CrossThreadCallback	proc postToEventLoop(loop: EventLoop; cb: CrossThreadCallback)		257
-nim	shouldProxyToReactor	cps/eventloop.html#shouldProxyToReactor,EventLoop	proc shouldProxyToReactor(loop: EventLoop): bool		265
-nim	registerTimer	cps/eventloop.html#registerTimer,EventLoop,int,proc)	proc registerTimer(loop: EventLoop; delayMs: int; cb: proc () {.closure.}): TimerHandle		273
-nim	registerRead	cps/eventloop.html#registerRead,EventLoop,SocketHandle,proc)	proc registerRead(loop: EventLoop; fd: SocketHandle; cb: proc () {.closure.})		358
-nim	registerRead	cps/eventloop.html#registerRead,EventLoop,int,proc)	proc registerRead(loop: EventLoop; fd: int; cb: proc () {.closure.})		371
-nim	registerWrite	cps/eventloop.html#registerWrite,EventLoop,SocketHandle,proc)	proc registerWrite(loop: EventLoop; fd: SocketHandle; cb: proc () {.closure.})		375
-nim	registerWrite	cps/eventloop.html#registerWrite,EventLoop,int,proc)	proc registerWrite(loop: EventLoop; fd: int; cb: proc () {.closure.})		388
-nim	unregister	cps/eventloop.html#unregister,EventLoop,SocketHandle	proc unregister(loop: EventLoop; fd: SocketHandle)		392
-nim	unregister	cps/eventloop.html#unregister,EventLoop,int	proc unregister(loop: EventLoop; fd: int)		410
-nim	scheduleCallback	cps/eventloop.html#scheduleCallback,EventLoop,proc)	proc scheduleCallback(loop: EventLoop; cb: proc () {.closure.})		414
-nim	scheduleCallback	cps/eventloop.html#scheduleCallback,proc)	proc scheduleCallback(cb: proc () {.closure.})		425
-nim	drainCrossThreadQueue	cps/eventloop.html#drainCrossThreadQueue,EventLoop	proc drainCrossThreadQueue(loop: EventLoop)		429
-nim	enableCrossThreadWake	cps/eventloop.html#enableCrossThreadWake,EventLoop	proc enableCrossThreadWake(loop: EventLoop)		449
-nim	disableCrossThreadWake	cps/eventloop.html#disableCrossThreadWake,EventLoop	proc disableCrossThreadWake(loop: EventLoop)		469
-nim	tick	cps/eventloop.html#tick,EventLoop	proc tick(loop: EventLoop)		536
-nim	hasWork	cps/eventloop.html#hasWork,EventLoop	proc hasWork(loop: EventLoop): bool		625
-nim	runForever	cps/eventloop.html#runForever,EventLoop	proc runForever(loop: EventLoop)		633
-nim	runForever	cps/eventloop.html#runForever	proc runForever()		639
-nim	stop	cps/eventloop.html#stop,EventLoop	proc stop(loop: EventLoop)		643
-nim	shutdownGracefully	cps/eventloop.html#shutdownGracefully,EventLoop,int	proc shutdownGracefully(loop: EventLoop; drainTimeoutMs: int = 1000)		647
-nim	getStats	cps/eventloop.html#getStats,EventLoop	proc getStats(loop: EventLoop): LoopStats		661
-nim	resetStats	cps/eventloop.html#resetStats,EventLoop	proc resetStats(loop: EventLoop)		665
-nim	cpsSleep	cps/eventloop.html#cpsSleep,int	proc cpsSleep(ms: int): CpsVoidFuture		677
-nim	sleepOrSignal	cps/eventloop.html#sleepOrSignal,int,CpsVoidFuture	proc sleepOrSignal(ms: int; signal: CpsVoidFuture): CpsVoidFuture		704
-nim	cpsYield	cps/eventloop.html#cpsYield	proc cpsYield(): CpsVoidFuture		731
-nim	blockOn	cps/eventloop.html#blockOn,RuntimeHandle,CpsFuture[T]	proc blockOn[T](handle: RuntimeHandle; fut: CpsFuture[T]): T		754
-nim	blockOn	cps/eventloop.html#blockOn,RuntimeHandle,CpsVoidFuture	proc blockOn(handle: RuntimeHandle; fut: CpsVoidFuture)		792
-nim	runCpsOn	cps/eventloop.html#runCpsOn,RuntimeHandle,CpsFuture[T]	proc runCpsOn[T](handle: RuntimeHandle; fut: CpsFuture[T]): T		827
-nim	runCpsOn	cps/eventloop.html#runCpsOn,RuntimeHandle,CpsVoidFuture	proc runCpsOn(handle: RuntimeHandle; fut: CpsVoidFuture)		831
-nim	runOn	cps/eventloop.html#runOn.t,RuntimeHandle,untyped	template runOn(handle: RuntimeHandle; expr: untyped): untyped		835
-nim	runCps	cps/eventloop.html#runCps,CpsFuture[T]	proc runCps[T](fut: CpsFuture[T]): T		841
-nim	runCps	cps/eventloop.html#runCps,CpsVoidFuture	proc runCps(fut: CpsVoidFuture)		848
-nim	waitAll	cps/eventloop.html#waitAll,openArray[CpsFuture[T]]	proc waitAll[T](futures: openArray[CpsFuture[T]]): CpsVoidFuture		950
-nim	waitAll	cps/eventloop.html#waitAll,openArray[CpsVoidFuture]	proc waitAll(futures: openArray[CpsVoidFuture]): CpsVoidFuture		954
-nim	waitAllOrTimeout	cps/eventloop.html#waitAllOrTimeout,openArray[CpsFuture[T]],int	proc waitAllOrTimeout[T](futures: openArray[CpsFuture[T]]; timeoutMs: int): CpsVoidFuture		958
-nim	waitAllOrTimeout	cps/eventloop.html#waitAllOrTimeout,openArray[CpsVoidFuture],int	proc waitAllOrTimeout(futures: openArray[CpsVoidFuture]; timeoutMs: int): CpsVoidFuture		963
-nim	waitAllOrSignal	cps/eventloop.html#waitAllOrSignal,openArray[CpsFuture[T]],int,CpsVoidFuture	proc waitAllOrSignal[T](futures: openArray[CpsFuture[T]]; timeoutMs: int;\n                   signal: CpsVoidFuture): CpsVoidFuture		968
-nim	waitAllOrSignal	cps/eventloop.html#waitAllOrSignal,openArray[CpsVoidFuture],int,CpsVoidFuture	proc waitAllOrSignal(futures: openArray[CpsVoidFuture]; timeoutMs: int;\n                signal: CpsVoidFuture): CpsVoidFuture		974
-nim	waitAll	cps/eventloop.html#waitAll	proc waitAll(): CpsVoidFuture		980
-nim	waitAll	cps/eventloop.html#waitAll,CpsFuture[T],varargs[CpsFuture[T]]	proc waitAll[T](first: CpsFuture[T]; rest: varargs[CpsFuture[T]]): CpsVoidFuture		984
-nim	waitAll	cps/eventloop.html#waitAll,CpsVoidFuture,varargs[CpsVoidFuture]	proc waitAll(first: CpsVoidFuture; rest: varargs[CpsVoidFuture]): CpsVoidFuture		992
-nim	Task	cps/eventloop.html#Task	type Task		1005
-nim	VoidTask	cps/eventloop.html#VoidTask	type VoidTask		1012
-nim	finished	cps/eventloop.html#finished,Task[T]	proc finished[T](t: Task[T]): bool		1019
-nim	read	cps/eventloop.html#read,Task[T]	proc read[T](t: Task[T]): T		1021
-nim	addCallback	cps/eventloop.html#addCallback,Task[T],proc)	proc addCallback[T](t: Task[T]; cb: proc () {.closure.})		1022
-nim	hasError	cps/eventloop.html#hasError,Task[T]	proc hasError[T](t: Task[T]): bool		1026
-nim	getError	cps/eventloop.html#getError,Task[T]	proc getError[T](t: Task[T]): ref CatchableError		1028
-nim	finished	cps/eventloop.html#finished,VoidTask	proc finished(t: VoidTask): bool		1032
-nim	addCallback	cps/eventloop.html#addCallback,VoidTask,proc)	proc addCallback(t: VoidTask; cb: proc () {.closure.})		1033
-nim	hasError	cps/eventloop.html#hasError,VoidTask	proc hasError(t: VoidTask): bool		1037
-nim	getError	cps/eventloop.html#getError,VoidTask	proc getError(t: VoidTask): ref CatchableError		1039
-nim	cancel	cps/eventloop.html#cancel,Task[T]	proc cancel[T](t: Task[T])		1043
-nim	cancel	cps/eventloop.html#cancel,VoidTask	proc cancel(t: VoidTask)		1045
-nim	isCancelled	cps/eventloop.html#isCancelled,Task[T]	proc isCancelled[T](t: Task[T]): bool		1047
-nim	isCancelled	cps/eventloop.html#isCancelled,VoidTask	proc isCancelled(t: VoidTask): bool		1049
-nim	tryMigrateTo	cps/eventloop.html#tryMigrateTo,Task[T],RuntimeHandle	proc tryMigrateTo[T](t: Task[T]; handle: RuntimeHandle): bool		1050
-nim	tryMigrateTo	cps/eventloop.html#tryMigrateTo,VoidTask,RuntimeHandle	proc tryMigrateTo(t: VoidTask; handle: RuntimeHandle): bool		1053
-nim	migrateTo	cps/eventloop.html#migrateTo,Task[T],RuntimeHandle	proc migrateTo[T](t: Task[T]; handle: RuntimeHandle)		1056
-nim	migrateTo	cps/eventloop.html#migrateTo,VoidTask,RuntimeHandle	proc migrateTo(t: VoidTask; handle: RuntimeHandle)		1059
-nim	spawnOn	cps/eventloop.html#spawnOn,RuntimeHandle,CpsFuture[T],string	proc spawnOn[T](handle: RuntimeHandle; fut: CpsFuture[T]; name: string = ""): Task[T]		1063
-nim	spawnOn	cps/eventloop.html#spawnOn,RuntimeHandle,CpsVoidFuture,string	proc spawnOn(handle: RuntimeHandle; fut: CpsVoidFuture; name: string = ""): VoidTask		1080
-nim	spawn	cps/eventloop.html#spawn,CpsFuture[T],string	proc spawn[T](fut: CpsFuture[T]; name: string = ""): Task[T]		1095
-nim	spawn	cps/eventloop.html#spawn,CpsVoidFuture,string	proc spawn(fut: CpsVoidFuture; name: string = ""): VoidTask		1099
-nim	allTasks	cps/eventloop.html#allTasks,openArray[Task[T]]	proc allTasks[T](tasks: openArray[Task[T]]): CpsFuture[seq[T]]		1103
-nim	allTasks	cps/eventloop.html#allTasks,openArray[VoidTask]	proc allTasks(tasks: openArray[VoidTask]): CpsVoidFuture		1147
-nim	runCps	cps/eventloop.html#runCps,Task[T]	proc runCps[T](t: Task[T]): T		1186
-nim	runCps	cps/eventloop.html#runCps,VoidTask	proc runCps(t: VoidTask)		1190
-nimgrp	waitallortimeout	cps/eventloop.html#waitAllOrTimeout-procs-all	proc		958
-nimgrp	geteventloop	cps/eventloop.html#getEventLoop-procs-all	proc		223
-nimgrp	spawnon	cps/eventloop.html#spawnOn-procs-all	proc		1063
-nimgrp	trymigrateto	cps/eventloop.html#tryMigrateTo-procs-all	proc		1050
-nimgrp	blockon	cps/eventloop.html#blockOn-procs-all	proc		754
-nimgrp	unregister	cps/eventloop.html#unregister-procs-all	proc		392
-nimgrp	migrateto	cps/eventloop.html#migrateTo-procs-all	proc		1056
-nimgrp	runcps	cps/eventloop.html#runCps-procs-all	proc		841
-nimgrp	registerread	cps/eventloop.html#registerRead-procs-all	proc		358
-nimgrp	addcallback	cps/eventloop.html#addCallback-procs-all	proc		1022
-nimgrp	alltasks	cps/eventloop.html#allTasks-procs-all	proc		1103
-nimgrp	finished	cps/eventloop.html#finished-procs-all	proc		1019
-nimgrp	waitall	cps/eventloop.html#waitAll-procs-all	proc		950
-nimgrp	registerwrite	cps/eventloop.html#registerWrite-procs-all	proc		375
-nimgrp	schedulecallback	cps/eventloop.html#scheduleCallback-procs-all	proc		414
-nimgrp	runforever	cps/eventloop.html#runForever-procs-all	proc		633
-nimgrp	spawn	cps/eventloop.html#spawn-procs-all	proc		1095
-nimgrp	iscancelled	cps/eventloop.html#isCancelled-procs-all	proc		92
-nimgrp	cancel	cps/eventloop.html#cancel-procs-all	proc		85
-nimgrp	haserror	cps/eventloop.html#hasError-procs-all	proc		1026
-nimgrp	geterror	cps/eventloop.html#getError-procs-all	proc		1028
-nimgrp	runcpson	cps/eventloop.html#runCpsOn-procs-all	proc		827
-nimgrp	waitallorsignal	cps/eventloop.html#waitAllOrSignal-procs-all	proc		968
+nim	LoopStats	cps/eventloop.html#LoopStats	object LoopStats		25
+nim	TimerHandle	cps/eventloop.html#TimerHandle	object TimerHandle		41
+nim	EventLoop	cps/eventloop.html#EventLoop	type EventLoop		57
+nim	cancel	cps/eventloop.html#cancel,TimerHandle	proc cancel(h: TimerHandle)		96
+nim	isCancelled	cps/eventloop.html#isCancelled,TimerHandle	proc isCancelled(h: TimerHandle): bool		103
+nim	newEventLoop	cps/eventloop.html#newEventLoop	proc newEventLoop(): EventLoop		107
+nim	getEventLoopForRuntime	cps/eventloop.html#getEventLoopForRuntime,CpsRuntime	proc getEventLoopForRuntime(rt: CpsRuntime): EventLoop		211
+nim	getEventLoop	cps/eventloop.html#getEventLoop,RuntimeHandle	proc getEventLoop(handle: RuntimeHandle): EventLoop		238
+nim	getEventLoop	cps/eventloop.html#getEventLoop	proc getEventLoop(): EventLoop		243
+nim	setEventLoop	cps/eventloop.html#setEventLoop,EventLoop	proc setEventLoop(loop: EventLoop)		248
+nim	tryWakeSelector	cps/eventloop.html#tryWakeSelector,EventLoop	proc tryWakeSelector(loop: EventLoop)		257
+nim	claimCurrentThread	cps/eventloop.html#claimCurrentThread,EventLoop	proc claimCurrentThread(loop: EventLoop)		265
+nim	isCurrentThreadOwner	cps/eventloop.html#isCurrentThreadOwner,EventLoop	proc isCurrentThreadOwner(loop: EventLoop): bool		269
+nim	markWakeDrained	cps/eventloop.html#markWakeDrained,EventLoop	proc markWakeDrained(loop: EventLoop)		273
+nim	recordWakeSignal	cps/eventloop.html#recordWakeSignal,EventLoop	proc recordWakeSignal(loop: EventLoop)		277
+nim	postToEventLoop	cps/eventloop.html#postToEventLoop,EventLoop,sinkCrossThreadCallback	proc postToEventLoop(loop: EventLoop; cbArg: sink CrossThreadCallback)		281
+nim	shouldProxyToReactor	cps/eventloop.html#shouldProxyToReactor,EventLoop	proc shouldProxyToReactor(loop: EventLoop): bool		303
+nim	registerTimer	cps/eventloop.html#registerTimer,EventLoop,int,proc)	proc registerTimer(loop: EventLoop; delayMs: int; cb: proc () {.closure.}): TimerHandle		311
+nim	registerRead	cps/eventloop.html#registerRead,EventLoop,SocketHandle,proc)	proc registerRead(loop: EventLoop; fd: SocketHandle; cb: proc () {.closure.})		396
+nim	registerRead	cps/eventloop.html#registerRead,EventLoop,int,proc)	proc registerRead(loop: EventLoop; fd: int; cb: proc () {.closure.})		409
+nim	registerWrite	cps/eventloop.html#registerWrite,EventLoop,SocketHandle,proc)	proc registerWrite(loop: EventLoop; fd: SocketHandle; cb: proc () {.closure.})		413
+nim	registerWrite	cps/eventloop.html#registerWrite,EventLoop,int,proc)	proc registerWrite(loop: EventLoop; fd: int; cb: proc () {.closure.})		426
+nim	unregister	cps/eventloop.html#unregister,EventLoop,SocketHandle	proc unregister(loop: EventLoop; fd: SocketHandle)		430
+nim	unregister	cps/eventloop.html#unregister,EventLoop,int	proc unregister(loop: EventLoop; fd: int)		448
+nim	scheduleCallback	cps/eventloop.html#scheduleCallback,EventLoop,proc)	proc scheduleCallback(loop: EventLoop; cb: proc () {.closure.})		452
+nim	scheduleCallback	cps/eventloop.html#scheduleCallback,proc)	proc scheduleCallback(cb: proc () {.closure.})		463
+nim	drainCrossThreadQueue	cps/eventloop.html#drainCrossThreadQueue,EventLoop	proc drainCrossThreadQueue(loop: EventLoop)		467
+nim	enableCrossThreadWake	cps/eventloop.html#enableCrossThreadWake,EventLoop	proc enableCrossThreadWake(loop: EventLoop)		523
+nim	disableCrossThreadWake	cps/eventloop.html#disableCrossThreadWake,EventLoop	proc disableCrossThreadWake(loop: EventLoop)		543
+nim	tick	cps/eventloop.html#tick,EventLoop	proc tick(loop: EventLoop)		715
+nim	poll	cps/eventloop.html#poll,EventLoop	proc poll(loop: EventLoop): bool		719
+nim	userIoHandleCount	cps/eventloop.html#userIoHandleCount,EventLoop	proc userIoHandleCount(loop: EventLoop): int		723
+nim	hasUserIoWork	cps/eventloop.html#hasUserIoWork,EventLoop	proc hasUserIoWork(loop: EventLoop): bool		728
+nim	hasWork	cps/eventloop.html#hasWork,EventLoop	proc hasWork(loop: EventLoop): bool		734
+nim	runForever	cps/eventloop.html#runForever,EventLoop	proc runForever(loop: EventLoop)		742
+nim	runForever	cps/eventloop.html#runForever	proc runForever()		748
+nim	stop	cps/eventloop.html#stop,EventLoop	proc stop(loop: EventLoop)		752
+nim	shutdownGracefully	cps/eventloop.html#shutdownGracefully,EventLoop,int	proc shutdownGracefully(loop: EventLoop; drainTimeoutMs: int = 1000)		756
+nim	getStats	cps/eventloop.html#getStats,EventLoop	proc getStats(loop: EventLoop): LoopStats		770
+nim	resetStats	cps/eventloop.html#resetStats,EventLoop	proc resetStats(loop: EventLoop)		774
+nim	cpsSleep	cps/eventloop.html#cpsSleep,int	proc cpsSleep(ms: int): CpsVoidFuture		786
+nim	sleepOrSignal	cps/eventloop.html#sleepOrSignal,int,CpsVoidFuture	proc sleepOrSignal(ms: int; signal: CpsVoidFuture): CpsVoidFuture		813
+nim	cpsYield	cps/eventloop.html#cpsYield	proc cpsYield(): CpsVoidFuture		840
+nim	blockOn	cps/eventloop.html#blockOn,RuntimeHandle,CpsFuture[T]	proc blockOn[T](handle: RuntimeHandle; fut: CpsFuture[T]): T		863
+nim	blockOn	cps/eventloop.html#blockOn,RuntimeHandle,CpsVoidFuture	proc blockOn(handle: RuntimeHandle; fut: CpsVoidFuture)		902
+nim	runCpsOn	cps/eventloop.html#runCpsOn,RuntimeHandle,CpsFuture[T]	proc runCpsOn[T](handle: RuntimeHandle; fut: CpsFuture[T]): T		938
+nim	runCpsOn	cps/eventloop.html#runCpsOn,RuntimeHandle,CpsVoidFuture	proc runCpsOn(handle: RuntimeHandle; fut: CpsVoidFuture)		942
+nim	runOn	cps/eventloop.html#runOn.t,RuntimeHandle,untyped	template runOn(handle: RuntimeHandle; expr: untyped): untyped		946
+nim	runCps	cps/eventloop.html#runCps,CpsFuture[T]	proc runCps[T](fut: CpsFuture[T]): T		952
+nim	runCps	cps/eventloop.html#runCps,CpsVoidFuture	proc runCps(fut: CpsVoidFuture)		959
+nim	waitAll	cps/eventloop.html#waitAll,openArray[CpsFuture[T]]	proc waitAll[T](futures: openArray[CpsFuture[T]]): CpsVoidFuture		1061
+nim	waitAll	cps/eventloop.html#waitAll,openArray[CpsVoidFuture]	proc waitAll(futures: openArray[CpsVoidFuture]): CpsVoidFuture		1065
+nim	waitAllOrTimeout	cps/eventloop.html#waitAllOrTimeout,openArray[CpsFuture[T]],int	proc waitAllOrTimeout[T](futures: openArray[CpsFuture[T]]; timeoutMs: int): CpsVoidFuture		1069
+nim	waitAllOrTimeout	cps/eventloop.html#waitAllOrTimeout,openArray[CpsVoidFuture],int	proc waitAllOrTimeout(futures: openArray[CpsVoidFuture]; timeoutMs: int): CpsVoidFuture		1074
+nim	waitAllOrSignal	cps/eventloop.html#waitAllOrSignal,openArray[CpsFuture[T]],int,CpsVoidFuture	proc waitAllOrSignal[T](futures: openArray[CpsFuture[T]]; timeoutMs: int;\n                   signal: CpsVoidFuture): CpsVoidFuture		1079
+nim	waitAllOrSignal	cps/eventloop.html#waitAllOrSignal,openArray[CpsVoidFuture],int,CpsVoidFuture	proc waitAllOrSignal(futures: openArray[CpsVoidFuture]; timeoutMs: int;\n                signal: CpsVoidFuture): CpsVoidFuture		1085
+nim	waitAll	cps/eventloop.html#waitAll	proc waitAll(): CpsVoidFuture		1091
+nim	waitAll	cps/eventloop.html#waitAll,CpsFuture[T],varargs[CpsFuture[T]]	proc waitAll[T](first: CpsFuture[T]; rest: varargs[CpsFuture[T]]): CpsVoidFuture		1095
+nim	waitAll	cps/eventloop.html#waitAll,CpsVoidFuture,varargs[CpsVoidFuture]	proc waitAll(first: CpsVoidFuture; rest: varargs[CpsVoidFuture]): CpsVoidFuture		1103
+nim	Task	cps/eventloop.html#Task	type Task		1116
+nim	VoidTask	cps/eventloop.html#VoidTask	type VoidTask		1123
+nim	finished	cps/eventloop.html#finished,Task[T]	proc finished[T](t: Task[T]): bool		1130
+nim	read	cps/eventloop.html#read,Task[T]	proc read[T](t: Task[T]): T		1132
+nim	addCallback	cps/eventloop.html#addCallback,Task[T],proc)	proc addCallback[T](t: Task[T]; cb: proc () {.closure.})		1133
+nim	hasError	cps/eventloop.html#hasError,Task[T]	proc hasError[T](t: Task[T]): bool		1137
+nim	getError	cps/eventloop.html#getError,Task[T]	proc getError[T](t: Task[T]): ref CatchableError		1139
+nim	finished	cps/eventloop.html#finished,VoidTask	proc finished(t: VoidTask): bool		1143
+nim	addCallback	cps/eventloop.html#addCallback,VoidTask,proc)	proc addCallback(t: VoidTask; cb: proc () {.closure.})		1144
+nim	hasError	cps/eventloop.html#hasError,VoidTask	proc hasError(t: VoidTask): bool		1148
+nim	getError	cps/eventloop.html#getError,VoidTask	proc getError(t: VoidTask): ref CatchableError		1150
+nim	cancel	cps/eventloop.html#cancel,Task[T]	proc cancel[T](t: Task[T])		1154
+nim	cancel	cps/eventloop.html#cancel,VoidTask	proc cancel(t: VoidTask)		1156
+nim	isCancelled	cps/eventloop.html#isCancelled,Task[T]	proc isCancelled[T](t: Task[T]): bool		1158
+nim	isCancelled	cps/eventloop.html#isCancelled,VoidTask	proc isCancelled(t: VoidTask): bool		1160
+nim	tryMigrateTo	cps/eventloop.html#tryMigrateTo,Task[T],RuntimeHandle	proc tryMigrateTo[T](t: Task[T]; handle: RuntimeHandle): bool		1161
+nim	tryMigrateTo	cps/eventloop.html#tryMigrateTo,VoidTask,RuntimeHandle	proc tryMigrateTo(t: VoidTask; handle: RuntimeHandle): bool		1164
+nim	migrateTo	cps/eventloop.html#migrateTo,Task[T],RuntimeHandle	proc migrateTo[T](t: Task[T]; handle: RuntimeHandle)		1167
+nim	migrateTo	cps/eventloop.html#migrateTo,VoidTask,RuntimeHandle	proc migrateTo(t: VoidTask; handle: RuntimeHandle)		1170
+nim	spawnOn	cps/eventloop.html#spawnOn,RuntimeHandle,CpsFuture[T],string	proc spawnOn[T](handle: RuntimeHandle; fut: CpsFuture[T]; name: string = ""): Task[T]		1174
+nim	spawnOn	cps/eventloop.html#spawnOn,RuntimeHandle,CpsVoidFuture,string	proc spawnOn(handle: RuntimeHandle; fut: CpsVoidFuture; name: string = ""): VoidTask		1191
+nim	spawn	cps/eventloop.html#spawn,CpsFuture[T],string	proc spawn[T](fut: CpsFuture[T]; name: string = ""): Task[T]		1206
+nim	spawn	cps/eventloop.html#spawn,CpsVoidFuture,string	proc spawn(fut: CpsVoidFuture; name: string = ""): VoidTask		1210
+nim	allTasks	cps/eventloop.html#allTasks,openArray[Task[T]]	proc allTasks[T](tasks: openArray[Task[T]]): CpsFuture[seq[T]]		1214
+nim	allTasks	cps/eventloop.html#allTasks,openArray[VoidTask]	proc allTasks(tasks: openArray[VoidTask]): CpsVoidFuture		1258
+nim	runCps	cps/eventloop.html#runCps,Task[T]	proc runCps[T](t: Task[T]): T		1297
+nim	runCps	cps/eventloop.html#runCps,VoidTask	proc runCps(t: VoidTask)		1301
+nimgrp	waitallortimeout	cps/eventloop.html#waitAllOrTimeout-procs-all	proc		1069
+nimgrp	geteventloop	cps/eventloop.html#getEventLoop-procs-all	proc		238
+nimgrp	spawnon	cps/eventloop.html#spawnOn-procs-all	proc		1174
+nimgrp	trymigrateto	cps/eventloop.html#tryMigrateTo-procs-all	proc		1161
+nimgrp	blockon	cps/eventloop.html#blockOn-procs-all	proc		863
+nimgrp	unregister	cps/eventloop.html#unregister-procs-all	proc		430
+nimgrp	migrateto	cps/eventloop.html#migrateTo-procs-all	proc		1167
+nimgrp	runcps	cps/eventloop.html#runCps-procs-all	proc		952
+nimgrp	registerread	cps/eventloop.html#registerRead-procs-all	proc		396
+nimgrp	addcallback	cps/eventloop.html#addCallback-procs-all	proc		1133
+nimgrp	alltasks	cps/eventloop.html#allTasks-procs-all	proc		1214
+nimgrp	finished	cps/eventloop.html#finished-procs-all	proc		1130
+nimgrp	waitall	cps/eventloop.html#waitAll-procs-all	proc		1061
+nimgrp	registerwrite	cps/eventloop.html#registerWrite-procs-all	proc		413
+nimgrp	schedulecallback	cps/eventloop.html#scheduleCallback-procs-all	proc		452
+nimgrp	runforever	cps/eventloop.html#runForever-procs-all	proc		742
+nimgrp	spawn	cps/eventloop.html#spawn-procs-all	proc		1206
+nimgrp	iscancelled	cps/eventloop.html#isCancelled-procs-all	proc		103
+nimgrp	haserror	cps/eventloop.html#hasError-procs-all	proc		1137
+nimgrp	cancel	cps/eventloop.html#cancel-procs-all	proc		96
+nimgrp	geterror	cps/eventloop.html#getError-procs-all	proc		1139
+nimgrp	runcpson	cps/eventloop.html#runCpsOn-procs-all	proc		938
+nimgrp	waitallorsignal	cps/eventloop.html#waitAllOrSignal-procs-all	proc		1079

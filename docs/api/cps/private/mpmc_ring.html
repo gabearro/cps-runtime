@@ -93,9 +93,9 @@
 
   </div>
   <div class="nine columns" id="content">
-    
+
     <div id="tocRoot"></div>
-    
+
     <p class="module-desc"><p>Bounded lock-free MPMC ring queue (Vyukov-style sequence algorithm).</p>
 <p>Supports multiple producers and multiple consumers with fixed capacity. Capacity is rounded up to the next power-of-two.</p>
 </p>
@@ -105,9 +105,9 @@
     <div id="MpmcRingQueue">
   <dt><pre><a href="mpmc_ring.html#MpmcRingQueue"><span class="Identifier">MpmcRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span> <span class="Other">=</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 
@@ -120,9 +120,9 @@
   <div id="deinitMpmcRingQueue,MpmcRingQueue[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#deinitMpmcRingQueue%2CMpmcRingQueue%5BT%5D"><span class="Identifier">deinitMpmcRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">q</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="mpmc_ring.html#MpmcRingQueue"><span class="Identifier">MpmcRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
   <dd>
-    
+
     Drain and release queue storage.
-    
+
   </dd>
 </div>
 
@@ -131,9 +131,9 @@
   <div id="initMpmcRingQueue,MpmcRingQueue[T],int">
   <dt><pre><span class="Keyword">proc</span> <a href="#initMpmcRingQueue%2CMpmcRingQueue%5BT%5D%2Cint"><span class="Identifier">initMpmcRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">q</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="mpmc_ring.html#MpmcRingQueue"><span class="Identifier">MpmcRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">requestedCapacity</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span></pre></dt>
   <dd>
-    
+
     Initialize queue with bounded power-of-two capacity.
-    
+
   </dd>
 </div>
 
@@ -142,9 +142,9 @@
   <div id="len,MpmcRingQueue[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#len%2CMpmcRingQueue%5BT%5D"><span class="Identifier">len</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">q</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="mpmc_ring.html#MpmcRingQueue"><span class="Identifier">MpmcRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
+
     Approximate item count (racy under concurrency).
-    
+
   </dd>
 </div>
 
@@ -153,9 +153,9 @@
   <div id="tryDequeue,MpmcRingQueue[T],T">
   <dt><pre><span class="Keyword">proc</span> <a href="#tryDequeue%2CMpmcRingQueue%5BT%5D%2CT"><span class="Identifier">tryDequeue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">q</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="mpmc_ring.html#MpmcRingQueue"><span class="Identifier">MpmcRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">value</span><span class="Other">:</span> <span class="Keyword">var</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
+
     Try to dequeue one item. Returns false when empty.
-    
+
   </dd>
 </div>
 
@@ -164,9 +164,9 @@
   <div id="tryEnqueue,MpmcRingQueue[T],T">
   <dt><pre><span class="Keyword">proc</span> <a href="#tryEnqueue%2CMpmcRingQueue%5BT%5D%2CT"><span class="Identifier">tryEnqueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">q</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="mpmc_ring.html#MpmcRingQueue"><span class="Identifier">MpmcRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">value</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
+
     Try to enqueue one item. Returns false when full.
-    
+
   </dd>
 </div>
 
@@ -181,10 +181,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 20:56:15 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:24 UTC</small>
       </div>
     </div>
   </div>
-  
+
 </body>
 </html>

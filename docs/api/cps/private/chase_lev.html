@@ -98,7 +98,7 @@
 
 </ul>
 <ul class="simple nested-toc-section">push
-  <li><a class="reference" href="#push%2CChaseLevDeque%5BT%5D%2CT" title="push[T](d: var ChaseLevDeque[T]; item: T): bool">push[T](d: var ChaseLevDeque[T]; item: T): bool</a></li>
+  <li><a class="reference" href="#push%2CChaseLevDeque%5BT%5D%2CT" title="push[T](d: var ChaseLevDeque[T]; item: var T): bool">push[T](d: var ChaseLevDeque[T]; item: var T): bool</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">steal
@@ -114,9 +114,9 @@
 
   </div>
   <div class="nine columns" id="content">
-    
+
     <div id="tocRoot"></div>
-    
+
     <p class="module-desc"><p>Chase-Lev Work-Stealing Deque</p>
 <p>Lock-free deque for work-stealing schedulers. The owner thread pushes and pops from the bottom (LIFO, cache-friendly). Thief threads steal from the top (FIFO, fair distribution).</p>
 <p>Based on &quot;Dynamic Circular Work-Stealing Deque&quot; by Chase &amp; Lev (SPAA 2005). Uses a fixed-size circular buffer.</p>
@@ -125,8 +125,8 @@
 <li>pop: seq-cst fence between bottom store and top load (linearization point)</li>
 <li>steal: acquire loads + seq-cst CAS on top (linearization point)</li>
 </ul>
-<p>ARC safety: pop/steal use raw memory ops (copyMem/zeroMem) to bypass ARC hooks, preventing double-ref-count when two threads read the same slot during the last-element race. push uses normal ARC assignment (=copy) since only the owner thread pushes — no concurrent writes. Ref count protocol:</p>
-<ul class="simple"><li>push: ARC =copy increments ref count for the buffer slot</li>
+<p>ARC/ORC safety: every operation transfers one owned value without copying. pop/steal use raw memory ops (copyMem/zeroMem) to bypass hooks, preventing double-ref-count when two threads read the same slot during the last-element race. push moves from its owner-provided value. Ref count protocol:</p>
+<ul class="simple"><li>push: move transfers the caller's ref count into the buffer slot</li>
 <li>pop/steal success: rawRead (bitwise copy, no rc change) + rawClear (zero without =destroy) transfers the slot's ref count to the caller</li>
 <li>pop/steal failure: zeroMem on local copy (no =destroy, no rc change)</li>
 </ul>
@@ -138,9 +138,9 @@
     <div id="ChaseLevDeque">
   <dt><pre><a href="chase_lev.html#ChaseLevDeque"><span class="Identifier">ChaseLevDeque</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span> <span class="Other">=</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 
@@ -152,9 +152,9 @@
     <div id="ChaseLevCapacity">
   <dt><pre><a href="chase_lev.html#ChaseLevCapacity"><span class="Identifier">ChaseLevCapacity</span></a> <span class="Other">=</span> <span class="DecNumber">8192</span></pre></dt>
   <dd>
-    
+
     Fixed buffer size (power of 2)
-    
+
   </dd>
 </div>
 
@@ -167,9 +167,9 @@
   <div id="destroyChaseLevDeque,ChaseLevDeque[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#destroyChaseLevDeque%2CChaseLevDeque%5BT%5D"><span class="Identifier">destroyChaseLevDeque</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">d</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="chase_lev.html#ChaseLevDeque"><span class="Identifier">ChaseLevDeque</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
   <dd>
-    
+
     Free the buffer. Caller must drain all live items first (see scheduler shutdown) so no ref-counted values are leaked.
-    
+
   </dd>
 </div>
 
@@ -178,9 +178,9 @@
   <div id="drainAll,ChaseLevDeque[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#drainAll%2CChaseLevDeque%5BT%5D"><span class="Identifier">drainAll</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">d</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="chase_lev.html#ChaseLevDeque"><span class="Identifier">ChaseLevDeque</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
   <dd>
-    
+
     Owner: pop and destroy all remaining items. Call during shutdown after all thieves have stopped, to properly release ref counts for any items left in the buffer.
-    
+
   </dd>
 </div>
 
@@ -189,9 +189,9 @@
   <div id="initChaseLevDeque,ChaseLevDeque[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#initChaseLevDeque%2CChaseLevDeque%5BT%5D"><span class="Identifier">initChaseLevDeque</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">d</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="chase_lev.html#ChaseLevDeque"><span class="Identifier">ChaseLevDeque</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
   <dd>
-    
+
     Initialize the deque. Allocates a zero-initialized shared buffer.
-    
+
   </dd>
 </div>
 
@@ -200,9 +200,9 @@
   <div id="isEmpty,ChaseLevDeque[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#isEmpty%2CChaseLevDeque%5BT%5D"><span class="Identifier">isEmpty</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">d</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="chase_lev.html#ChaseLevDeque"><span class="Identifier">ChaseLevDeque</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
+
     Approximate emptiness check (may be stale immediately).
-    
+
   </dd>
 </div>
 
@@ -211,9 +211,9 @@
   <div id="len,ChaseLevDeque[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#len%2CChaseLevDeque%5BT%5D"><span class="Identifier">len</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">d</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="chase_lev.html#ChaseLevDeque"><span class="Identifier">ChaseLevDeque</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
+
     Approximate length (may be stale immediately).
-    
+
   </dd>
 </div>
 
@@ -222,20 +222,20 @@
   <div id="pop,ChaseLevDeque[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#pop%2CChaseLevDeque%5BT%5D"><span class="Identifier">pop</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">d</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="chase_lev.html#ChaseLevDeque"><span class="Identifier">ChaseLevDeque</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">T</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
+
     Owner: pop from the bottom. Returns default(T) if empty. On success, transfers the buffer slot's ref count to the caller and clears the slot.
-    
+
   </dd>
 </div>
 
 </div>
 <div id="push-procs-all">
   <div id="push,ChaseLevDeque[T],T">
-  <dt><pre><span class="Keyword">proc</span> <a href="#push%2CChaseLevDeque%5BT%5D%2CT"><span class="Identifier">push</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">d</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="chase_lev.html#ChaseLevDeque"><span class="Identifier">ChaseLevDeque</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">item</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span class="Identifier">discardable</span>.}</pre></dt>
+  <dt><pre><span class="Keyword">proc</span> <a href="#push%2CChaseLevDeque%5BT%5D%2CT"><span class="Identifier">push</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">d</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="chase_lev.html#ChaseLevDeque"><span class="Identifier">ChaseLevDeque</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">item</span><span class="Other">:</span> <span class="Keyword">var</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span class="Identifier">discardable</span>.}</pre></dt>
   <dd>
-    
-    Owner: push an item to the bottom. Returns false if full.
-    
+
+    Owner: move an item to the bottom, leaving it unchanged when full.
+
   </dd>
 </div>
 
@@ -244,9 +244,9 @@
   <div id="steal,ChaseLevDeque[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#steal%2CChaseLevDeque%5BT%5D"><span class="Identifier">steal</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">d</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="chase_lev.html#ChaseLevDeque"><span class="Identifier">ChaseLevDeque</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">T</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-    
+
     Thief: steal from the top. Returns default(T) if empty or lost CAS race. On success, transfers the buffer slot's ref count to the caller and clears the slot.
-    
+
   </dd>
 </div>
 
@@ -261,10 +261,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 20:56:15 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:24 UTC</small>
       </div>
     </div>
   </div>
-  
+
 </body>
 </html>

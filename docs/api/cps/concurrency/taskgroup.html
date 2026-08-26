@@ -110,9 +110,9 @@
 
   </div>
   <div class="nine columns" id="content">
-    
+
     <div id="tocRoot"></div>
-    
+
     <p class="module-desc"><p>CPS Task Groups - Structured Concurrency</p>
 <p>Provides a TaskGroup abstraction that manages a collection of tasks with configurable error handling policies. Supports fail-fast (cancel siblings on first error) and collect-all (gather all errors) modes.</p>
 <p>Thread safety: when the MT runtime is active at creation time, group state is protected by a CAS-based SpinLock (not pthread_mutex) to ensure the reactor thread is never blocked by a syscall. Future completions and cancelAll() happen outside the lock to avoid deadlocks.</p>
@@ -131,26 +131,26 @@
   <span class="Identifier">epFailFast</span><span class="Other">,</span>               <span class="Comment">## Cancel siblings on first error</span>
   <span class="Identifier">epCollectAll</span>               <span class="Comment">## Wait for all, collect errors</span></pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 <div id="TaskGroup">
   <dt><pre><a href="taskgroup.html#TaskGroup"><span class="Identifier">TaskGroup</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-    
-    
-    
+
+
+
   </dd>
 </div>
 <div id="TaskGroupError">
   <dt><pre><a href="taskgroup.html#TaskGroupError"><span class="Identifier">TaskGroupError</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <span class="Identifier">CatchableError</span>
   <span class="Identifier">errors</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">seq</span><span class="Other">[</span><span class="Keyword">ref</span> <span class="Identifier">CatchableError</span><span class="Other">]</span></pre></dt>
   <dd>
-    
+
     Raised when multiple tasks fail with epCollectAll policy.
-    
+
   </dd>
 </div>
 
@@ -164,9 +164,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#activeCount%2CTaskGroup"><span class="Identifier">activeCount</span></a><span class="Other">(</span><span class="Identifier">group</span><span class="Other">:</span> <a href="taskgroup.html#TaskGroup"><span class="Identifier">TaskGroup</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Number of still-running tasks. Lock-free via atomic load.
-    
+
   </dd>
 </div>
 
@@ -176,9 +176,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#cancelAll%2CTaskGroup"><span class="Identifier">cancelAll</span></a><span class="Other">(</span><span class="Identifier">group</span><span class="Other">:</span> <a href="taskgroup.html#TaskGroup"><span class="Identifier">TaskGroup</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
                                    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Cancel all running tasks in the group. Takes a snapshot under lock since cancel() fires callbacks synchronously, which may re-enter group methods.
-    
+
   </dd>
 </div>
 
@@ -187,9 +187,9 @@
   <div id="len,TaskGroup">
   <dt><pre><span class="Keyword">proc</span> <a href="#len%2CTaskGroup"><span class="Identifier">len</span></a><span class="Other">(</span><span class="Identifier">group</span><span class="Other">:</span> <a href="taskgroup.html#TaskGroup"><span class="Identifier">TaskGroup</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Number of tasks (total spawned). Lock-free via atomic load.
-    
+
   </dd>
 </div>
 
@@ -199,9 +199,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#newTaskGroup%2CErrorPolicy"><span class="Identifier">newTaskGroup</span></a><span class="Other">(</span><span class="Identifier">errorPolicy</span><span class="Other">:</span> <a href="taskgroup.html#ErrorPolicy"><span class="Identifier">ErrorPolicy</span></a> <span class="Other">=</span> <span class="Identifier">epFailFast</span><span class="Other">)</span><span class="Other">:</span> <a href="taskgroup.html#TaskGroup"><span class="Identifier">TaskGroup</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Create a new task group with the given error policy.
-    
+
   </dd>
 </div>
 
@@ -211,17 +211,17 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#spawn%2CTaskGroup%2CCpsVoidFuture%2Cstring"><span class="Identifier">spawn</span></a><span class="Other">(</span><span class="Identifier">group</span><span class="Other">:</span> <a href="taskgroup.html#TaskGroup"><span class="Identifier">TaskGroup</span></a><span class="Other">;</span> <span class="Identifier">fut</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">;</span> <span class="Identifier">name</span><span class="Other">:</span> <span class="Identifier">string</span> <span class="Other">=</span> <span class="StringLit">&quot;&quot;</span><span class="Other">)</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Add a void task to the group. The task starts running immediately.
-    
+
   </dd>
 </div>
 <div id="spawn,TaskGroup,CpsFuture[T],string">
   <dt><pre><span class="Keyword">proc</span> <a href="#spawn%2CTaskGroup%2CCpsFuture%5BT%5D%2Cstring"><span class="Identifier">spawn</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">group</span><span class="Other">:</span> <a href="taskgroup.html#TaskGroup"><span class="Identifier">TaskGroup</span></a><span class="Other">;</span> <span class="Identifier">fut</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">name</span><span class="Other">:</span> <span class="Identifier">string</span> <span class="Other">=</span> <span class="StringLit">&quot;&quot;</span><span class="Other">)</span><span class="Other">:</span> <a href="../eventloop.html#Task"><span class="Identifier">Task</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-    
+
     Add a typed task to the group. Returns the Task<a class="reference internal" href="#T">T</a> for reading the result later.
-    
+
   </dd>
 </div>
 
@@ -231,9 +231,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#wait%2CTaskGroup"><span class="Identifier">wait</span></a><span class="Other">(</span><span class="Identifier">group</span><span class="Other">:</span> <a href="taskgroup.html#TaskGroup"><span class="Identifier">TaskGroup</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Wait for all tasks in the group to complete. With epFailFast: cancels remaining on first error, raises first error. With epCollectAll: waits for all, raises TaskGroupError with all errors.
-    
+
   </dd>
 </div>
 
@@ -243,9 +243,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#waitAll%2CTaskGroup"><span class="Identifier">waitAll</span></a><span class="Other">(</span><span class="Identifier">group</span><span class="Other">:</span> <a href="taskgroup.html#TaskGroup"><span class="Identifier">TaskGroup</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">seq</span><span class="Other">[</span><span class="Keyword">ref</span> <span class="Identifier">CatchableError</span><span class="Other">]</span><span class="Other">]</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-    
+
     Wait for all tasks to complete and return collected errors without raising. Unlike wait(), this never fails the returned future — errors are returned as the future's value.
-    
+
   </dd>
 </div>
 
@@ -260,10 +260,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 20:56:03 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:13 UTC</small>
       </div>
     </div>
   </div>
-  
+
 </body>
 </html>

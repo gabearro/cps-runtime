@@ -8,7 +8,7 @@ import cps/eventloop
 import cps/transform
 import std/atomics
 
-when defined(gcAtomicArc) or defined(useMalloc):
+when compileOption("gc", "atomicArc"):
   type
     ForeignCompleteArg = object
       fut: CpsVoidFuture
@@ -90,7 +90,7 @@ block testPromotionFromTerminalState:
   assert cancelled.isCancelled()
   echo "PASS: ensureShared preserves terminal-state behavior"
 
-when defined(gcAtomicArc) or defined(useMalloc):
+when compileOption("gc", "atomicArc"):
   block testCrossRuntimeBindPromotesToShared:
     let fut = newLocalCpsVoidFuture()
     let otherRt = newCurrentThreadRuntime()
@@ -128,7 +128,7 @@ when defined(gcAtomicArc) or defined(useMalloc):
     runCps(wrapped)
     echo "PASS: default CPS wrapper remains shared-safe under foreign completion"
 else:
-  echo "SKIP: cross-runtime bind promotion test requires --mm:atomicArc or -d:useMalloc"
+  echo "SKIP: cross-runtime bind promotion test requires --mm:atomicArc"
 
 when not defined(cpsSharedFuturesOnly):
   type
