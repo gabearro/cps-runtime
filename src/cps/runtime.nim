@@ -56,6 +56,7 @@ type
   RuntimeConfig* = object
     flavor*: RuntimeFlavor
     numWorkers*: int
+    pinWorkers*: bool
     numBlockingThreads*: int
     maxSchedulerQueue*: int
     maxBlockingQueue*: int
@@ -275,6 +276,8 @@ var mtWakeReactor* {.threadvar.}: proc() {.closure, gcsafe.}
 var isSchedulerWorker* {.threadvar.}: bool
 var currentWorkerId* {.threadvar.}: int
 var isReactorThread* {.threadvar.}: bool
+var currentReactorCpuId* {.threadvar.}: int
+var currentReactorPinned* {.threadvar.}: bool
 
 proc currentThreadIdentity*(): pointer {.inline.} =
   ## Return a stable identity for the calling thread.
@@ -334,6 +337,7 @@ proc defaultRuntimeConfig*(): RuntimeConfig =
   RuntimeConfig(
     flavor: rfCurrentThread,
     numWorkers: 0,
+    pinWorkers: true,
     numBlockingThreads: 0,
     maxSchedulerQueue: DefaultSchedulerQueueCap,
     maxBlockingQueue: DefaultBlockingQueueCap
@@ -406,13 +410,15 @@ proc registerMtRuntimeFactory*(factory: MtRuntimeFactoryProc) =
 proc newMultiThreadRuntime*(numWorkers: int = 0,
                             numBlockingThreads: int = 0,
                             maxSchedulerQueue: int = DefaultSchedulerQueueCap,
-                            maxBlockingQueue: int = DefaultBlockingQueueCap): CpsRuntime =
+                            maxBlockingQueue: int = DefaultBlockingQueueCap,
+                            pinWorkers: bool = true): CpsRuntime =
   ## Create a new multi thread runtime.
   if gMtRuntimeFactory == nil:
     raise newException(ValueError, "MT runtime factory not registered; import cps/mt first")
   let cfg = RuntimeConfig(
     flavor: rfMultiThread,
     numWorkers: numWorkers,
+    pinWorkers: pinWorkers,
     numBlockingThreads: numBlockingThreads,
     maxSchedulerQueue: maxSchedulerQueue,
     maxBlockingQueue: maxBlockingQueue
@@ -427,6 +433,7 @@ proc newRuntime*(config: RuntimeConfig): CpsRuntime =
   of rfMultiThread:
     result = newMultiThreadRuntime(
       numWorkers = config.numWorkers,
+      pinWorkers = config.pinWorkers,
       numBlockingThreads = config.numBlockingThreads,
       maxSchedulerQueue = config.maxSchedulerQueue,
       maxBlockingQueue = config.maxBlockingQueue
@@ -490,6 +497,20 @@ proc currentRuntimePointer*(): pointer {.inline.} =
   if fast != nil:
     return fast
   cast[pointer](ensureMainRuntime())
+
+proc deferCurrentWorker*(cbArg: sink proc() {.closure.}): bool {.inline.} =
+  ## Defer `cbArg` onto the current multithreaded-runtime worker.
+  ##
+  ## This is the allocation-light primitive for batching owner-local work: the
+  ## callback stays on the worker that owns its ARC/ORC graph and enters that
+  ## worker's bounded pinned inbox. Callers can provide their event-loop
+  ## fallback when no multithreaded worker is active.
+  let rt {.cursor.} = cast[CpsRuntime](currentRuntimeCtx)
+  if rt == nil or rt.flavor != rfMultiThread or not isSchedulerWorker or
+      rt.pinnedCallbackDispatcher == nil:
+    return false
+  {.cast(gcsafe).}:
+    result = rt.pinnedCallbackDispatcher(currentWorkerId, move(cbArg))
 
 proc setLocalFutureDefault*(enabled: bool) {.inline.} =
   ## Select local-fast futures for constructors called on this thread.
@@ -958,6 +979,16 @@ proc completedVoidFuture*(): CpsVoidFuture {.inline.} =
   result.atomicState.store(FutureStateDone, moRelaxed)
   result.callbackHead.store(CallbackClosed, moRelaxed)
 
+var threadCompletedVoidFuture {.threadvar.}: CpsVoidFuture
+
+proc cachedCompletedVoidFuture*(): CpsVoidFuture {.inline.} =
+  ## Return a reusable completed future owned by the current thread.
+  ## Completed futures are immutable and callbacks run inline, so synchronous
+  ## I/O paths can avoid allocating one completion object per operation.
+  if threadCompletedVoidFuture.isNil:
+    threadCompletedVoidFuture = completedVoidFuture()
+  threadCompletedVoidFuture
+
 proc failedFuture*[T](err: ref CatchableError): CpsFuture[T] {.inline.} =
   ## Create a future that is already failed with an error.
   when not SharedFuturesOnly:
@@ -1136,40 +1167,6 @@ proc migrateTo*(fut: CpsVoidFuture, handle: RuntimeHandle) =
       "cannot migrate future to runtime " & $handle.runtimeId() &
       ": future is runtime-pinned")
 
-proc schedulePinnedLocalCallback[T](fut: CpsFuture[T], targetRt: CpsRuntime,
-                                    cb: sink proc() {.closure.}): bool {.inline.} =
-  if targetRt == nil or cb == nil:
-    return false
-  if targetRt.pinnedCallbackDispatcher == nil:
-    return false
-  if fut.localOwnerSchedulerPtr == nil:
-    return false
-  if targetRt != fut.ownerRuntime:
-    return false
-  let onOwnerWorker = isSchedulerWorker and
-    currentSchedulerPtr == fut.localOwnerSchedulerPtr and
-    currentWorkerId == fut.localOwnerWorkerId
-  if onOwnerWorker:
-    return false
-  targetRt.pinnedCallbackDispatcher(fut.localOwnerWorkerId, move(cb))
-
-proc schedulePinnedLocalCallback(fut: CpsVoidFuture, targetRt: CpsRuntime,
-                                 cb: sink proc() {.closure.}): bool {.inline.} =
-  if targetRt == nil or cb == nil:
-    return false
-  if targetRt.pinnedCallbackDispatcher == nil:
-    return false
-  if fut.localOwnerSchedulerPtr == nil:
-    return false
-  if targetRt != fut.ownerRuntime:
-    return false
-  let onOwnerWorker = isSchedulerWorker and
-    currentSchedulerPtr == fut.localOwnerSchedulerPtr and
-    currentWorkerId == fut.localOwnerWorkerId
-  if onOwnerWorker:
-    return false
-  targetRt.pinnedCallbackDispatcher(fut.localOwnerWorkerId, move(cb))
-
 proc dispatchCallback(rt: CpsRuntime, targetWorker: int,
                       cb: sink proc() {.closure.}) {.inline.} =
   ## Fire a single callback on the target runtime, dispatching to workers
@@ -1321,7 +1318,9 @@ proc fireCallbacks(fut: CpsVoidFuture, head: pointer) {.inline.} =
     finally:
       freeCallbackNode(node)
 
-proc fireLocalCallback[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
+proc fireLocalCallback[T](fut: CpsFuture[T], targetRt: CpsRuntime,
+                          cbArg: sink proc() {.closure.}) {.inline.} =
+  var cb = move(cbArg)
   if cb == nil:
     return
   if targetRt == nil:
@@ -1330,11 +1329,11 @@ proc fireLocalCallback[T](fut: CpsFuture[T], targetRt: CpsRuntime, cb: proc() {.
     except CatchableError:
       statInc(rtCallbackErrors)
     return
-  if fut.schedulePinnedLocalCallback(targetRt, cb):
-    return
-  dispatchCallback(targetRt, fut.localOwnerWorkerId, cb)
+  dispatchCallback(targetRt, fut.localOwnerWorkerId, move(cb))
 
-proc fireLocalCallback(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {.closure.}) {.inline.} =
+proc fireLocalCallback(fut: CpsVoidFuture, targetRt: CpsRuntime,
+                       cbArg: sink proc() {.closure.}) {.inline.} =
+  var cb = move(cbArg)
   if cb == nil:
     return
   if targetRt == nil:
@@ -1343,26 +1342,23 @@ proc fireLocalCallback(fut: CpsVoidFuture, targetRt: CpsRuntime, cb: proc() {.cl
     except CatchableError:
       statInc(rtCallbackErrors)
     return
-  if fut.schedulePinnedLocalCallback(targetRt, cb):
-    return
-  dispatchCallback(targetRt, fut.localOwnerWorkerId, cb)
+  dispatchCallback(targetRt, fut.localOwnerWorkerId, move(cb))
 
 proc fireLocalCallbacks[T](fut: CpsFuture[T]) =
   if fut.localCallbacks.len == 0:
-    let inlineCb = fut.inlineCallback
+    var inlineCb = move(fut.inlineCallback)
     if inlineCb == nil:
       return
     let inlineRt {.cursor.} = fut.inlineTargetRuntime
-    fut.inlineCallback = nil
     fut.inlineTargetRuntime = nil
-    fut.fireLocalCallback(inlineRt, inlineCb)
+    fut.fireLocalCallback(inlineRt, move(inlineCb))
     return
 
   if fut.localCallbacks.len > 0:
     var i = fut.localCallbacks.len - 1
     while true:
-      let thunk = fut.localCallbacks[i]
-      fut.fireLocalCallback(thunk.targetRuntime, thunk.cb)
+      var thunk = move(fut.localCallbacks[i])
+      fut.fireLocalCallback(thunk.targetRuntime, move(thunk.cb))
       if i == 0:
         break
       dec i
@@ -1371,24 +1367,23 @@ proc fireLocalCallbacks[T](fut: CpsFuture[T]) =
   let inlineRt {.cursor.} = fut.inlineTargetRuntime
   fut.inlineCallback = nil
   fut.inlineTargetRuntime = nil
-  fut.fireLocalCallback(inlineRt, inlineCb)
+  fut.fireLocalCallback(inlineRt, move(inlineCb))
 
 proc fireLocalCallbacks(fut: CpsVoidFuture) =
   if fut.localCallbacks.len == 0:
-    let inlineCb = fut.inlineCallback
+    var inlineCb = move(fut.inlineCallback)
     if inlineCb == nil:
       return
     let inlineRt {.cursor.} = fut.inlineTargetRuntime
-    fut.inlineCallback = nil
     fut.inlineTargetRuntime = nil
-    fut.fireLocalCallback(inlineRt, inlineCb)
+    fut.fireLocalCallback(inlineRt, move(inlineCb))
     return
 
   if fut.localCallbacks.len > 0:
     var i = fut.localCallbacks.len - 1
     while true:
-      let thunk = fut.localCallbacks[i]
-      fut.fireLocalCallback(thunk.targetRuntime, thunk.cb)
+      var thunk = move(fut.localCallbacks[i])
+      fut.fireLocalCallback(thunk.targetRuntime, move(thunk.cb))
       if i == 0:
         break
       dec i
@@ -1397,7 +1392,7 @@ proc fireLocalCallbacks(fut: CpsVoidFuture) =
   let inlineRt {.cursor.} = fut.inlineTargetRuntime
   fut.inlineCallback = nil
   fut.inlineTargetRuntime = nil
-  fut.fireLocalCallback(inlineRt, inlineCb)
+  fut.fireLocalCallback(inlineRt, move(inlineCb))
 
 proc wakeReactorIfNeeded(rt: CpsRuntime, workerId: int) {.inline.} =
   ## Wake only synchronous runtime waiters. Normal async completion already

@@ -1,4 +1,4 @@
-version = "1.1.1"
+version = "1.1.2"
 author = "Gabriel Arroyo"
 description = "Continuation-passing-style async runtime, event loop, I/O, concurrency, and multi-threaded scheduler for Nim."
 license = "MIT"
@@ -36,10 +36,16 @@ task testMtMms, "Test the work-stealing runtime under ARC, ORC, and AtomicARC":
     exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_blocking.nim"
     exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_concurrent.nim"
     exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_continuation_dispatch.nim"
+    exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_cancel_completed_await_lifetime.nim"
+    exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_cancel_queued_resume.nim"
     exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_io_shards.nim"
     exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_lazy_blocking_pool.nim"
+    exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_local_callback_burst_lifetime.nim"
     exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_local_fast_pinned.nim"
+    exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_pinned_overflow_deferred.nim"
     exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_scheduler_fairness.nim"
+    exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_shutdown_lifetime.nim"
+    exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_yield_affinity.nim"
 
 task testMms, "Run the supported memory-manager matrix":
   for mm in ["arc", "orc", "atomicArc"]:
@@ -56,10 +62,16 @@ task testMms, "Run the supported memory-manager matrix":
     exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_blocking.nim"
     exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_concurrent.nim"
     exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_continuation_dispatch.nim"
+    exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_cancel_completed_await_lifetime.nim"
+    exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_cancel_queued_resume.nim"
     exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_io_shards.nim"
     exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_lazy_blocking_pool.nim"
+    exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_local_callback_burst_lifetime.nim"
     exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_local_fast_pinned.nim"
+    exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_pinned_overflow_deferred.nim"
     exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_scheduler_fairness.nim"
+    exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_shutdown_lifetime.nim"
+    exec "nim c -r --threads:on --mm:" & mm & " tests/mt/test_mt_yield_affinity.nim"
   # This deliberately races ordinary ref-counted futures from arbitrary raw
   # OS threads, which is specifically the AtomicARC contract.
   exec "nim c -r --threads:on --mm:atomicArc tests/core/test_lockfree.nim"

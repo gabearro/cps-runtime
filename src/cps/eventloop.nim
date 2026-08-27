@@ -69,6 +69,13 @@ type
     wakePipeWrite*: SocketHandle  ## Write end of wake pipe (SocketHandle(-1) = not initialized)
     wakePending: Atomic[bool]  ## Coalesce wake-pipe writes
     mtActive*: bool       ## Whether MT extensions are active
+    when defined(linux):
+      # One-shot I/O callbacks commonly rearm the same descriptor from the
+      # continuation they wake. Keep those descriptors in epoll until the
+      # next wait so a same-mask rearm only replaces selector data instead of
+      # paying EPOLL_CTL_DEL + EPOLL_CTL_ADD. The list is reactor-local and is
+      # normally bounded by the 64-entry readiness batch.
+      deferredDisarms: seq[SocketHandle]
     stats*: LoopStats
 
 proc timerLess(a, b: TimerEntry): bool {.inline.} =
@@ -354,13 +361,30 @@ proc registerHandleSafe(loop: EventLoop, fd: SocketHandle, events: set[Event],
       # the kqueue selector's changes buffer.
       return
   try:
-    if loop.selector.contains(fd):
-      # Always re-register to handle fd recycling correctly.
-      try:
-        loop.selector.unregister(fd)
-      except Exception:
-        discard  # ENOENT from kqueue is normal for recycled fds
-    loop.selector.registerHandle(fd, events, cb)
+    when defined(linux):
+      if loop.selector.contains(fd):
+        # Linux keeps selector data separately from the epoll interest. A
+        # same-mask update is syscall-free; a read/write transition is one
+        # EPOLL_CTL_MOD instead of a DEL+ADD pair.
+        discard loop.selector.setData(fd, cb)
+        loop.selector.updateHandle(fd, events)
+        var i = 0
+        while i < loop.deferredDisarms.len:
+          if loop.deferredDisarms[i] == fd:
+            loop.deferredDisarms[i] = loop.deferredDisarms[^1]
+            loop.deferredDisarms.setLen(loop.deferredDisarms.len - 1)
+            break
+          inc i
+      else:
+        loop.selector.registerHandle(fd, events, cb)
+    else:
+      if loop.selector.contains(fd):
+        # Always re-register to handle fd recycling correctly.
+        try:
+          loop.selector.unregister(fd)
+        except Exception:
+          discard  # ENOENT from kqueue is normal for recycled fds
+      loop.selector.registerHandle(fd, events, cb)
   except Exception:
     try:
       loop.selector.unregister(fd)
@@ -439,6 +463,14 @@ proc unregister*(loop: EventLoop, fd: SocketHandle) =
           discard
     )
   else:
+    when defined(linux):
+      var i = 0
+      while i < loop.deferredDisarms.len:
+        if loop.deferredDisarms[i] == fd:
+          loop.deferredDisarms[i] = loop.deferredDisarms[^1]
+          loop.deferredDisarms.setLen(loop.deferredDisarms.len - 1)
+          break
+        inc i
     if loop.selector.contains(fd):
       try:
         loop.selector.unregister(fd)
@@ -448,6 +480,47 @@ proc unregister*(loop: EventLoop, fd: SocketHandle) =
 proc unregister*(loop: EventLoop, fd: int) =
   ## Remove the socket registration from the event loop.
   unregister(loop, SocketHandle(fd))
+
+proc disarm*(loop: EventLoop, fd: SocketHandle) =
+  ## Consume a one-shot readiness callback without closing the descriptor.
+  ##
+  ## Linux defers the kernel deletion until the next selector wait. Rearming
+  ## the descriptor before then replaces its callback in-place and avoids
+  ## redundant epoll_ctl calls. Other selectors retain the established
+  ## unregister behavior.
+  when defined(linux):
+    if loop.shouldProxyToReactor():
+      let fdVal = fd
+      loop.postToEventLoop(proc() {.closure, gcsafe.} =
+        {.cast(gcsafe).}:
+          loop.disarm(fdVal)
+      )
+    elif loop.selector.contains(fd):
+      var emptyCallback: IoCallback
+      discard loop.selector.setData(fd, emptyCallback)
+      for pending in loop.deferredDisarms:
+        if pending == fd:
+          return
+      loop.deferredDisarms.add(fd)
+  else:
+    loop.unregister(fd)
+
+proc disarm*(loop: EventLoop, fd: int) =
+  ## Consume a one-shot readiness callback without closing the descriptor.
+  loop.disarm(SocketHandle(fd))
+
+proc flushDeferredDisarms(loop: EventLoop) {.inline.} =
+  ## Remove callbacks that were not rearmed before the next kernel wait.
+  when defined(linux):
+    if loop.deferredDisarms.len == 0:
+      return
+    for fd in loop.deferredDisarms:
+      if loop.selector.contains(fd):
+        try:
+          loop.selector.unregister(fd)
+        except Exception:
+          discard
+    loop.deferredDisarms.setLen(0)
 
 proc scheduleCallback*(loop: EventLoop, cb: proc() {.closure.}) =
   ## Queue a callback for execution on the event-loop thread.
@@ -531,14 +604,10 @@ proc enableCrossThreadWake*(loop: EventLoop) =
   loop.wakePipeWrite = writeEnd
   loop.mtActive = true
   initMpscQueue(loop.crossThreadQueue)
-  loop.registerRead(readEnd, proc() =
-    platform.wakePipeDrain(readEnd)
-    loop.recordWakeSignal()
-    loop.drainCrossThreadQueue()
-    loop.markWakeDrained()
-    if loop.crossThreadQueue.hasPending():
-      loop.tryWakeSelector()
-  )
+  # Wake readiness is handled directly by processIo. Keeping a managed
+  # callback in the selector both allocates an unnecessary closure and makes
+  # its destruction part of ARC/ORC shutdown ordering.
+  loop.registerRead(readEnd, nil)
 
 proc disableCrossThreadWake*(loop: EventLoop) =
   ## Remove cross-thread control state and release its descriptors/closures.
@@ -561,6 +630,13 @@ proc processIo(loop: EventLoop, timeoutMs: int): int {.warning[ProveInit]: off.}
   ## Process I/O events, returning the number of events processed.
   ## Suppress a known ioselectors_kqueue `ProveInit` false-positive from
   ## `getData` template instantiation (tracked upstream in Nim stdlib).
+  # A non-blocking poll is often interleaved with the continuation that rearms
+  # a one-shot descriptor. Keep the userspace tombstone through those polls so
+  # rearming can cancel it without a DEL+ADD kernel round trip. Before a
+  # blocking wait, remove any tombstones so a still-ready fd cannot wake us
+  # repeatedly with no callback.
+  if timeoutMs != 0:
+    loop.flushDeferredDisarms()
   if loop.selector.isEmpty:
     when defined(debugMtIo):
       debugEcho "[MT-IO] processIo: selector is empty"
@@ -585,6 +661,15 @@ proc processIo(loop: EventLoop, timeoutMs: int): int {.warning[ProveInit]: off.}
     # registered the result pointer is never assigned (nil), and the
     # caller's dereference would SIGSEGV at address 0x0.
     if not loop.selector.contains(ev.fd):
+      continue
+    if ev.fd == int(loop.wakePipeRead):
+      platform.wakePipeDrain(loop.wakePipeRead)
+      loop.recordWakeSignal()
+      loop.drainCrossThreadQueue()
+      loop.markWakeDrained()
+      if loop.crossThreadQueue.hasPending():
+        loop.tryWakeSelector()
+      inc result
       continue
     let cb = loop.selector.getData(ev.fd)
     if cb != nil:

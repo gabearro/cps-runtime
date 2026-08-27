@@ -16,6 +16,8 @@ import ../runtime
 import ../eventloop
 import ./threadpool
 import ./scheduler
+when defined(linux):
+  import ../private/platform
 
 export eventloop, threadpool, scheduler
 
@@ -30,11 +32,14 @@ type
 
   MtIoShardSet {.cpsMtShardAcyclic.} = ref object of RootObj
     runtime {.cursor.}: CpsRuntime
-    loops: seq[EventLoop]
+    # Each loop and its managed callbacks belong to its scheduler worker.
+    # Other threads only need the raw address for atomic wake operations.
+    loops: seq[pointer]
 
   MtIoStartState = object
     started: Atomic[int]
     failed: Atomic[bool]
+    setup: MtIoSetup
 
 const MtIoDrainHandleThreshold = 16
 
@@ -71,20 +76,27 @@ template asIoShardSet(rt: CpsRuntime): MtIoShardSet =
 
 proc ioShardSetup(ctx: pointer, workerId: int) {.nimcall, gcsafe.} =
   {.cast(gcsafe).}:
-    let shards = cast[MtIoShardSet](ctx)
-    let loop = shards.loops[workerId]
-    loop.claimCurrentThread()
+    let shards {.cursor.} = cast[MtIoShardSet](ctx)
+    let loop = newEventLoop()
+    loop.mtActive = true
+    loop.ownerRuntime = shards.runtime
+    loop.enableCrossThreadWake()
+    GC_ref(loop)
+    shards.loops[workerId] = cast[pointer](loop)
     bindCurrentEventLoop(shards.runtime, cast[pointer](loop), workerId)
     setLocalFutureDefault(true)
     isReactorThread = true
 
 proc ioShardPoll(ctx: pointer, workerId: int) {.nimcall, gcsafe.} =
   {.cast(gcsafe).}:
-    cast[MtIoShardSet](ctx).loops[workerId].tick()
+    let shards {.cursor.} = cast[MtIoShardSet](ctx)
+    let loop {.cursor.} = cast[EventLoop](shards.loops[workerId])
+    loop.tick()
 
 proc ioShardPollNow(ctx: pointer, workerId: int): bool {.nimcall, gcsafe.} =
   {.cast(gcsafe).}:
-    let loop = cast[MtIoShardSet](ctx).loops[workerId]
+    let shards {.cursor.} = cast[MtIoShardSet](ctx)
+    let loop {.cursor.} = cast[EventLoop](shards.loops[workerId])
     if loop.hasUserIoWork():
       return loop.poll()
     false
@@ -93,19 +105,43 @@ proc ioShardShouldDrain(ctx: pointer, workerId: int): bool {.nimcall, gcsafe.} =
   ## Sparse selectors are cheaper to revisit through the normal blocking path;
   ## busy selectors benefit from draining locally before remote deque probes.
   {.cast(gcsafe).}:
-    cast[MtIoShardSet](ctx).loops[workerId].userIoHandleCount() >=
-      MtIoDrainHandleThreshold
+    let shards {.cursor.} = cast[MtIoShardSet](ctx)
+    let loop {.cursor.} = cast[EventLoop](shards.loops[workerId])
+    loop.userIoHandleCount() >= MtIoDrainHandleThreshold
 
 proc ioShardWake(ctx: pointer, workerId: int) {.nimcall, gcsafe.} =
   {.cast(gcsafe).}:
-    cast[MtIoShardSet](ctx).loops[workerId].tryWakeSelector()
+    let shards {.cursor.} = cast[MtIoShardSet](ctx)
+    let loop {.cursor.} = cast[EventLoop](shards.loops[workerId])
+    if loop != nil:
+      loop.tryWakeSelector()
 
 proc ioShardTeardown(ctx: pointer, workerId: int) {.nimcall, gcsafe.} =
-  discard ctx
-  discard workerId
-  clearCurrentEventLoop()
-  setLocalFutureDefault(false)
-  isReactorThread = false
+  {.cast(gcsafe).}:
+    let shards {.cursor.} = cast[MtIoShardSet](ctx)
+    let loop {.cursor.} = cast[EventLoop](shards.loops[workerId])
+    if loop != nil:
+      # Destroy selector callbacks and the loop root on the worker whose ARC/
+      # ORC allocator created them. Publishing nil first prevents late wakes
+      # from observing a loop being dismantled.
+      shards.loops[workerId] = nil
+      loop.disableCrossThreadWake()
+      loop.ownerRuntime = nil
+      clearCurrentEventLoop()
+      GC_unref(loop)
+    else:
+      clearCurrentEventLoop()
+    setLocalFutureDefault(false)
+    isReactorThread = false
+
+proc runMtIoSetup(ctx: pointer, workerId: int) {.nimcall, gcsafe.} =
+  let state = cast[ptr MtIoStartState](ctx)
+  try:
+    state.setup(workerId)
+  except CatchableError:
+    state.failed.store(true, moRelease)
+  finally:
+    discard state.started.fetchAdd(1, moAcquireRelease)
 
 proc ensureBlockingPool(rt: CpsRuntime): ThreadPool =
   ## Lazily create the blocking pool. Most asynchronous applications never
@@ -172,7 +208,9 @@ proc makeIoShardWakeDispatcher(rt: CpsRuntime):
       let rt {.cursor.} = cast[CpsRuntime](rtPtr)
       let shards {.cursor.} = asIoShardSet(rt)
       if shards != nil and workerId >= 0 and workerId < shards.loops.len:
-        shards.loops[workerId].tryWakeSelector()
+        let loop {.cursor.} = cast[EventLoop](shards.loops[workerId])
+        if loop != nil:
+          loop.tryWakeSelector()
 
 proc makeCallbackDispatcher(rt: CpsRuntime): proc(cb: sink proc() {.closure.}) {.closure, gcsafe.} =
   let rtPtr = cast[pointer](rt)
@@ -181,7 +219,11 @@ proc makeCallbackDispatcher(rt: CpsRuntime): proc(cb: sink proc() {.closure.}) {
       let rt {.cursor.} = cast[CpsRuntime](rtPtr)
       let sched {.cursor.} = asScheduler(rt)
       if sched != nil:
-        let workerId = closureWorker(cb, rt.ioShardCount)
+        let workerId =
+          if isSchedulerWorker and currentRuntimePointer() == rtPtr:
+            currentWorkerId
+          else:
+            closureWorker(cb, rt.ioShardCount)
         var task = takeSchedulerTask(cb)
         discard sched.schedulePinned(workerId, move(task))
 
@@ -236,7 +278,14 @@ proc makeYieldDispatcher(rt: CpsRuntime): proc(cb: sink proc() {.closure, gcsafe
       let rt {.cursor.} = cast[CpsRuntime](rtPtr)
       let sched {.cursor.} = asScheduler(rt)
       if sched != nil:
-        let workerId = closureWorker(cb, rt.ioShardCount)
+        # Yielding is an owner-local scheduling point. Keep the completion on
+        # the calling reactor shard instead of hashing its fresh closure onto
+        # an unrelated worker and hopping the local future back afterwards.
+        let workerId =
+          if isSchedulerWorker and currentRuntimePointer() == rtPtr:
+            currentWorkerId
+          else:
+            closureWorker(cb, rt.ioShardCount)
         var task = takeSchedulerTask(cb)
         discard sched.schedulePinned(workerId, move(task))
 
@@ -258,16 +307,16 @@ proc createMtRuntime(config: RuntimeConfig): CpsRuntime {.nimcall.} =
 
     loop.enableCrossThreadWake()
 
+    let detectedProcessors =
+      when defined(linux):
+        let allowed = platform.allowedCpuIds()
+        if allowed.len > 0: allowed.len else: countProcessors()
+      else:
+        countProcessors()
     let workerCount = max(1,
-      if config.numWorkers <= 0: countProcessors() else: config.numWorkers)
+      if config.numWorkers <= 0: detectedProcessors else: config.numWorkers)
     let shards = MtIoShardSet(runtime: rt,
-                              loops: newSeq[EventLoop](workerCount))
-    for workerId in 0 ..< workerCount:
-      let shardLoop = newEventLoop()
-      shardLoop.mtActive = true
-      shardLoop.ownerRuntime = rt
-      shardLoop.enableCrossThreadWake()
-      shards.loops[workerId] = shardLoop
+                              loops: newSeq[pointer](workerCount))
     rt.ioShardSetPtr = cast[RootRef](shards)
     rt.ioShardCount = workerCount
 
@@ -284,6 +333,7 @@ proc createMtRuntime(config: RuntimeConfig): CpsRuntime {.nimcall.} =
     rt.wakeIoShard = makeIoShardWakeDispatcher(rt)
 
     let sched = newScheduler(rt, workerCount, config.maxSchedulerQueue,
+      pinWorkers = config.pinWorkers,
       reactorCtx = cast[pointer](shards),
       reactorSetup = ioShardSetup,
       reactorPoll = ioShardPoll,
@@ -306,10 +356,12 @@ proc captureWorkerError(e: ref CatchableError): ref CatchableError {.inline.} =
 proc initMtRuntime*(numWorkers: int = 0,
                     numBlockingThreads: int = 0,
                     maxSchedulerQueue: int = 65536,
-                    maxBlockingQueue: int = 65536): EventLoop =
+                    maxBlockingQueue: int = 65536,
+                    pinWorkers: bool = true): EventLoop =
   ## Compatibility wrapper: create an MT runtime and install it as main/current.
   let rt = newMultiThreadRuntime(
     numWorkers = numWorkers,
+    pinWorkers = pinWorkers,
     numBlockingThreads = numBlockingThreads,
     maxSchedulerQueue = maxSchedulerQueue,
     maxBlockingQueue = maxBlockingQueue
@@ -324,11 +376,15 @@ proc ioShardCount*(rt: CpsRuntime): int {.inline.} =
   if rt == nil: 0 else: rt.ioShardCount
 
 proc ioShardLoop*(rt: CpsRuntime, shardId: int): EventLoop =
-  ## Return one worker-owned I/O loop for diagnostics and tests.
+  ## Return the calling worker's I/O loop for diagnostics and tests.
   let shards = asIoShardSet(rt)
   if shards == nil or shardId < 0 or shardId >= shards.loops.len:
     raise newException(IndexDefect, "I/O shard index out of bounds")
-  shards.loops[shardId]
+  if not isSchedulerWorker or currentRuntime().runtime != rt or
+      currentWorkerId != shardId:
+    raise newException(ValueError,
+      "I/O shard loops are only borrowable from their owning worker")
+  cast[EventLoop](shards.loops[shardId])
 
 proc startMtIoShards*(rt: CpsRuntime, setup: MtIoSetup) =
   ## Run ``setup`` once on every scheduler worker and wait for initialization.
@@ -345,18 +401,11 @@ proc startMtIoShards*(rt: CpsRuntime, setup: MtIoSetup) =
   let state = cast[ptr MtIoStartState](allocShared0(sizeof(MtIoStartState)))
   state.started.store(0, moRelaxed)
   state.failed.store(false, moRelaxed)
-
-  proc makeSetupTask(shardId: int): SchedulerTask =
-    result = proc() {.closure, gcsafe.} =
-      try:
-        setup(shardId)
-      except CatchableError:
-        state.failed.store(true, moRelease)
-      finally:
-        discard state.started.fetchAdd(1, moAcquireRelease)
+  state.setup = setup
 
   for shardId in 0 ..< rt.ioShardCount:
-    if not sched.schedulePinned(shardId, makeSetupTask(shardId)):
+    if not sched.schedulePinnedCall(shardId, runMtIoSetup,
+                                    cast[pointer](state)):
       state.failed.store(true, moRelease)
       discard state.started.fetchAdd(1, moAcquireRelease)
 
@@ -455,7 +504,7 @@ proc shutdownMtRuntime*(rt: CpsRuntime) =
     # workers. Drain and release it before joining the scheduler threads.
     if pool != nil:
       pool.shutdown()
-      rt.blockingPoolPtr = nil
+      zeroMem(addr rt.blockingPoolPtr, sizeof(rt.blockingPoolPtr))
       # The pool and its Thread sequence may have been allocated by the
       # scheduler worker that first called spawnBlocking. Retire the typed
       # owner before joining scheduler workers and tearing down that allocator.
@@ -467,9 +516,7 @@ proc shutdownMtRuntime*(rt: CpsRuntime) =
       GC_unref(sched)
 
     if shards != nil:
-      for loop in shards.loops:
-        if loop != nil:
-          loop.disableCrossThreadWake()
+      # ioShardTeardown released every managed loop on its owning worker.
       rt.ioShardSetPtr = nil
       rt.ioShardCount = 0
 

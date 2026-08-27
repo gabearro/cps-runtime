@@ -14,11 +14,16 @@ import ../private/mpsc_ring
 import ../private/xorshift
 import ../private/atomic_parker
 import ../private/cross_thread_closure
+when defined(linux):
+  import ../private/platform
 
-const DefaultGlobalQueueCapacity = 65536
+const
+  DefaultGlobalQueueCapacity = 65536
+  LocalPinnedCapacity = 16
 
 type
   SchedulerTask* = proc() {.closure, gcsafe.}
+  SchedulerPinnedCall* = proc(ctx: pointer, workerId: int) {.nimcall, gcsafe.}
   OwnedSchedulerTask = OwnedClosureTask
   SchedulerReactorHook* = proc(ctx: pointer, workerId: int) {.nimcall, gcsafe.}
   SchedulerReactorPollHook* = proc(ctx: pointer, workerId: int): bool {.nimcall, gcsafe.}
@@ -28,12 +33,16 @@ type
     deque: ChaseLevDeque[OwnedSchedulerTask]  ## Lock-free work-stealing deque
     injectQueue: MpscRingQueue[OwnedSchedulerTask]  ## Bounded external submissions
     pinnedQueue: MpscQueue[OwnedSchedulerTask]  ## Worker-pinned tasks
+    localPinned: array[LocalPinnedCapacity, OwnedSchedulerTask]
+    localPinnedHead: int
+    localPinnedLen: int
     parker: AtomicParker
     parked: Atomic[bool]
 
   WorkerArg = object
     scheduler: ptr SchedulerObj
     idx: int
+    cpuId: int
     runtime: pointer
 
   SchedulerObj = object
@@ -60,6 +69,11 @@ type
     task: OwnedSchedulerTask
     route: ClosureReturnRoute
 
+  PinnedCall = object
+    fn: SchedulerPinnedCall
+    ctx: pointer
+    workerId: int
+
   Scheduler* {.acyclic.} = ref object
     obj: ptr SchedulerObj
 
@@ -70,6 +84,7 @@ var injectScheduler {.threadvar.}: pointer
 var injectCursor {.threadvar.}: int
 
 proc continuationTaskMarker() {.nimcall, gcsafe.} = discard
+proc pinnedCallMarker() {.nimcall, gcsafe.} = discard
 proc remoteInvokeMarker() {.nimcall, gcsafe.} = discard
 proc remoteReleaseMarker() {.nimcall, gcsafe.} = discard
 proc returnedInvokeMarker() {.nimcall, gcsafe.} = discard
@@ -99,6 +114,16 @@ proc runTask(s: ptr SchedulerObj,
     task.fn = nil
     task.env = nil
     discard runUntilSuspend(move(c))
+  elif task.fn == cast[pointer](pinnedCallMarker):
+    let call = cast[ptr PinnedCall](task.env)
+    task.fn = nil
+    task.env = nil
+    try:
+      call.fn(call.ctx, call.workerId)
+    except CatchableError:
+      discard
+    finally:
+      deallocShared(call)
   elif task.fn == cast[pointer](remoteInvokeMarker):
     let remote = cast[ptr RemoteClosure](task.env)
     task.fn = nil
@@ -171,6 +196,25 @@ proc popPinned(ws: ptr WorkerState): OwnedSchedulerTask {.inline.} =
     return default(OwnedSchedulerTask)
   result = takePayload(node)
   freeNode(node)
+
+proc pushLocalPinned(ws: ptr WorkerState,
+                     task: var OwnedSchedulerTask): bool {.inline.} =
+  ## Owner-only bounded queue: no atomics and no per-task allocation.
+  if ws.localPinnedLen == LocalPinnedCapacity:
+    return false
+  let tail = (ws.localPinnedHead + ws.localPinnedLen) and
+             (LocalPinnedCapacity - 1)
+  ws.localPinned[tail] = move(task)
+  inc ws.localPinnedLen
+  true
+
+proc popLocalPinned(ws: ptr WorkerState): OwnedSchedulerTask {.inline.} =
+  if ws.localPinnedLen == 0:
+    return default(OwnedSchedulerTask)
+  result = move(ws.localPinned[ws.localPinnedHead])
+  ws.localPinnedHead = (ws.localPinnedHead + 1) and
+                       (LocalPinnedCapacity - 1)
+  dec ws.localPinnedLen
 
 proc wakeWorkerIfParked(s: ptr SchedulerObj, workerId: int) {.inline.} =
   ## Wake one exact worker. The epoch prevents lost notifications if the
@@ -257,6 +301,11 @@ proc workerMain(arg: WorkerArg) {.thread.} =
   currentSchedulerPtr = cast[pointer](s)
   {.cast(gcsafe).}:
     setCurrentRuntime(cast[CpsRuntime](arg.runtime))
+  when defined(linux):
+    if arg.cpuId >= 0:
+      currentReactorPinned = platform.pinCurrentThreadToCpu(arg.cpuId)
+      if currentReactorPinned:
+        currentReactorCpuId = arg.cpuId
   if s.reactorSetup != nil:
     s.reactorSetup(s.reactorCtx, myIdx)
 
@@ -273,6 +322,11 @@ proc workerMain(arg: WorkerArg) {.thread.} =
 
     # 0. Try worker-pinned inbox first.
     task = popPinned(myState)
+
+    # Same-worker callbacks never cross an ownership boundary and use a tiny
+    # owner-only queue to avoid both node allocation and atomic ring traffic.
+    if task.fn == nil:
+      task = popLocalPinned(myState)
 
     # 1. Try local deque (LIFO, cache-friendly)
     if task.fn == nil:
@@ -341,6 +395,8 @@ proc workerMain(arg: WorkerArg) {.thread.} =
   {.cast(gcsafe).}:
     setCurrentRuntime(nil)
   currentSchedulerPtr = nil
+  currentReactorCpuId = -1
+  currentReactorPinned = false
   isSchedulerWorker = false
   currentWorkerId = -1
 
@@ -352,10 +408,18 @@ proc newScheduler*(runtime: CpsRuntime, numWorkers: int = 0,
                    reactorPollNow: SchedulerReactorPollHook = nil,
                    reactorShouldDrain: SchedulerReactorPredicateHook = nil,
                    reactorWake: SchedulerReactorHook = nil,
-                   reactorTeardown: SchedulerReactorHook = nil): Scheduler =
+                   reactorTeardown: SchedulerReactorHook = nil,
+                   pinWorkers: bool = true): Scheduler =
   ## Create a new scheduler.
   ## Non-positive queue capacities use the bounded default.
-  let n = max(1, if numWorkers <= 0: countProcessors() else: numWorkers)
+  when defined(linux):
+    let allowedCpus = platform.allowedCpuIds()
+  let detectedProcessors =
+    when defined(linux):
+      if allowedCpus.len > 0: allowedCpus.len else: countProcessors()
+    else:
+      countProcessors()
+  let n = max(1, if numWorkers <= 0: detectedProcessors else: numWorkers)
   let maxQ =
     if maxGlobalQueue <= 0: DefaultGlobalQueueCapacity
     else: maxGlobalQueue
@@ -393,7 +457,16 @@ proc newScheduler*(runtime: CpsRuntime, numWorkers: int = 0,
     obj.workers[i] = ws
   obj.threads = newSeq[Thread[WorkerArg]](n)
   for i in 0 ..< n:
+    let cpuId =
+      when defined(linux):
+        if pinWorkers and allowedCpus.len > 0:
+          allowedCpus[i mod allowedCpus.len]
+        else:
+          -1
+      else:
+        -1
     let arg = WorkerArg(scheduler: obj, idx: i,
+                        cpuId: cpuId,
                         runtime: cast[pointer](runtime))
     createThread(obj.threads[i], workerMain, arg)
   result = Scheduler(obj: obj)
@@ -495,8 +568,26 @@ proc schedulePinned*(s: Scheduler, workerId: int,
   var task = move(taskArg)
   prepareCrossThreadClosure(task)
   var ownedTask = takeTask(task)
-  if isSchedulerWorker and currentSchedulerPtr == cast[pointer](obj) and
-     currentWorkerId != workerId:
+  if isSchedulerWorker and currentSchedulerPtr == cast[pointer](obj):
+    if currentWorkerId == workerId:
+      # The owner is both producer and consumer. Keep the callback deferred,
+      # but avoid a linked-list node and atomic producer cursor for every local
+      # future completion. This queue is never stolen, so the closure remains
+      # on its ARC/ORC owner.
+      if ws.pushLocalPinned(ownedTask):
+        return true
+      # A single task can fan out beyond the tiny owner queue. The existing
+      # bounded MPSC shard is the allocation-free overflow path.
+      if ws.injectQueue.tryEnqueue(ownedTask):
+        return true
+      # Never invoke an await callback inline while its completed future is
+      # still draining callbacks. That can release the last future reference
+      # and recursively destroy the callback storage being iterated. Queueing
+      # the rare double-overflow preserves deferred callback semantics; the
+      # common owner-local and bounded-ring paths remain allocation-free.
+      let node = allocNode(ownedTask)
+      enqueue(ws.pinnedQueue, node)
+      return true
     let remote = cast[ptr RemoteClosure](allocShared0(sizeof(RemoteClosure)))
     remote.task = ownedTask
     remote.sourceWorker = currentWorkerId
@@ -518,6 +609,27 @@ proc schedulePinned*(s: Scheduler, workerId: int,
   enqueue(ws.pinnedQueue, node)
   obj.wakeWorkerIfParked(workerId)
   result = true
+
+proc schedulePinnedCall*(s: Scheduler, workerId: int,
+                         fn: SchedulerPinnedCall,
+                         ctx: pointer): bool =
+  ## Schedule an unmanaged function/context pair on one exact worker.
+  ## This is the safe bootstrap path for ARC/ORC callers: no Nim closure
+  ## environment is shared between the submitting and receiving threads.
+  let obj = s.obj
+  if obj == nil or fn == nil or obj.shutdown.load(moAcquire) or
+      workerId < 0 or workerId >= obj.numWorkers:
+    return false
+  let call = cast[ptr PinnedCall](allocShared0(sizeof(PinnedCall)))
+  call.fn = fn
+  call.ctx = ctx
+  call.workerId = workerId
+  var task = OwnedSchedulerTask(
+    fn: cast[pointer](pinnedCallMarker), env: cast[pointer](call))
+  let node = allocNode(task)
+  enqueue(obj.workers[workerId].pinnedQueue, node)
+  obj.wakeWorkerIfParked(workerId)
+  true
 
 proc scheduleClosureRelease*(s: Scheduler, workerId: int,
                              closure: OwnedClosureTask): bool =

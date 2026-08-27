@@ -13,6 +13,17 @@ import ../eventloop
 import ../private/platform
 import ./streams
 
+when defined(linux):
+  import std/posix
+
+  type UdpMMsgHdr {.importc: "struct mmsghdr", pure, final,
+                     header: "<sys/socket.h>".} = object
+    msg_hdr: Tmsghdr
+    msg_len: cuint
+
+  proc sendmmsg(fd: cint, msgvec: ptr UdpMMsgHdr, vlen: cuint,
+                flags: cint): cint {.importc, header: "<sys/socket.h>".}
+
 type
   UdpSocket* = ref object
     fd*: SocketHandle
@@ -34,6 +45,9 @@ type
   UdpRecvBorrowedCallback* = proc(data: openArray[byte], srcAddr: Sockaddr_storage,
                                   addrLen: SockLen) {.closure.}
 
+const
+  MaxUdpSendBatch* = 32
+
 proc newUdpSocket*(domain: Domain = AF_INET): UdpSocket =
   ## Create a new non-blocking UDP socket.
   let fd = createNativeSocket(domain, SOCK_DGRAM, IPPROTO_UDP)
@@ -47,11 +61,16 @@ proc newUdpSocket*(domain: Domain = AF_INET): UdpSocket =
                        addr yes, sizeof(yes).SockLen)
   result = UdpSocket(fd: fd, domain: domain, closed: false)
 
-proc bindAddr*(sock: UdpSocket, host: string, port: int) =
+proc bindAddr*(sock: UdpSocket, host: string, port: int,
+               reusePort: bool = false) =
   ## Bind the UDP socket to a local address.
   var optval: cint = 1
   discard setsockopt(sock.fd, SOL_SOCKET.cint, SO_REUSEADDR.cint,
                      addr optval, sizeof(optval).SockLen)
+  when defined(posix):
+    if reusePort and setsockopt(sock.fd, SOL_SOCKET.cint, SO_REUSEPORT.cint,
+                               addr optval, sizeof(optval).SockLen) != 0:
+      raise newException(streams.AsyncIoError, "Failed to set UDP SO_REUSEPORT")
 
   let aiList = getAddrInfo(host, Port(port), sock.domain, SOCK_DGRAM, IPPROTO_UDP)
   if aiList == nil:
@@ -173,7 +192,12 @@ proc parseSenderAddress*(rd: RawDatagram): (string, int) =
 proc sendWithRetry(sock: UdpSocket, data: string,
                    destAddr: Sockaddr_storage, destLen: SockLen,
                    errorContext: string): CpsVoidFuture =
-  ## Shared non-blocking sendto with EAGAIN retry via event loop.
+  ## Shared non-blocking sendto with a bounded-delay EAGAIN retry.
+  ##
+  ## A UDP socket can also own a persistent read callback. Registering a write
+  ## callback for that same fd would replace the selector's read callback, and
+  ## the read drain could then overwrite the pending write retry. A short timer
+  ## avoids that single-slot race and permits multiple blocked datagram sends.
   let fut = newCpsVoidFuture()
   fut.pinFutureRuntime()
   let loop = getEventLoop()
@@ -185,10 +209,7 @@ proc sendWithRetry(sock: UdpSocket, data: string,
     if n < 0:
       let err = osLastError()
       if err.isWouldBlock():
-        loop.registerWrite(sock.fd, proc() =
-          loop.unregister(sock.fd)
-          trySend()
-        )
+        discard loop.registerTimer(1, trySend)
       else:
         fut.fail(newException(streams.AsyncIoError,
           errorContext & ": " & osErrorMsg(err)))
@@ -239,7 +260,7 @@ proc recvFrom*(sock: UdpSocket, maxSize: int = 65535): CpsFuture[Datagram] =
       if err.isWouldBlock():
         registered = true
         loop.registerRead(sock.fd, proc() =
-          loop.unregister(sock.fd)
+          loop.disarm(sock.fd)
           registered = false
           tryRecv()
         )
@@ -343,10 +364,7 @@ proc sendToAddrBytes*(sock: UdpSocket, data: seq[byte], ip: string,
     if n < 0:
       let err = osLastError()
       if err.isWouldBlock():
-        loop.registerWrite(sock.fd, proc() =
-          loop.unregister(sock.fd)
-          trySend()
-        )
+        discard loop.registerTimer(1, trySend)
       else:
         fut.fail(newException(streams.AsyncIoError,
           "sendToAddrBytes failed: " & osErrorMsg(err)))
@@ -374,6 +392,43 @@ proc trySendToAddrBytes*(sock: UdpSocket, data: openArray[byte], ip: string,
       "trySendToAddrBytes failed: " & osErrorMsg(err))
   true
 
+proc trySendToAddrBatchBytes*(sock: UdpSocket,
+                              datagrams: openArray[seq[byte]],
+                              ip: string,
+                              port: int): int =
+  ## Send a bounded prefix of datagrams to one numeric address without futures.
+  ## Linux uses one `sendmmsg`; other platforms preserve the same partial-send
+  ## contract with the ordinary non-blocking send path.
+  let count = min(datagrams.len, MaxUdpSendBatch)
+  if count == 0:
+    return 0
+  when defined(linux):
+    var sa: Sockaddr_storage
+    let saLen = fillSockaddrForSocket(sock, ip, port, sa)
+    var iov: array[MaxUdpSendBatch, IOVec]
+    var msgs: array[MaxUdpSendBatch, UdpMMsgHdr]
+    for i in 0 ..< count:
+      iov[i].iov_base =
+        if datagrams[i].len == 0: nil
+        else: unsafeAddr datagrams[i][0]
+      iov[i].iov_len = datagrams[i].len.csize_t
+      msgs[i].msg_hdr.msg_name = addr sa
+      msgs[i].msg_hdr.msg_namelen = saLen
+      msgs[i].msg_hdr.msg_iov = addr iov[i]
+      msgs[i].msg_hdr.msg_iovlen = 1
+    let sent = sendmmsg(sock.fd.cint, addr msgs[0], count.cuint, 0)
+    if sent < 0:
+      let err = osLastError()
+      if err.isWouldBlock():
+        return 0
+      raise newException(streams.AsyncIoError,
+        "trySendToAddrBatchBytes failed: " & osErrorMsg(err))
+    int(sent)
+  else:
+    while result < count and
+        sock.trySendToAddrBytes(datagrams[result], ip, port):
+      inc result
+
 # ============================================================
 # Persistent read callback (for multiplexed protocols like DNS)
 # ============================================================
@@ -389,7 +444,7 @@ proc onRecv*(sock: UdpSocket, maxSize: int, callback: UdpRecvCallback) =
   proc readHandler() {.closure.} =
     # Unregister first (kqueue requirement)
     try:
-      loop.unregister(sock.fd)
+      loop.disarm(sock.fd)
     except Exception:
       discard
 
@@ -424,7 +479,7 @@ proc onRecvBorrowed*(sock: UdpSocket, maxSize: int,
 
   proc readHandler() {.closure.} =
     try:
-      loop.unregister(sock.fd)
+      loop.disarm(sock.fd)
     except Exception:
       discard
 

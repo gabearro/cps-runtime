@@ -55,7 +55,7 @@ proc unixStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
       let err = osLastError()
       if err.isWouldBlock():
         loop.registerRead(us.fd, proc() =
-          loop.unregister(us.fd)
+          loop.disarm(us.fd)
           tryRecv()
         )
         return
@@ -70,7 +70,7 @@ proc unixStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
       fut.complete(buf)
 
   loop.registerRead(us.fd, proc() =
-    loop.unregister(us.fd)
+    loop.disarm(us.fd)
     tryRecv()
   )
   result = fut
@@ -120,7 +120,7 @@ proc unixStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
         let err = osLastError()
         if err.isWouldBlock():
           loop.registerWrite(us.fd, proc() =
-            loop.unregister(us.fd)
+            loop.disarm(us.fd)
             trySend()
           )
           return
@@ -154,10 +154,11 @@ proc unixStreamWaitReadable(s: AsyncStream): CpsVoidFuture =
   let fut = newCpsVoidFuture()
   fut.pinFutureRuntime()
   let loop = getEventLoop()
-  try: loop.unregister(us.fd)
-  except Exception: discard
+  when not defined(linux):
+    try: loop.unregister(us.fd)
+    except Exception: discard
   loop.registerRead(us.fd, proc() =
-    loop.unregister(us.fd)
+    loop.disarm(us.fd)
     fut.complete()
   )
   result = fut

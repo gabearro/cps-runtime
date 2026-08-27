@@ -9,6 +9,8 @@ import ../private/mpmc_ring
 import ../private/mpsc_queue
 import ../private/atomic_parker
 import ../private/cross_thread_closure
+when defined(linux):
+  import ../private/platform
 
 type
   TaskProc = proc() {.gcsafe.}
@@ -26,7 +28,7 @@ type
     idx: int
     setup: proc() {.gcsafe.}
 
-  ThreadPool* = ref object
+  ThreadPool* {.acyclic.} = ref object
     workers: seq[Thread[WorkerArg]]
     state: ptr PoolState
     dead: bool
@@ -106,9 +108,15 @@ proc newThreadPool*(numThreads: int = 0,
                     workerSetup: proc() {.gcsafe.} = nil,
                     maxPendingTasks: int = 65536): ThreadPool =
   ## Create a thread pool with the given number of workers.
-  ## If numThreads is 0, defaults to countProcessors().
+  ## If numThreads is 0, defaults to the process's available processors.
   ## workerSetup is called once on each worker thread before it starts processing.
-  let n = if numThreads <= 0: countProcessors() else: numThreads
+  let detectedProcessors =
+    when defined(linux):
+      let allowed = platform.allowedCpuIds()
+      if allowed.len > 0: allowed.len else: countProcessors()
+    else:
+      countProcessors()
+  let n = max(1, if numThreads <= 0: detectedProcessors else: numThreads)
   let cap = if maxPendingTasks <= 0: 65536 else: maxPendingTasks
   result = ThreadPool()
   result.state = cast[ptr PoolState](allocShared0(sizeof(PoolState)))

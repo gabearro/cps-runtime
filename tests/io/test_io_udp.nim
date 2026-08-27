@@ -6,7 +6,8 @@ import cps/eventloop
 import cps/io/streams
 import cps/io/udp
 import std/nativesockets
-from std/posix import Sockaddr_in, Sockaddr_storage, getsockname, SockLen
+from std/posix import Sockaddr_in, Sockaddr_storage, getsockname, getsockopt,
+                      SockLen, SOL_SOCKET, SO_REUSEPORT
 
 # Helper: get the port assigned to a bound UDP socket
 proc getBoundPort(sock: UdpSocket): int =
@@ -276,6 +277,55 @@ block testTryByteSend:
   receiver.close()
   sender.close()
   echo "PASS: synchronous byte send fast path"
+
+block testTryBatchByteSend:
+  let receiver = newUdpSocket()
+  receiver.bindAddr("127.0.0.1", 0)
+  let port = receiver.getBoundPort()
+  let sender = newUdpSocket()
+  var received: seq[string] = @[]
+
+  receiver.onRecvBorrowed(1024,
+    proc(data: openArray[byte], srcAddr: Sockaddr_storage, addrLen: SockLen) =
+      var value = newString(data.len)
+      if data.len > 0:
+        copyMem(addr value[0], unsafeAddr data[0], data.len)
+      received.add value
+  )
+  let payloads = @[
+    @[byte('b'), byte('0')],
+    @[byte('b'), byte('1')],
+    @[byte('b'), byte('2')],
+    @[byte('b'), byte('3')]
+  ]
+  let sent = sender.trySendToAddrBatchBytes(payloads, "127.0.0.1", port)
+
+  let loop = getEventLoop()
+  var ticks = 0
+  while ticks < 20 and received.len < sent:
+    loop.tick()
+    inc ticks
+
+  assert sent == payloads.len
+  assert received == @["b0", "b1", "b2", "b3"]
+  receiver.close()
+  sender.close()
+  echo "PASS: bounded byte datagram batch send"
+
+block testReusePortBind:
+  let first = newUdpSocket()
+  first.bindAddr("127.0.0.1", 0, reusePort = true)
+  let port = first.getBoundPort()
+  var enabled: cint = 0
+  var enabledLen = sizeof(enabled).SockLen
+  assert getsockopt(first.fd, SOL_SOCKET, SO_REUSEPORT,
+                    addr enabled, addr enabledLen) == 0
+  assert enabled != 0
+  let second = newUdpSocket()
+  second.bindAddr("127.0.0.1", port, reusePort = true)
+  first.close()
+  second.close()
+  echo "PASS: UDP SO_REUSEPORT bind"
 
 # Test 7: parseSenderAddress extracts correct IP and port
 block testParseSenderAddress:

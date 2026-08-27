@@ -23,6 +23,47 @@ when defined(posix):
 elif defined(windows):
   import std/winlean
 
+when defined(linux):
+  {.emit: """
+  #define _GNU_SOURCE
+  #include <sched.h>
+
+  static int cps_allowed_cpu_ids(int *out, int capacity) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) return 0;
+    int count = 0;
+    for (int cpu = 0; cpu < CPU_SETSIZE && count < capacity; ++cpu) {
+      if (CPU_ISSET(cpu, &set)) out[count++] = cpu;
+    }
+    return count;
+  }
+
+  static int cps_pin_current_thread(int cpu) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    return sched_setaffinity(0, sizeof(set), &set) == 0;
+  }
+  """.}
+
+  proc cpsAllowedCpuIds(outIds: ptr cint, capacity: cint): cint
+    {.importc: "cps_allowed_cpu_ids", nodecl.}
+  proc cpsPinCurrentThread(cpu: cint): cint
+    {.importc: "cps_pin_current_thread", nodecl.}
+
+  proc allowedCpuIds*(): seq[int] =
+    ## Return the CPUs available to this process's affinity/cgroup mask.
+    var ids: array[1024, cint]
+    let count = cpsAllowedCpuIds(addr ids[0], ids.len.cint).int
+    result = newSeq[int](count)
+    for i in 0 ..< count:
+      result[i] = ids[i].int
+
+  proc pinCurrentThreadToCpu*(cpu: int): bool =
+    ## Pin the calling Linux thread to one allowed logical CPU.
+    cpsPinCurrentThread(cpu.cint) != 0
+
 # ============================================================
 # Windows socket error codes
 # ============================================================

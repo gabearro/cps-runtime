@@ -32,6 +32,7 @@ type
 
   ReactorThreadArg = object
     shardId: int
+    cpuId: int
     state: ptr ReactorPoolState
     setup: ReactorSetup
 
@@ -45,6 +46,11 @@ proc shutdown*(pool: ReactorPool)
 
 proc reactorMain(arg: ReactorThreadArg) {.thread.} =
   isReactorThread = true
+  when defined(linux):
+    if arg.cpuId >= 0:
+      currentReactorPinned = platform.pinCurrentThreadToCpu(arg.cpuId)
+      if currentReactorPinned:
+        currentReactorCpuId = arg.cpuId
   var loop: EventLoop
   var running = true
   let (wakeRead, wakeWrite) = platform.createWakePipe()
@@ -70,17 +76,26 @@ proc reactorMain(arg: ReactorThreadArg) {.thread.} =
     loop.unregister(wakeRead)
   platform.closePipeFd(wakeRead)
   platform.closePipeFd(wakeWrite)
+  currentReactorPinned = false
   isReactorThread = false
   {.cast(gcsafe).}:
     setLocalFutureDefault(false)
     setCurrentRuntime(nil)
 
 proc startReactorPool*(setup: ReactorSetup,
-                       numReactors: int = 0): ReactorPool =
+                       numReactors: int = 0,
+                       pinReactors: bool = true): ReactorPool =
   ## Start one independent event-loop thread per requested reactor.
   if setup == nil:
     raise newException(ValueError, "reactor pool requires a setup callback")
-  let n = if numReactors <= 0: countProcessors() else: numReactors
+  when defined(linux):
+    let allowedCpus = platform.allowedCpuIds()
+  let detectedProcessors =
+    when defined(linux):
+      if allowedCpus.len > 0: allowedCpus.len else: countProcessors()
+    else:
+      countProcessors()
+  let n = if numReactors <= 0: detectedProcessors else: numReactors
   if n <= 0:
     raise newException(ValueError, "reactor pool requires at least one reactor")
   result = ReactorPool()
@@ -92,8 +107,17 @@ proc startReactorPool*(setup: ReactorSetup,
   result.state.failed.store(false, moRelaxed)
   result.threads = newSeq[Thread[ReactorThreadArg]](n)
   for shardId in 0 ..< n:
+    let cpuId =
+      when defined(linux):
+        if pinReactors and allowedCpus.len > 0:
+          allowedCpus[shardId mod allowedCpus.len]
+        else:
+          -1
+      else:
+        -1
     createThread(result.threads[shardId], reactorMain,
-      ReactorThreadArg(shardId: shardId, state: result.state, setup: setup))
+      ReactorThreadArg(shardId: shardId, cpuId: cpuId,
+                       state: result.state, setup: setup))
   while result.state.started.load(moAcquire) != n:
     sleep(0)
   if result.state.failed.load(moAcquire):
@@ -125,7 +149,8 @@ proc shutdown*(pool: ReactorPool) =
   pool.stop()
   pool.join()
 
-proc runReactorPool*(setup: ReactorSetup, numReactors: int = 0) =
+proc runReactorPool*(setup: ReactorSetup, numReactors: int = 0,
+                     pinReactors: bool = true) =
   ## Start and join a long-running sharded reactor service.
-  let pool = startReactorPool(setup, numReactors)
+  let pool = startReactorPool(setup, numReactors, pinReactors)
   pool.join()

@@ -2202,7 +2202,9 @@ macro cps*(prc: untyped): untyped =
         `inlineBody`
       else:
         `addCallbackSym`(`af`, proc() =
-          if `hasErrorSym`(`af`):
+          if `finishedSym`(`envId`.fut):
+            `halt`
+          elif `hasErrorSym`(`af`):
             `failSym`(`envId`.fut, `getErrorSym`(`af`))
           else:
             `callbackElse`
@@ -2218,6 +2220,7 @@ macro cps*(prc: untyped): untyped =
                                   callbackAfterRead: NimNode): NimNode =
     ## Generate if-finished/else-callback dispatch for awaits inside try/except.
     ## Error handling routes through buildExceptReraise for proper exception dispatch.
+    let halt = genHalt(envId)
     let afterStep = stepNames[seg.afterTryIdx]
     let inlineTransition = quote do:
       `envId`.fn = `afterStep`
@@ -2251,7 +2254,9 @@ macro cps*(prc: untyped): untyped =
         `inlineBody`
       else:
         `addCallbackSym`(`af`, proc() =
-          if `hasErrorSym`(`af`):
+          if `finishedSym`(`envId`.fut):
+            `halt`
+          elif `hasErrorSym`(`af`):
             `callbackTry`
           else:
             `callbackElse`

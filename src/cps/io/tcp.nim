@@ -19,6 +19,7 @@ import ./udp
 
 when defined(linux):
   const TCP_DEFER_ACCEPT_OPT = 9.cint  # Linux <netinet/tcp.h>
+  const SO_INCOMING_CPU_OPT = 49.cint  # Linux <asm-generic/socket.h>
 const TcpConnectPerAddressTimeoutMs = 5000
 
 proc ipprotoTcp(): cint {.inline.} =
@@ -51,6 +52,8 @@ type
   TcpStream* = ref object of AsyncStream
     fd*: SocketHandle
     domain: Domain
+    acceptedPeerIp: string
+    acceptedPeerPort: uint16
 
 proc tcpStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
   let ts = TcpStream(s)
@@ -82,7 +85,7 @@ proc tcpStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
       let err = osLastError()
       if err.isWouldBlock():
         loop.registerRead(ts.fd, proc() =
-          loop.unregister(ts.fd)
+          loop.disarm(ts.fd)
           tryRecv()
         )
         return
@@ -97,7 +100,7 @@ proc tcpStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
       fut.complete(buf)
 
   loop.registerRead(ts.fd, proc() =
-    loop.unregister(ts.fd)
+    loop.disarm(ts.fd)
     tryRecv()
   )
 
@@ -107,18 +110,6 @@ proc tcpStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
       except Exception: discard
   )
   result = fut
-
-var gSyncWriteCompleted {.threadvar.}: CpsVoidFuture
-
-proc getSyncWriteCompleted(): CpsVoidFuture {.inline.} =
-  ## Per-thread pre-completed void future for synchronous writes.
-  ## Safe to reuse on its owning thread: addCallback fires inline and
-  ## finished/hasError are read-only checks. Reactor threads must not mutate
-  ## the same ARC reference count, so each isolated reactor owns one instance.
-  if gSyncWriteCompleted.isNil:
-    gSyncWriteCompleted = newCpsVoidFuture()
-    gSyncWriteCompleted.complete()
-  gSyncWriteCompleted
 
 proc tcpStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
   let ts = TcpStream(s)
@@ -144,7 +135,7 @@ proc tcpStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
       sent += n
 
   if sent >= totalLen:
-    return getSyncWriteCompleted()  # Zero allocation!
+    return cachedCompletedVoidFuture()
 
   # Async path: need to wait for writability
   let fut = newCpsVoidFuture()
@@ -159,7 +150,7 @@ proc tcpStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
         let err = osLastError()
         if err.isWouldBlock():
           loop.registerWrite(ts.fd, proc() =
-            loop.unregister(ts.fd)
+            loop.disarm(ts.fd)
             trySend()
           )
           return
@@ -201,10 +192,11 @@ proc tcpStreamWaitReadable(s: AsyncStream): CpsVoidFuture =
   let fut = newCpsVoidFuture()
   fut.pinFutureRuntime()
   let loop = getEventLoop()
-  try: loop.unregister(ts.fd)
-  except Exception: discard
+  when not defined(linux):
+    try: loop.unregister(ts.fd)
+    except Exception: discard
   loop.registerRead(ts.fd, proc() =
-    loop.unregister(ts.fd)
+    loop.disarm(ts.fd)
     fut.complete()
   )
   result = fut
@@ -458,6 +450,15 @@ proc tcpListen*(host: string, port: int, backlog: int = 128,
     fd.close()
     raise newException(streams.AsyncIoError, "Failed to set SO_REUSEPORT")
 
+  # Keep reuseport flows on the CPU that owns this reactor and listener.
+  # This improves receive-cache locality and lets Linux steer new flows using
+  # the incoming CPU. Unsupported kernels simply retain their default hash.
+  when defined(linux):
+    if reusePort and currentReactorPinned:
+      var incomingCpu = currentReactorCpuId.cint
+      discard setsockopt(fd, SOL_SOCKET.cint, SO_INCOMING_CPU_OPT,
+                         addr incomingCpu, sizeof(incomingCpu).SockLen)
+
   if noDelay and setsockopt(fd, ipprotoTcp(), TCP_NODELAY,
                             addr yes, sizeof(yes).SockLen) != 0:
     fd.close()
@@ -516,7 +517,11 @@ proc localPort*(listener: TcpListener): int =
 
 proc peerEndpoint*(stream: TcpStream): tuple[ip: string, port: uint16] =
   ## Return the connected peer endpoint for this stream.
+  ## Accepted streams reuse the endpoint returned by ``accept``; other streams
+  ## query the socket on demand.
   ## On failure, returns ("", 0).
+  if stream.acceptedPeerIp.len > 0:
+    return (stream.acceptedPeerIp, stream.acceptedPeerPort)
   var sa: Sockaddr_storage
   var saLen: SockLen = sizeof(sa).SockLen
   if getpeername(stream.fd, cast[ptr SockAddr](addr sa), addr saLen) != 0:
@@ -534,7 +539,9 @@ proc acceptNative(listener: TcpListener, clientAddr: var Sockaddr_storage,
   else:
     accept(listener.fd, cast[ptr SockAddr](addr clientAddr), addr addrLen)
 
-proc prepareAccepted(listener: TcpListener, clientFd: SocketHandle): TcpStream {.inline.} =
+proc prepareAccepted(listener: TcpListener, clientFd: SocketHandle,
+                     clientAddr: var Sockaddr_storage,
+                     addrLen: SockLen): TcpStream {.inline.} =
   when not defined(linux):
     clientFd.setBlocking(false)
     if listener.noDelay:
@@ -542,7 +549,11 @@ proc prepareAccepted(listener: TcpListener, clientFd: SocketHandle): TcpStream {
       discard setsockopt(clientFd, ipprotoTcp(), TCP_NODELAY,
                          addr yes, sizeof(yes).SockLen)
   clientFd.setSoNosigpipe()
-  newTcpStream(clientFd, listener.domain)
+  result = newTcpStream(clientFd, listener.domain)
+  let (ip, port) = extractEndpoint(cast[ptr SockAddr](addr clientAddr), addrLen)
+  result.acceptedPeerIp = ip
+  if port > 0 and port <= 65535:
+    result.acceptedPeerPort = uint16(port)
 
 proc accept*(listener: TcpListener): CpsFuture[TcpStream] =
   ## Accept a new connection asynchronously. Returns a TcpStream.
@@ -558,13 +569,13 @@ proc accept*(listener: TcpListener): CpsFuture[TcpStream] =
       let err = osLastError()
       if err.isWouldBlock():
         loop.registerRead(listener.fd, proc() =
-          loop.unregister(listener.fd)
+          loop.disarm(listener.fd)
           tryAccept()
         )
       else:
         fut.fail(newException(streams.AsyncIoError, "Accept failed: " & osErrorMsg(err)))
       return
-    fut.complete(listener.prepareAccepted(clientFd))
+    fut.complete(listener.prepareAccepted(clientFd, clientAddr, addrLen))
 
   tryAccept()
   result = fut
@@ -611,7 +622,7 @@ proc acceptEach*(listener: TcpListener, onAccept: TcpAcceptHandler,
             "Accept failed: " & osErrorMsg(err)))
         return
 
-      let client = listener.prepareAccepted(clientFd)
+      let client = listener.prepareAccepted(clientFd, clientAddr, addrLen)
       try:
         onAccept(client)
       except CatchableError as err:
