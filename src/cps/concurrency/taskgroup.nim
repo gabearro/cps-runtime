@@ -176,9 +176,31 @@ template onTaskComplete(group: TaskGroup, futExpr: untyped,
     group.tryComplete()
   tracked.addCallback(cb)
 
+template recordFinishedTask(group: TaskGroup, tracked: untyped) =
+  ## Account for a task that completed before it was attached to the group.
+  ## Avoiding a cancellation closure and completion callback here also avoids
+  ## dispatching that callback through an MT scheduler queue.
+  var shouldCancel = false
+  if tracked.hasError():
+    let err = tracked.getError()
+    if not (err of CancellationError):
+      withLock(group.lock, group.mtEnabled):
+        group.errors.add(err)
+      if group.errorPolicy == epFailFast:
+        var expected = false
+        if group.atomicCancelled.compareExchange(expected, true,
+            moAcquireRelease, moRelaxed):
+          shouldCancel = true
+  if shouldCancel:
+    group.cancelAll()
+  group.tryComplete()
+
 proc spawn*(group: TaskGroup, fut: CpsVoidFuture, name: string = "") =
   ## Add a void task to the group. The task starts running immediately.
   discard group.atomicTaskCount.fetchAdd(1, moRelaxed)
+  if fut.finished:
+    recordFinishedTask(group, fut)
+    return
   discard group.atomicActive.fetchAdd(1, moAcquireRelease)
   let cancelSlot = group.registerCancelProc(proc() = cancel(fut))
   onTaskComplete(group, fut, cancelSlot)
@@ -187,6 +209,9 @@ proc spawn*[T](group: TaskGroup, fut: CpsFuture[T], name: string = ""): Task[T] 
   ## Add a typed task to the group. Returns the Task[T] for reading the result later.
   result = spawn(fut, name)
   discard group.atomicTaskCount.fetchAdd(1, moRelaxed)
+  if result.finished:
+    recordFinishedTask(group, result)
+    return
   discard group.atomicActive.fetchAdd(1, moAcquireRelease)
   let cancelSlot = group.registerCancelProc(proc() = cancel(fut))
   onTaskComplete(group, result, cancelSlot)

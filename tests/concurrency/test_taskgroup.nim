@@ -53,6 +53,42 @@ block testEmptyGroup:
   echo "PASS: Empty group wait returns immediately"
 
 # ============================================================
+# Completed-task fast path
+# ============================================================
+
+block testCompletedVoidTask:
+  let group = newTaskGroup()
+  group.spawn(completedVoidFuture())
+  assert group.len == 1
+  assert group.activeCount == 0
+  let waitFut = group.wait()
+  assert waitFut.finished
+  assert not waitFut.hasError()
+  echo "PASS: Completed void task is accounted without becoming active"
+
+block testCompletedTypedTask:
+  let group = newTaskGroup()
+  let task = group.spawn(completedFuture(42))
+  assert group.len == 1
+  assert group.activeCount == 0
+  assert task.finished
+  assert task.read() == 42
+  echo "PASS: Completed typed task preserves its value"
+
+block testCompletedFailure:
+  let group = newTaskGroup(epCollectAll)
+  group.spawn(failedVoidFuture(newException(ValueError, "already failed")))
+  assert group.len == 1
+  assert group.activeCount == 0
+  let waitFut = group.wait()
+  assert waitFut.finished
+  assert waitFut.hasError()
+  let err = cast[ref TaskGroupError](waitFut.getError())
+  assert err.errors.len == 1
+  assert err.errors[0].msg == "already failed"
+  echo "PASS: Completed failure is collected"
+
+# ============================================================
 # Test 2: Single task - spawn, wait, verify completed
 # ============================================================
 
