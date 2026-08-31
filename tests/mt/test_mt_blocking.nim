@@ -7,7 +7,7 @@ import cps/mt
 import cps/transform
 import std/[atomics, os, monotimes, times, strutils]
 
-let loop = initMtRuntime(numWorkers = 4)
+let loop = initMtRuntime(numWorkers = 4, numBlockingThreads = 3)
 var parallelStarted: Atomic[int]
 
 proc waitForParallelPeer(value: int): int {.gcsafe.} =
