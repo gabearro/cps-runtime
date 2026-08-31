@@ -131,9 +131,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>CPS I/O Proxy</p>
 <p>Provides proxy protocol support (SOCKS4/4a, SOCKS5, HTTP CONNECT) as AsyncStream-compatible wrappers. Proxy connections are transparent — after handshake, reads/writes pass through directly to the underlying stream. Supports proxy chaining (connecting through multiple proxies in sequence).</p>
 </p>
@@ -151,9 +151,9 @@
   <span class="Identifier">username</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">string</span>
   <span class="Identifier">password</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">string</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="ProxyConfig">
@@ -163,17 +163,17 @@
   <span class="Identifier">port</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int</span>                 <span class="Comment">## Proxy server port</span>
   <span class="Identifier">auth</span><span class="Operator">*</span><span class="Other">:</span> <a href="proxy.html#ProxyAuth"><span class="Identifier">ProxyAuth</span></a>           <span class="Comment">## Auth credentials (SOCKS5 user/pass, HTTP basic)</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="ProxyError">
   <dt><pre><a href="proxy.html#ProxyError"><span class="Identifier">ProxyError</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <a href="streams.html#AsyncIoError"><span class="Identifier">AsyncIoError</span></a></pre></dt>
   <dd>
-
+    
     Raised when proxy negotiation fails.
-
+    
   </dd>
 </div>
 <div id="ProxyKind">
@@ -183,9 +183,9 @@
   <span class="Identifier">pkSocks5</span><span class="Other">,</span>                 <span class="Comment">## SOCKS5 (full: IPv4, IPv6, domain, auth)</span>
   <span class="Identifier">pkHttpConnect</span>              <span class="Comment">## HTTP CONNECT tunnel</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="ProxyStream">
@@ -194,9 +194,9 @@
   <span class="Identifier">targetHost</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">string</span>
   <span class="Identifier">targetPort</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int</span></pre></dt>
   <dd>
-
+    
     A stream that wraps an inner stream (typically TcpStream) with a completed proxy tunnel. After handshake, reads and writes pass through transparently.
-
+    
   </dd>
 </div>
 
@@ -210,9 +210,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#getUnderlyingFd%2CProxyStream"><span class="Identifier">getUnderlyingFd</span></a><span class="Other">(</span><span class="Identifier">ps</span><span class="Other">:</span> <a href="proxy.html#ProxyStream"><span class="Identifier">ProxyStream</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ProxyError</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Get the socket handle from the deepest stream layer. Useful for TLS wrapping: TLS needs the raw fd for SSL_set_fd.
-
+    
   </dd>
 </div>
 
@@ -222,9 +222,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#getUnderlyingTcpStream%2CProxyStream"><span class="Identifier">getUnderlyingTcpStream</span></a><span class="Other">(</span><span class="Identifier">ps</span><span class="Other">:</span> <a href="proxy.html#ProxyStream"><span class="Identifier">ProxyStream</span></a><span class="Other">)</span><span class="Other">:</span> <a href="tcp.html#TcpStream"><span class="Identifier">TcpStream</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ProxyError</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Get the deepest TcpStream in the proxy chain. Useful for TLS wrapping.
-
+    
   </dd>
 </div>
 
@@ -235,9 +235,9 @@
                <span class="Identifier">password</span><span class="Other">:</span> <span class="Identifier">string</span> <span class="Other">=</span> <span class="StringLit">&quot;&quot;</span><span class="Other">)</span><span class="Other">:</span> <a href="proxy.html#ProxyConfig"><span class="Identifier">ProxyConfig</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create an HTTP CONNECT proxy config with optional basic auth.
-
+    
   </dd>
 </div>
 
@@ -249,12 +249,12 @@
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">OSError</span><span class="Other">,</span> <span class="Identifier">AsyncIoError</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     <p>Connect to <tt class="docutils literal"><span class="pre"><span class="Identifier">targetHost</span><span class="Punctuation">:</span><span class="Identifier">targetPort</span></span></tt> through a chain of proxies. Each proxy tunnels through the previous one, building a layered tunnel.</p>
 <p>Example chain: <a class="reference internal" href="#proxyA, proxyB">proxyA, proxyB</a> → connects to proxyA, then through proxyA to proxyB, then through proxyB to the target.</p>
 <p>Returns a ProxyStream that transparently reads/writes to the target.</p>
 
-
+    
   </dd>
 </div>
 
@@ -265,11 +265,11 @@
     <a href="proxy.html#ProxyStream"><span class="Identifier">ProxyStream</span></a><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">OSError</span><span class="Other">,</span>
                             <span class="Identifier">AsyncIoError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     <p>Connect to <tt class="docutils literal"><span class="pre"><span class="Identifier">targetHost</span><span class="Punctuation">:</span><span class="Identifier">targetPort</span></span></tt> through a proxy. Returns a ProxyStream that can be used as a normal AsyncStream.</p>
 <p>The ProxyStream wraps a TcpStream connected to the proxy server, with the proxy handshake already completed.</p>
 
-
+    
   </dd>
 </div>
 
@@ -279,9 +279,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#socks4aProxy%2Cstring%2Cint%2Cstring"><span class="Identifier">socks4aProxy</span></a><span class="Other">(</span><span class="Identifier">host</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">port</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span> <span class="Identifier">userId</span><span class="Other">:</span> <span class="Identifier">string</span> <span class="Other">=</span> <span class="StringLit">&quot;&quot;</span><span class="Other">)</span><span class="Other">:</span> <a href="proxy.html#ProxyConfig"><span class="Identifier">ProxyConfig</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a SOCKS4a proxy config (supports hostnames).
-
+    
   </dd>
 </div>
 
@@ -291,9 +291,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#socks4Proxy%2Cstring%2Cint%2Cstring"><span class="Identifier">socks4Proxy</span></a><span class="Other">(</span><span class="Identifier">host</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">port</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span> <span class="Identifier">userId</span><span class="Other">:</span> <span class="Identifier">string</span> <span class="Other">=</span> <span class="StringLit">&quot;&quot;</span><span class="Other">)</span><span class="Other">:</span> <a href="proxy.html#ProxyConfig"><span class="Identifier">ProxyConfig</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a SOCKS4 proxy config.
-
+    
   </dd>
 </div>
 
@@ -304,9 +304,9 @@
                  <span class="Identifier">password</span><span class="Other">:</span> <span class="Identifier">string</span> <span class="Other">=</span> <span class="StringLit">&quot;&quot;</span><span class="Other">)</span><span class="Other">:</span> <a href="proxy.html#ProxyConfig"><span class="Identifier">ProxyConfig</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a SOCKS5 proxy config with optional username/password auth.
-
+    
   </dd>
 </div>
 
@@ -321,10 +321,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:18 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:22 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

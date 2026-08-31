@@ -1,8 +1,8 @@
 nimTitle	reactorpool	cps/mt/reactorpool.html	module cps/mt/reactorpool		0
 nim	ReactorSetup	cps/mt/reactorpool.html#ReactorSetup	type ReactorSetup		23
-nim	ReactorPool	cps/mt/reactorpool.html#ReactorPool	type ReactorPool		38
-nim	shutdown	cps/mt/reactorpool.html#shutdown,ReactorPool	proc shutdown(pool: ReactorPool)		44
-nim	startReactorPool	cps/mt/reactorpool.html#startReactorPool,ReactorSetup,int	proc startReactorPool(setup: ReactorSetup; numReactors: int = 0): ReactorPool		78
-nim	stop	cps/mt/reactorpool.html#stop,ReactorPool	proc stop(pool: ReactorPool)		103
-nim	join	cps/mt/reactorpool.html#join,ReactorPool	proc join(pool: ReactorPool)		112
-nim	runReactorPool	cps/mt/reactorpool.html#runReactorPool,ReactorSetup,int	proc runReactorPool(setup: ReactorSetup; numReactors: int = 0)		128
+nim	ReactorPool	cps/mt/reactorpool.html#ReactorPool	type ReactorPool		39
+nim	shutdown	cps/mt/reactorpool.html#shutdown,ReactorPool	proc shutdown(pool: ReactorPool)		45
+nim	startReactorPool	cps/mt/reactorpool.html#startReactorPool,ReactorSetup,int,bool	proc startReactorPool(setup: ReactorSetup; numReactors: int = 0;\n                 pinReactors: bool = true): ReactorPool		85
+nim	stop	cps/mt/reactorpool.html#stop,ReactorPool	proc stop(pool: ReactorPool)		127
+nim	join	cps/mt/reactorpool.html#join,ReactorPool	proc join(pool: ReactorPool)		136
+nim	runReactorPool	cps/mt/reactorpool.html#runReactorPool,ReactorSetup,int,bool	proc runReactorPool(setup: ReactorSetup; numReactors: int = 0;\n               pinReactors: bool = true)		152

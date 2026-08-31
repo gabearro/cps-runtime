@@ -33,8 +33,30 @@ proc newBufferedReader*(stream: AsyncStream, bufSize: int = 8192): BufferedReade
     eof: false
   )
 
-proc available(br: BufferedReader): int {.inline.} =
+proc available*(br: BufferedReader): int {.inline.} =
+  ## Return the number of unread bytes currently held by the reader.
   br.cap - br.pos
+
+proc bufferData*(br: BufferedReader): ptr UncheckedArray[char] {.inline.} =
+  ## Borrow the start of the unread buffer. The pointer remains valid until a
+  ## subsequent fill/consume operation. Protocol parsers should retain offsets
+  ## while filling and form views only once the complete message is buffered.
+  if br.available > 0:
+    cast[ptr UncheckedArray[char]](addr br.buf[br.pos])
+  else:
+    nil
+
+proc bufferedChar*(br: BufferedReader, offset: int): char {.inline.} =
+  ## Read at an offset relative to the first unread byte.
+  br.buf[br.pos + offset]
+
+proc consumeBuffered*(br: BufferedReader, count: int) {.inline.} =
+  ## Consume bytes previously inspected through `bufferData`/`bufferedChar`.
+  assert count >= 0 and count <= br.available
+  br.pos += count
+  if br.pos == br.cap:
+    br.pos = 0
+    br.cap = 0
 
 proc atEof*(br: BufferedReader): bool {.inline.} =
   ## Returns true if the underlying stream has reached EOF and no buffered data remains.
@@ -260,6 +282,18 @@ proc searchHeaderEnd*(br: BufferedReader): int {.inline.} =
     i += 1
   return -1
 
+proc searchHeaderEndOffset*(br: BufferedReader): int {.inline.} =
+  ## Relative-offset variant for parsers that borrow the unread buffer.
+  if br.available < 4: return -1
+  var i = 0
+  let last = br.available - 4
+  while i <= last:
+    if br.bufferedChar(i) == '\r' and br.bufferedChar(i + 1) == '\n' and
+        br.bufferedChar(i + 2) == '\r' and br.bufferedChar(i + 3) == '\n':
+      return i
+    inc i
+  -1
+
 proc extractHeaderBlock*(br: BufferedReader, endIdx: int): string {.inline.} =
   ## Extract header block from buffer up to endIdx, advance past \r\n\r\n.
   # When the read contains exactly one header block, transfer ownership of the
@@ -352,6 +386,33 @@ proc readExact*(br: BufferedReader, size: int): CpsFuture[string] =
   let fillFut = br.fillBuffer()
   fillAndRetry(fillFut, fut, tryRead())
   result = fut
+
+proc ensureBuffered*(br: BufferedReader, size: int): CpsFuture[bool] =
+  ## Ensure at least `size` unread bytes are available without extracting or
+  ## copying them. A successful caller may inspect `bufferData` and must call
+  ## `consumeBuffered` after it finishes using the borrowed bytes.
+  if size < 0:
+    return failedFuture[bool](newException(ValueError,
+      "buffered byte count cannot be negative"))
+  if br.available >= size:
+    return completedBoolTrue()
+  if br.eof:
+    return completedBoolFalse()
+
+  let fut = newCpsFuture[bool]()
+  proc tryEnsure() =
+    if br.available >= size:
+      fut.complete(true)
+      return
+    if br.eof:
+      fut.complete(false)
+      return
+    let fillFut = br.fillBuffer()
+    fillAndRetry(fillFut, fut, tryEnsure())
+
+  let fillFut = br.fillBuffer()
+  fillAndRetry(fillFut, fut, tryEnsure())
+  fut
 
 proc read*(br: BufferedReader, size: int): CpsFuture[string] =
   ## Read up to `size` bytes. Returns "" on EOF.

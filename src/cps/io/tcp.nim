@@ -6,10 +6,15 @@
 import std/[nativesockets, net, os]
 when defined(linux):
   from std/posix import shutdown, SHUT_WR, TCP_NODELAY, IPV6_V6ONLY,
-    accept4, SOCK_CLOEXEC, O_NONBLOCK
+    accept4, SOCK_CLOEXEC, O_NONBLOCK, IOVec, writev
+elif defined(posix):
+  from std/posix import shutdown, SHUT_WR, TCP_NODELAY, IPV6_V6ONLY,
+    IOVec, writev
 else:
-  from std/posix import shutdown, SHUT_WR, TCP_NODELAY, IPV6_V6ONLY
+  from std/winlean import shutdown
+  const WindowsShutdownWrite = 1.cint
 import ../runtime
+import ../transform
 import ../eventloop
 import ../private/platform
 import ./streams
@@ -52,8 +57,6 @@ type
   TcpStream* = ref object of AsyncStream
     fd*: SocketHandle
     domain: Domain
-    acceptedPeerIp: string
-    acceptedPeerPort: uint16
 
 proc tcpStreamRead(s: AsyncStream, size: int): CpsFuture[string] =
   let ts = TcpStream(s)
@@ -173,6 +176,136 @@ proc tcpStreamWrite(s: AsyncStream, data: string): CpsVoidFuture =
   )
   result = fut
 
+proc tcpStreamWriteBorrowed(s: AsyncStream, data: pointer,
+                            totalLen: int): CpsVoidFuture =
+  let ts = TcpStream(s)
+  var sent = 0
+  template currentData(): pointer =
+    cast[pointer](cast[uint](data) + uint(sent))
+
+  while sent < totalLen:
+    let n = send(ts.fd, currentData(), (totalLen - sent).cint, 0'i32)
+    if n < 0:
+      let err = osLastError()
+      if err.isWouldBlock(): break
+      return failedVoidFuture(newException(
+        streams.AsyncIoError, "Write failed: " & osErrorMsg(err)))
+    if n == 0:
+      return failedVoidFuture(newException(
+        streams.ConnectionClosedError, "Connection closed during write"))
+    sent += n
+
+  if sent >= totalLen:
+    return cachedCompletedVoidFuture()
+
+  let fut = newCpsVoidFuture()
+  fut.pinFutureRuntime()
+  let loop = getEventLoop()
+  proc trySend() =
+    while sent < totalLen:
+      let n = send(ts.fd, currentData(), (totalLen - sent).cint, 0'i32)
+      if n < 0:
+        let err = osLastError()
+        if err.isWouldBlock():
+          loop.registerWrite(ts.fd, proc() =
+            loop.disarm(ts.fd)
+            trySend())
+          return
+        fut.fail(newException(
+          streams.AsyncIoError, "Write failed: " & osErrorMsg(err)))
+        return
+      if n == 0:
+        fut.fail(newException(
+          streams.ConnectionClosedError, "Connection closed during write"))
+        return
+      sent += n
+    fut.complete()
+  trySend()
+  fut.addCallback(proc() =
+    if fut.isCancelled():
+      try: loop.unregister(ts.fd)
+      except Exception: discard)
+  fut
+
+when defined(posix):
+  proc tcpStreamWritevBorrowed(s: AsyncStream, first: pointer, firstLen: int,
+                               second: pointer,
+                               secondLen: int): CpsVoidFuture =
+    let ts = TcpStream(s)
+    let totalLen = firstLen + secondLen
+    var sent = 0
+
+    template tryWritev(): int =
+      block:
+        var spans: array[2, IOVec]
+        var count = 0
+        if sent < firstLen:
+          spans[count] = IOVec(
+            iov_base: cast[pointer](cast[uint](first) + uint(sent)),
+            iov_len: csize_t(firstLen - sent))
+          inc count
+          spans[count] = IOVec(iov_base: second, iov_len: csize_t(secondLen))
+          inc count
+        else:
+          let secondOffset = sent - firstLen
+          spans[count] = IOVec(
+            iov_base: cast[pointer](cast[uint](second) + uint(secondOffset)),
+            iov_len: csize_t(secondLen - secondOffset))
+          inc count
+        writev(cint(ts.fd), addr spans[0], cint(count))
+
+    while sent < totalLen:
+      let n = tryWritev()
+      if n < 0:
+        let err = osLastError()
+        if err.isWouldBlock(): break
+        return failedVoidFuture(newException(
+          streams.AsyncIoError, "Write failed: " & osErrorMsg(err)))
+      if n == 0:
+        return failedVoidFuture(newException(
+          streams.ConnectionClosedError, "Connection closed during write"))
+      sent += n
+
+    if sent >= totalLen: return cachedCompletedVoidFuture()
+
+    let fut = newCpsVoidFuture()
+    fut.pinFutureRuntime()
+    let loop = getEventLoop()
+    proc resumeWrite() =
+      while sent < totalLen:
+        let n = tryWritev()
+        if n < 0:
+          let err = osLastError()
+          if err.isWouldBlock():
+            loop.registerWrite(ts.fd, proc() =
+              loop.disarm(ts.fd)
+              resumeWrite())
+            return
+          fut.fail(newException(
+            streams.AsyncIoError, "Write failed: " & osErrorMsg(err)))
+          return
+        if n == 0:
+          fut.fail(newException(
+            streams.ConnectionClosedError, "Connection closed during write"))
+          return
+        sent += n
+      fut.complete()
+    resumeWrite()
+    fut.addCallback(proc() =
+      if fut.isCancelled():
+        try: loop.unregister(ts.fd)
+        except Exception: discard)
+    fut
+else:
+  proc tcpStreamWritevBorrowed(s: AsyncStream, first: pointer, firstLen: int,
+                               second: pointer,
+                               secondLen: int): CpsVoidFuture {.cps.} =
+    ## Windows has no writev; retain borrowed storage and issue both sends.
+    if firstLen > 0:
+      await tcpStreamWriteBorrowed(s, first, firstLen)
+    if secondLen > 0:
+      await tcpStreamWriteBorrowed(s, second, secondLen)
+
 proc tcpStreamReadInto(s: AsyncStream, buf: pointer, size: int): int =
   ## Zero-copy read: recv directly into caller's buffer.
   ## Returns >0 = bytes read, 0 = EOF, -1 = EAGAIN, < -1 = error.
@@ -213,7 +346,10 @@ proc tcpStreamClose(s: AsyncStream) =
   # with unread receive-buffer data sends TCP RST, which causes the peer
   # kernel to discard ALL unread data from its receive buffer — including
   # data we just wrote (e.g. an IRC QUIT message).
-  discard shutdown(ts.fd, SHUT_WR)
+  when defined(posix):
+    discard shutdown(ts.fd, SHUT_WR)
+  else:
+    discard shutdown(ts.fd, WindowsShutdownWrite)
   # Drain the receive buffer so close() finds it empty and sends FIN
   # instead of RST. Non-blocking socket: recv returns -1/EAGAIN when empty.
   var drainBuf: array[4096, byte]
@@ -247,6 +383,8 @@ proc newTcpStream*(fd: SocketHandle, domain: Domain = AF_INET): TcpStream =
   )
   result.readProc = tcpStreamRead
   result.writeProc = tcpStreamWrite
+  result.writeBorrowedProc = tcpStreamWriteBorrowed
+  result.writevBorrowedProc = tcpStreamWritevBorrowed
   result.closeProc = tcpStreamClose
   result.readIntoProc = tcpStreamReadInto
   result.waitReadableProc = tcpStreamWaitReadable
@@ -517,11 +655,9 @@ proc localPort*(listener: TcpListener): int =
 
 proc peerEndpoint*(stream: TcpStream): tuple[ip: string, port: uint16] =
   ## Return the connected peer endpoint for this stream.
-  ## Accepted streams reuse the endpoint returned by ``accept``; other streams
-  ## query the socket on demand.
+  ## The endpoint is queried on demand so accepting a connection does not
+  ## allocate or format an address that most protocols never inspect.
   ## On failure, returns ("", 0).
-  if stream.acceptedPeerIp.len > 0:
-    return (stream.acceptedPeerIp, stream.acceptedPeerPort)
   var sa: Sockaddr_storage
   var saLen: SockLen = sizeof(sa).SockLen
   if getpeername(stream.fd, cast[ptr SockAddr](addr sa), addr saLen) != 0:
@@ -531,17 +667,15 @@ proc peerEndpoint*(stream: TcpStream): tuple[ip: string, port: uint16] =
     return (ip, 0'u16)
   (ip, uint16(port))
 
-proc acceptNative(listener: TcpListener, clientAddr: var Sockaddr_storage,
-                  addrLen: var SockLen): SocketHandle {.inline.} =
+proc acceptNative(listener: TcpListener): SocketHandle {.inline.} =
   when defined(linux):
-    accept4(listener.fd, cast[ptr SockAddr](addr clientAddr), addr addrLen,
+    accept4(listener.fd, cast[ptr SockAddr](nil), cast[ptr SockLen](nil),
             SOCK_CLOEXEC or O_NONBLOCK)
   else:
-    accept(listener.fd, cast[ptr SockAddr](addr clientAddr), addr addrLen)
+    accept(listener.fd, cast[ptr SockAddr](nil), cast[ptr SockLen](nil))
 
-proc prepareAccepted(listener: TcpListener, clientFd: SocketHandle,
-                     clientAddr: var Sockaddr_storage,
-                     addrLen: SockLen): TcpStream {.inline.} =
+proc prepareAccepted(listener: TcpListener,
+                     clientFd: SocketHandle): TcpStream {.inline.} =
   when not defined(linux):
     clientFd.setBlocking(false)
     if listener.noDelay:
@@ -550,10 +684,6 @@ proc prepareAccepted(listener: TcpListener, clientFd: SocketHandle,
                          addr yes, sizeof(yes).SockLen)
   clientFd.setSoNosigpipe()
   result = newTcpStream(clientFd, listener.domain)
-  let (ip, port) = extractEndpoint(cast[ptr SockAddr](addr clientAddr), addrLen)
-  result.acceptedPeerIp = ip
-  if port > 0 and port <= 65535:
-    result.acceptedPeerPort = uint16(port)
 
 proc accept*(listener: TcpListener): CpsFuture[TcpStream] =
   ## Accept a new connection asynchronously. Returns a TcpStream.
@@ -562,9 +692,7 @@ proc accept*(listener: TcpListener): CpsFuture[TcpStream] =
   let loop = getEventLoop()
 
   proc tryAccept() =
-    var clientAddr: Sockaddr_storage
-    var addrLen: SockLen = sizeof(clientAddr).SockLen
-    let clientFd = listener.acceptNative(clientAddr, addrLen)
+    let clientFd = listener.acceptNative()
     if clientFd == osInvalidSocket:
       let err = osLastError()
       if err.isWouldBlock():
@@ -575,7 +703,7 @@ proc accept*(listener: TcpListener): CpsFuture[TcpStream] =
       else:
         fut.fail(newException(streams.AsyncIoError, "Accept failed: " & osErrorMsg(err)))
       return
-    fut.complete(listener.prepareAccepted(clientFd, clientAddr, addrLen))
+    fut.complete(listener.prepareAccepted(clientFd))
 
   tryAccept()
   result = fut
@@ -612,9 +740,7 @@ proc acceptEach*(listener: TcpListener, onAccept: TcpAcceptHandler,
       return
     var accepted = 0
     while accepted < batchLimit and not listener.closed:
-      var clientAddr: Sockaddr_storage
-      var addrLen: SockLen = sizeof(clientAddr).SockLen
-      let clientFd = listener.acceptNative(clientAddr, addrLen)
+      let clientFd = listener.acceptNative()
       if clientFd == osInvalidSocket:
         let err = osLastError()
         if not err.isWouldBlock() and onError != nil:
@@ -622,7 +748,7 @@ proc acceptEach*(listener: TcpListener, onAccept: TcpAcceptHandler,
             "Accept failed: " & osErrorMsg(err)))
         return
 
-      let client = listener.prepareAccepted(clientFd, clientAddr, addrLen)
+      let client = listener.prepareAccepted(clientFd)
       try:
         onAccept(client)
       except CatchableError as err:

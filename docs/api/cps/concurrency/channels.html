@@ -122,9 +122,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>CPS Async Channels</p>
 <p>Provides async channels for producer/consumer communication between CPS coroutines. Supports both bounded (ring buffer) and unbounded channels.</p>
 <p>Bounded channels use a fixed-size ring buffer for O(1) enqueue/dequeue with zero allocation on the hot path. When the buffer is full, senders suspend until space opens. When empty, receivers suspend until data arrives.</p>
@@ -143,17 +143,17 @@
     <div id="AsyncChannel">
   <dt><pre><a href="channels.html#AsyncChannel"><span class="Identifier">AsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-
+    
     An async channel for producer/consumer communication. Can be bounded (fixed capacity ring buffer) or unbounded.
-
+    
   </dd>
 </div>
 <div id="ChannelClosed">
   <dt><pre><a href="channels.html#ChannelClosed"><span class="Identifier">ChannelClosed</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <span class="Identifier">CatchableError</span></pre></dt>
   <dd>
-
+    
     Raised when operating on a closed channel.
-
+    
   </dd>
 </div>
 
@@ -166,9 +166,9 @@
   <div id="capacity,AsyncChannel[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#capacity%2CAsyncChannel%5BT%5D"><span class="Identifier">capacity</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="channels.html#AsyncChannel"><span class="Identifier">AsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span></pre></dt>
   <dd>
-
+    
     Capacity of the channel. Returns 0 for unbounded channels.
-
+    
   </dd>
 </div>
 
@@ -177,9 +177,9 @@
   <div id="close,AsyncChannel[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#close%2CAsyncChannel%5BT%5D"><span class="Identifier">close</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="channels.html#AsyncChannel"><span class="Identifier">AsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Close the channel. All waiting senders and receivers are woken with a ChannelClosed error. After close, trySend returns false and tryRecv drains remaining buffered items then returns none.
-
+    
   </dd>
 </div>
 
@@ -188,9 +188,9 @@
   <div id="isClosed,AsyncChannel[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#isClosed%2CAsyncChannel%5BT%5D"><span class="Identifier">isClosed</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="channels.html#AsyncChannel"><span class="Identifier">AsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-
+    
     Whether the channel has been closed.
-
+    
   </dd>
 </div>
 
@@ -199,9 +199,9 @@
   <div id="isEmpty,AsyncChannel[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#isEmpty%2CAsyncChannel%5BT%5D"><span class="Identifier">isEmpty</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="channels.html#AsyncChannel"><span class="Identifier">AsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-
+    
     Whether the channel's buffer is empty. Atomic under MT.
-
+    
   </dd>
 </div>
 
@@ -210,9 +210,9 @@
   <div id="isFull,AsyncChannel[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#isFull%2CAsyncChannel%5BT%5D"><span class="Identifier">isFull</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="channels.html#AsyncChannel"><span class="Identifier">AsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-
+    
     Whether the channel's buffer is full. Atomic under MT. Always returns false for unbounded channels.
-
+    
   </dd>
 </div>
 
@@ -221,9 +221,9 @@
   <div id="len,AsyncChannel[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#len%2CAsyncChannel%5BT%5D"><span class="Identifier">len</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="channels.html#AsyncChannel"><span class="Identifier">AsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span></pre></dt>
   <dd>
-
+    
     Number of items currently buffered. Snapshot — may be stale under MT.
-
+    
   </dd>
 </div>
 
@@ -232,17 +232,17 @@
   <div id="newAsyncChannel">
   <dt><pre><span class="Keyword">proc</span> <a href="#newAsyncChannel"><span class="Identifier">newAsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="channels.html#AsyncChannel"><span class="Identifier">AsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Create an unbounded async channel. Senders never block.
-
+    
   </dd>
 </div>
 <div id="newAsyncChannel,int">
   <dt><pre><span class="Keyword">proc</span> <a href="#newAsyncChannel%2Cint"><span class="Identifier">newAsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">capacity</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="channels.html#AsyncChannel"><span class="Identifier">AsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Create a bounded async channel with the given capacity. The capacity must be &gt;= 1.
-
+    
   </dd>
 </div>
 
@@ -251,9 +251,9 @@
   <div id="recv,AsyncChannel[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#recv%2CAsyncChannel%5BT%5D"><span class="Identifier">recv</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="channels.html#AsyncChannel"><span class="Identifier">AsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Receive a value from the channel. If the channel is empty, the returned future suspends until a value is available. If the channel is closed and empty, the future fails with ChannelClosed.
-
+    
   </dd>
 </div>
 
@@ -262,9 +262,9 @@
   <div id="send,AsyncChannel[T],sinkT">
   <dt><pre><span class="Keyword">proc</span> <a href="#send%2CAsyncChannel%5BT%5D%2CsinkT"><span class="Identifier">send</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="channels.html#AsyncChannel"><span class="Identifier">AsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">value</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a></pre></dt>
   <dd>
-
+    
     Send a value to the channel. If the channel is bounded and full, the returned future suspends until space is available. If the channel is closed, the future fails with ChannelClosed.
-
+    
   </dd>
 </div>
 
@@ -273,9 +273,9 @@
   <div id="tryRecv,AsyncChannel[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#tryRecv%2CAsyncChannel%5BT%5D"><span class="Identifier">tryRecv</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="channels.html#AsyncChannel"><span class="Identifier">AsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">Option</span><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Try to receive a value without blocking. Returns none if the channel is empty. After close, drains remaining buffered items.
-
+    
   </dd>
 </div>
 
@@ -284,9 +284,9 @@
   <div id="trySend,AsyncChannel[T],sinkT">
   <dt><pre><span class="Keyword">proc</span> <a href="#trySend%2CAsyncChannel%5BT%5D%2CsinkT"><span class="Identifier">trySend</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="channels.html#AsyncChannel"><span class="Identifier">AsyncChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">value</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-
+    
     Try to send a value without blocking. Returns true if the value was sent, false if the channel is full or closed.
-
+    
   </dd>
 </div>
 
@@ -301,10 +301,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:12 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:18 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

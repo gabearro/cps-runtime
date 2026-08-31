@@ -111,9 +111,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc">Move-only two-word closure messages for ARC/ORC thread boundaries.</p>
     <div class="section" id="7">
   <h1><a class="toc-backref" href="#7">Types</a></h1>
@@ -121,18 +121,18 @@
     <div id="ClosureRetainProc">
   <dt><pre><a href="cross_thread_closure.html#ClosureRetainProc"><span class="Identifier">ClosureRetainProc</span></a> <span class="Other">=</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">ctx</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">)</span> {.<span class="Identifier">nimcall</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
   <dd>
-
+    
     Retain an owner-return route until a transferred closure comes back.
-
+    
   </dd>
 </div>
 <div id="ClosureReturnProc">
   <dt><pre><a href="cross_thread_closure.html#ClosureReturnProc"><span class="Identifier">ClosureReturnProc</span></a> <span class="Other">=</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">ctx</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">;</span> <span class="Identifier">owner</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span> <span class="Identifier">task</span><span class="Other">:</span> <a href="cross_thread_closure.html#OwnedClosureTask"><span class="Identifier">OwnedClosureTask</span></a><span class="Other">)</span> {.
     <span class="Identifier">nimcall</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
   <dd>
-
+    
     Return a transferred closure to the thread that owns its captured graph.
-
+    
   </dd>
 </div>
 <div id="ClosureReturnRoute">
@@ -142,9 +142,9 @@
   <span class="Identifier">retain</span><span class="Operator">*</span><span class="Other">:</span> <a href="cross_thread_closure.html#ClosureRetainProc"><span class="Identifier">ClosureRetainProc</span></a>
   <span class="Identifier">release</span><span class="Operator">*</span><span class="Other">:</span> <a href="cross_thread_closure.html#ClosureReturnProc"><span class="Identifier">ClosureReturnProc</span></a></pre></dt>
   <dd>
-
+    
     Thread-local route used to retire captured graphs on their ARC/ORC owner.
-
+    
   </dd>
 </div>
 <div id="OwnedClosureTask">
@@ -152,9 +152,9 @@
   <span class="Identifier">fn</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">pointer</span>
   <span class="Identifier">env</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">pointer</span></pre></dt>
   <dd>
-
+    
     Ref-count-neutral representation of a Nim closure pair.
-
+    
   </dd>
 </div>
 
@@ -168,9 +168,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#bindClosureReturnRoute%2CClosureReturnRoute"><span class="Identifier">bindClosureReturnRoute</span></a><span class="Other">(</span><span class="Identifier">route</span><span class="Other">:</span> <a href="cross_thread_closure.html#ClosureReturnRoute"><span class="Identifier">ClosureReturnRoute</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Bind the release route for closures created by the calling worker.
-
+    
   </dd>
 </div>
 
@@ -179,9 +179,9 @@
   <div id="clearClosureReturnRoute">
   <dt><pre><span class="Keyword">proc</span> <a href="#clearClosureReturnRoute"><span class="Identifier">clearClosureReturnRoute</span></a><span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Remove the calling worker's closure release route.
-
+    
   </dd>
 </div>
 
@@ -191,9 +191,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#currentClosureReturnRoute"><span class="Identifier">currentClosureReturnRoute</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="cross_thread_closure.html#ClosureReturnRoute"><span class="Identifier">ClosureReturnRoute</span></a> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Borrow the release route for the calling worker, if it has one.
-
+    
   </dd>
 </div>
 
@@ -202,9 +202,9 @@
   <div id="prepareCrossThreadClosure,T">
   <dt><pre><span class="Keyword">proc</span> <a href="#prepareCrossThreadClosure%2CT"><span class="Identifier">prepareCrossThreadClosure</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">cb</span><span class="Other">:</span> <span class="Keyword">var</span> <span class="Identifier">T</span><span class="Other">)</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Prevent a transferred one-shot closure environment from entering the producer's thread-local ORC cycle-root list. Generated closure types are unique to their lexical task site; their captured graph is released on its owner worker (or returned there after remote invocation).
-
+    
   </dd>
 </div>
 
@@ -213,9 +213,9 @@
   <div id="releaseClosureTask,OwnedClosureTask,typedesc[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#releaseClosureTask%2COwnedClosureTask%2Ctypedesc%5BT%5D"><span class="Identifier">releaseClosureTask</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">task</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="cross_thread_closure.html#OwnedClosureTask"><span class="Identifier">OwnedClosureTask</span></a><span class="Other">;</span> <span class="Operator">_</span><span class="Other">:</span> <span class="Identifier">typedesc</span><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Release a closure without invoking it, on its original owner worker.
-
+    
   </dd>
 </div>
 
@@ -224,9 +224,9 @@
   <div id="runClosureTask,OwnedClosureTask,typedesc[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#runClosureTask%2COwnedClosureTask%2Ctypedesc%5BT%5D"><span class="Identifier">runClosureTask</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">task</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="cross_thread_closure.html#OwnedClosureTask"><span class="Identifier">OwnedClosureTask</span></a><span class="Other">;</span> <span class="Operator">_</span><span class="Other">:</span> <span class="Identifier">typedesc</span><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Reconstitute and run the closure on its receiving owner thread.
-
+    
   </dd>
 </div>
 
@@ -235,9 +235,9 @@
   <div id="takeClosureTask,T">
   <dt><pre><span class="Keyword">proc</span> <a href="#takeClosureTask%2CT"><span class="Identifier">takeClosureTask</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">cb</span><span class="Other">:</span> <span class="Keyword">var</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <a href="cross_thread_closure.html#OwnedClosureTask"><span class="Identifier">OwnedClosureTask</span></a> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Move a Nim closure pair into a ref-count-neutral message.
-
+    
   </dd>
 </div>
 
@@ -252,10 +252,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:24 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:27 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

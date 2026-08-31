@@ -1,25 +1,27 @@
 nimTitle	udp	cps/io/udp.html	module cps/io/udp		0
-nim	UdpSocket	cps/io/udp.html#UdpSocket	type UdpSocket		17
-nim	Datagram	cps/io/udp.html#Datagram	object Datagram		22
-nim	RawDatagram	cps/io/udp.html#RawDatagram	object RawDatagram		27
-nim	UdpRecvCallback	cps/io/udp.html#UdpRecvCallback	type UdpRecvCallback		33
-nim	UdpRecvBorrowedCallback	cps/io/udp.html#UdpRecvBorrowedCallback	type UdpRecvBorrowedCallback		34
-nim	newUdpSocket	cps/io/udp.html#newUdpSocket,Domain	proc newUdpSocket(domain: Domain = AF_INET): UdpSocket		37
-nim	bindAddr	cps/io/udp.html#bindAddr,UdpSocket,string,int	proc bindAddr(sock: UdpSocket; host: string; port: int)		50
-nim	setBufferSizes	cps/io/udp.html#setBufferSizes,UdpSocket,int,int	proc setBufferSizes(sock: UdpSocket; receiveBytes: int = 0; sendBytes: int = 0)		67
-nim	fillSockaddrIp	cps/io/udp.html#fillSockaddrIp,string,int,Domain,Sockaddr_storage	proc fillSockaddrIp(ip: string; port: int; domain: Domain; sa: var Sockaddr_storage): SockLen		88
-nim	extractEndpoint	cps/io/udp.html#extractEndpoint,ptr.SockAddr,SockLen	proc extractEndpoint(sa: ptr SockAddr; saLen: SockLen): (string, int)		110
-nim	extractPort	cps/io/udp.html#extractPort,ptr.SockAddr,SockLen	proc extractPort(sa: ptr SockAddr; saLen: SockLen): int		147
-nim	parseSenderAddress	cps/io/udp.html#parseSenderAddress,RawDatagram	proc parseSenderAddress(rd: RawDatagram): (string, int)		165
-nim	sendTo	cps/io/udp.html#sendTo,UdpSocket,string,string,int	proc sendTo(sock: UdpSocket; data: string; host: string; port: int): CpsVoidFuture		205
-nim	recvFrom	cps/io/udp.html#recvFrom,UdpSocket,int	proc recvFrom(sock: UdpSocket; maxSize: int = 65535): CpsFuture[Datagram]		223
-nim	fillSockaddrForSocket	cps/io/udp.html#fillSockaddrForSocket,UdpSocket,string,int,Sockaddr_storage	proc fillSockaddrForSocket(sock: UdpSocket; ip: string; port: int;\n                      sa: var Sockaddr_storage): SockLen		274
-nim	trySendToAddr	cps/io/udp.html#trySendToAddr,UdpSocket,string,string,int,Domain	proc trySendToAddr(sock: UdpSocket; data: string; ip: string; port: int;\n              domain: Domain = AF_INET): bool		300
-nim	sendToAddr	cps/io/udp.html#sendToAddr,UdpSocket,string,string,int,Domain	proc sendToAddr(sock: UdpSocket; data: string; ip: string; port: int;\n           domain: Domain = AF_INET): CpsVoidFuture		319
-nim	sendToAddrBytes	cps/io/udp.html#sendToAddrBytes,UdpSocket,seq[byte],string,int	proc sendToAddrBytes(sock: UdpSocket; data: seq[byte]; ip: string; port: int): CpsVoidFuture		329
-nim	trySendToAddrBytes	cps/io/udp.html#trySendToAddrBytes,UdpSocket,openArray[byte],string,int	proc trySendToAddrBytes(sock: UdpSocket; data: openArray[byte]; ip: string; port: int): bool		359
-nim	onRecv	cps/io/udp.html#onRecv,UdpSocket,int,UdpRecvCallback	proc onRecv(sock: UdpSocket; maxSize: int; callback: UdpRecvCallback)		381
-nim	onRecvBorrowed	cps/io/udp.html#onRecvBorrowed,UdpSocket,int,UdpRecvBorrowedCallback	proc onRecvBorrowed(sock: UdpSocket; maxSize: int; callback: UdpRecvBorrowedCallback)		418
-nim	cancelOnRecv	cps/io/udp.html#cancelOnRecv,UdpSocket	proc cancelOnRecv(sock: UdpSocket)		448
-nim	localPort	cps/io/udp.html#localPort,UdpSocket	proc localPort(sock: UdpSocket): int		460
-nim	close	cps/io/udp.html#close,UdpSocket	proc close(sock: UdpSocket)		471
+nim	UdpSocket	cps/io/udp.html#UdpSocket	type UdpSocket		28
+nim	Datagram	cps/io/udp.html#Datagram	object Datagram		33
+nim	RawDatagram	cps/io/udp.html#RawDatagram	object RawDatagram		38
+nim	UdpRecvCallback	cps/io/udp.html#UdpRecvCallback	type UdpRecvCallback		44
+nim	UdpRecvBorrowedCallback	cps/io/udp.html#UdpRecvBorrowedCallback	type UdpRecvBorrowedCallback		45
+nim	MaxUdpSendBatch	cps/io/udp.html#MaxUdpSendBatch	const MaxUdpSendBatch		49
+nim	newUdpSocket	cps/io/udp.html#newUdpSocket,Domain	proc newUdpSocket(domain: Domain = AF_INET): UdpSocket		51
+nim	bindAddr	cps/io/udp.html#bindAddr,UdpSocket,string,int,bool	proc bindAddr(sock: UdpSocket; host: string; port: int; reusePort: bool = false)		64
+nim	setBufferSizes	cps/io/udp.html#setBufferSizes,UdpSocket,int,int	proc setBufferSizes(sock: UdpSocket; receiveBytes: int = 0; sendBytes: int = 0)		86
+nim	fillSockaddrIp	cps/io/udp.html#fillSockaddrIp,string,int,Domain,Sockaddr_storage	proc fillSockaddrIp(ip: string; port: int; domain: Domain; sa: var Sockaddr_storage): SockLen		107
+nim	extractEndpoint	cps/io/udp.html#extractEndpoint,ptr.SockAddr,SockLen	proc extractEndpoint(sa: ptr SockAddr; saLen: SockLen): (string, int)		129
+nim	extractPort	cps/io/udp.html#extractPort,ptr.SockAddr,SockLen	proc extractPort(sa: ptr SockAddr; saLen: SockLen): int		166
+nim	parseSenderAddress	cps/io/udp.html#parseSenderAddress,RawDatagram	proc parseSenderAddress(rd: RawDatagram): (string, int)		184
+nim	sendTo	cps/io/udp.html#sendTo,UdpSocket,string,string,int	proc sendTo(sock: UdpSocket; data: string; host: string; port: int): CpsVoidFuture		226
+nim	recvFrom	cps/io/udp.html#recvFrom,UdpSocket,int	proc recvFrom(sock: UdpSocket; maxSize: int = 65535): CpsFuture[Datagram]		244
+nim	fillSockaddrForSocket	cps/io/udp.html#fillSockaddrForSocket,UdpSocket,string,int,Sockaddr_storage	proc fillSockaddrForSocket(sock: UdpSocket; ip: string; port: int;\n                      sa: var Sockaddr_storage): SockLen		295
+nim	trySendToAddr	cps/io/udp.html#trySendToAddr,UdpSocket,string,string,int,Domain	proc trySendToAddr(sock: UdpSocket; data: string; ip: string; port: int;\n              domain: Domain = AF_INET): bool		321
+nim	sendToAddr	cps/io/udp.html#sendToAddr,UdpSocket,string,string,int,Domain	proc sendToAddr(sock: UdpSocket; data: string; ip: string; port: int;\n           domain: Domain = AF_INET): CpsVoidFuture		340
+nim	sendToAddrBytes	cps/io/udp.html#sendToAddrBytes,UdpSocket,seq[byte],string,int	proc sendToAddrBytes(sock: UdpSocket; data: seq[byte]; ip: string; port: int): CpsVoidFuture		350
+nim	trySendToAddrBytes	cps/io/udp.html#trySendToAddrBytes,UdpSocket,openArray[byte],string,int	proc trySendToAddrBytes(sock: UdpSocket; data: openArray[byte]; ip: string; port: int): bool		377
+nim	trySendToAddrBatchBytes	cps/io/udp.html#trySendToAddrBatchBytes,UdpSocket,openArray[seq[byte]],string,int	proc trySendToAddrBatchBytes(sock: UdpSocket; datagrams: openArray[seq[byte]];\n                        ip: string; port: int): int		395
+nim	onRecv	cps/io/udp.html#onRecv,UdpSocket,int,UdpRecvCallback	proc onRecv(sock: UdpSocket; maxSize: int; callback: UdpRecvCallback)		436
+nim	onRecvBorrowed	cps/io/udp.html#onRecvBorrowed,UdpSocket,int,UdpRecvBorrowedCallback	proc onRecvBorrowed(sock: UdpSocket; maxSize: int; callback: UdpRecvBorrowedCallback)		473
+nim	cancelOnRecv	cps/io/udp.html#cancelOnRecv,UdpSocket	proc cancelOnRecv(sock: UdpSocket)		503
+nim	localPort	cps/io/udp.html#localPort,UdpSocket	proc localPort(sock: UdpSocket): int		515
+nim	close	cps/io/udp.html#close,UdpSocket	proc close(sock: UdpSocket)		526

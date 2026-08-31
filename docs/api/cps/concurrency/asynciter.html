@@ -119,9 +119,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>CPS Async Iterators</p>
 <p>Provides an async iterator/stream abstraction built on top of async channels. Producers emit values lazily into a bounded channel; consumers pull values via <tt class="docutils literal"><span class="pre"><span class="Identifier">next</span><span class="Punctuation">(</span><span class="Punctuation">)</span></span></tt>. Backpressure is automatic: the producer suspends when the buffer is full.</p>
 <p>Combinators (map, filter, take) return new iterators and are lazy -- they only run when the consumer pulls. Closing a combinator propagates the close to its source iterator.</p>
@@ -138,17 +138,17 @@
     <div id="AsyncIterator">
   <dt><pre><a href="asynciter.html#AsyncIterator"><span class="Identifier">AsyncIterator</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-
+    
     An async iterator backed by a channel. The producer task feeds values into the channel; the consumer pulls them out via <tt class="docutils literal"><span class="pre"><span class="Identifier">next</span><span class="Punctuation">(</span><span class="Punctuation">)</span></span></tt>. When the producer finishes, the channel is closed; remaining buffered items can still be consumed.
-
+    
   </dd>
 </div>
 <div id="Sender">
   <dt><pre><a href="asynciter.html#Sender"><span class="Identifier">Sender</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-
+    
     Handle given to the producer proc for emitting values.
-
+    
   </dd>
 </div>
 
@@ -161,9 +161,9 @@
   <div id="close,AsyncIterator[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#close%2CAsyncIterator%5BT%5D"><span class="Identifier">close</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">iter</span><span class="Other">:</span> <a href="asynciter.html#AsyncIterator"><span class="Identifier">AsyncIterator</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Close the iterator early. The underlying channel is closed, which will cause the producer to get ChannelClosed on its next emit(). Propagates close to source iterators in combinator chains.
-
+    
   </dd>
 </div>
 
@@ -172,9 +172,9 @@
   <div id="collect,AsyncIterator[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#collect%2CAsyncIterator%5BT%5D"><span class="Identifier">collect</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">iter</span><span class="Other">:</span> <a href="asynciter.html#AsyncIterator"><span class="Identifier">AsyncIterator</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">seq</span><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">]</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -183,9 +183,9 @@
   <div id="emit,Sender[T],sinkT">
   <dt><pre><span class="Keyword">proc</span> <a href="#emit%2CSender%5BT%5D%2CsinkT"><span class="Identifier">emit</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">sender</span><span class="Other">:</span> <a href="asynciter.html#Sender"><span class="Identifier">Sender</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">value</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a></pre></dt>
   <dd>
-
+    
     Send a value to the consumer. Suspends if the buffer is full (backpressure). Uses move semantics for zero-copy transfer.
-
+    
   </dd>
 </div>
 
@@ -194,9 +194,9 @@
   <div id="filter,AsyncIterator[T],proc(T)">
   <dt><pre><span class="Keyword">proc</span> <a href="#filter%2CAsyncIterator%5BT%5D%2Cproc%28T%29"><span class="Identifier">filter</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">iter</span><span class="Other">:</span> <a href="asynciter.html#AsyncIterator"><span class="Identifier">AsyncIterator</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">pred</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">x</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span><span class="Other">)</span><span class="Other">:</span> <a href="asynciter.html#AsyncIterator"><span class="Identifier">AsyncIterator</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Return a new iterator that only yields values for which <tt class="docutils literal"><span class="pre"><span class="Identifier">pred</span></span></tt> returns true. Closing the result also closes the source.
-
+    
   </dd>
 </div>
 
@@ -205,9 +205,9 @@
   <div id="forEach,AsyncIterator[T],proc(T)">
   <dt><pre><span class="Keyword">proc</span> <a href="#forEach%2CAsyncIterator%5BT%5D%2Cproc%28T%29"><span class="Identifier">forEach</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">iter</span><span class="Other">:</span> <a href="asynciter.html#AsyncIterator"><span class="Identifier">AsyncIterator</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">action</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">x</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -216,9 +216,9 @@
   <div id="isClosed,AsyncIterator[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#isClosed%2CAsyncIterator%5BT%5D"><span class="Identifier">isClosed</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">iter</span><span class="Other">:</span> <a href="asynciter.html#AsyncIterator"><span class="Identifier">AsyncIterator</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-
+    
     Check whether the iterator has been closed.
-
+    
   </dd>
 </div>
 
@@ -227,9 +227,9 @@
   <div id="map,AsyncIterator[T],proc(T)">
   <dt><pre><span class="Keyword">proc</span> <a href="#map%2CAsyncIterator%5BT%5D%2Cproc%28T%29"><span class="Identifier">map</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">,</span> <span class="Identifier">U</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">iter</span><span class="Other">:</span> <a href="asynciter.html#AsyncIterator"><span class="Identifier">AsyncIterator</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">f</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">x</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">U</span><span class="Other">)</span><span class="Other">:</span> <a href="asynciter.html#AsyncIterator"><span class="Identifier">AsyncIterator</span></a><span class="Other">[</span><span class="Identifier">U</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Return a new iterator that applies <tt class="docutils literal"><span class="pre"><span class="Identifier">f</span></span></tt> to each value from <tt class="docutils literal"><span class="pre"><span class="Identifier">iter</span></span></tt>. Closing the result also closes the source.
-
+    
   </dd>
 </div>
 
@@ -239,11 +239,11 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#newAsyncIterator%2Cproc%28Sender%5BT%5D%29%2Cint"><span class="Identifier">newAsyncIterator</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">producer</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="asynciter.html#Sender"><span class="Identifier">Sender</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">;</span>
                          <span class="Identifier">bufferSize</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">1</span><span class="Other">)</span><span class="Other">:</span> <a href="asynciter.html#AsyncIterator"><span class="Identifier">AsyncIterator</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     <p>Create an async iterator. The producer CPS proc receives a <tt class="docutils literal"><span class="pre"><span class="Identifier">Sender</span><span class="Punctuation">[</span><span class="Identifier">T</span><span class="Punctuation">]</span></span></tt> and should call <tt class="docutils literal"><span class="pre"><span class="Identifier">emit</span><span class="Punctuation">(</span><span class="Punctuation">)</span></span></tt> to produce values. When the producer returns, the channel is closed. Remaining buffered values can still be consumed. If the producer fails with an error, the error is propagated to consumers.</p>
 <p><tt class="docutils literal"><span class="pre"><span class="Identifier">bufferSize</span></span></tt> controls how many values can be buffered before the producer is suspended (backpressure). Default is 1.</p>
 
-
+    
   </dd>
 </div>
 
@@ -252,9 +252,9 @@
   <div id="next,AsyncIterator[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#next%2CAsyncIterator%5BT%5D"><span class="Identifier">next</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">iter</span><span class="Other">:</span> <a href="asynciter.html#AsyncIterator"><span class="Identifier">AsyncIterator</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">Option</span><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Get the next value from the iterator. Returns <tt class="docutils literal"><span class="pre"><span class="Identifier">some</span><span class="Punctuation">(</span><span class="Identifier">val</span><span class="Punctuation">)</span></span></tt> for each produced value. Returns <tt class="docutils literal"><span class="pre"><span class="Identifier">none</span><span class="Punctuation">(</span><span class="Identifier">T</span><span class="Punctuation">)</span></span></tt> when iteration is complete. Propagates producer errors to the consumer.
-
+    
   </dd>
 </div>
 
@@ -263,9 +263,9 @@
   <div id="take,AsyncIterator[T],int">
   <dt><pre><span class="Keyword">proc</span> <a href="#take%2CAsyncIterator%5BT%5D%2Cint"><span class="Identifier">take</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">iter</span><span class="Other">:</span> <a href="asynciter.html#AsyncIterator"><span class="Identifier">AsyncIterator</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">n</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="asynciter.html#AsyncIterator"><span class="Identifier">AsyncIterator</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Return a new iterator that yields at most <tt class="docutils literal"><span class="pre"><span class="Identifier">n</span></span></tt> values from <tt class="docutils literal"><span class="pre"><span class="Identifier">iter</span></span></tt>. Closing the result also closes the source.
-
+    
   </dd>
 </div>
 
@@ -280,10 +280,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:11 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:17 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

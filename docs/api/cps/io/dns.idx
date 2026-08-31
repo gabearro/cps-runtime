@@ -9,5 +9,5 @@ nim	isIpAddress	cps/io/dns.html#isIpAddress,string	proc isIpAddress(host: string
 nim	resetDnsResolver	cps/io/dns.html#resetDnsResolver	proc resetDnsResolver()		412
 nim	initDnsResolver	cps/io/dns.html#initDnsResolver,int	proc initDnsResolver(numThreads: int = 2)		435
 nim	deinitDnsResolver	cps/io/dns.html#deinitDnsResolver	proc deinitDnsResolver()		439
-nim	asyncResolve	cps/io/dns.html#asyncResolve,string,Port,Domain	proc asyncResolve(host: string; port: Port = Port(0); family: Domain = AF_INET): CpsFuture[\n    seq[string]]		2420
-nim	resolve	cps/io/dns.html#resolve,string,Port,Domain	proc resolve(host: string; port: Port = Port(0); family: Domain = AF_INET): CpsFuture[\n    seq[string]]		2420
+nim	asyncResolve	cps/io/dns.html#asyncResolve,string,Port,Domain	proc asyncResolve(host: string; port: Port = Port(0); family: Domain = AF_INET): CpsFuture[\n    seq[string]]		2425
+nim	resolve	cps/io/dns.html#resolve,string,Port,Domain	proc resolve(host: string; port: Port = Port(0); family: Domain = AF_INET): CpsFuture[\n    seq[string]]		2425

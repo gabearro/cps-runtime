@@ -81,10 +81,19 @@
 </li>
 <li>
   <details open>
+    <summary><a class="reference reference-toplevel" href="#10" id="60">Consts</a></summary>
+    <ul class="simple simple-toc-section">
+      <li><a class="reference" href="#MaxUdpSendBatch" title="MaxUdpSendBatch = 32">MaxUdpSendBatch</a></li>
+
+    </ul>
+  </details>
+</li>
+<li>
+  <details open>
     <summary><a class="reference reference-toplevel" href="#12" id="62">Procs</a></summary>
     <ul class="simple simple-toc-section">
       <ul class="simple nested-toc-section">bindAddr
-  <li><a class="reference" href="#bindAddr%2CUdpSocket%2Cstring%2Cint" title="bindAddr(sock: UdpSocket; host: string; port: int)">bindAddr(sock: UdpSocket; host: string; port: int)</a></li>
+  <li><a class="reference" href="#bindAddr%2CUdpSocket%2Cstring%2Cint%2Cbool" title="bindAddr(sock: UdpSocket; host: string; port: int; reusePort: bool = false)">bindAddr(sock: UdpSocket; host: string; port: int; reusePort: bool = false)</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">cancelOnRecv
@@ -161,6 +170,12 @@
               domain: Domain = AF_INET): bool</a></li>
 
 </ul>
+<ul class="simple nested-toc-section">trySendToAddrBatchBytes
+  <li><a class="reference" href="#trySendToAddrBatchBytes%2CUdpSocket%2CopenArray%5Bseq%5Bbyte%5D%5D%2Cstring%2Cint" title="trySendToAddrBatchBytes(sock: UdpSocket; datagrams: openArray[seq[byte]];
+                        ip: string; port: int): int">trySendToAddrBatchBytes(sock: UdpSocket; datagrams: openArray[seq[byte]];
+                        ip: string; port: int): int</a></li>
+
+</ul>
 <ul class="simple nested-toc-section">trySendToAddrBytes
   <li><a class="reference" href="#trySendToAddrBytes%2CUdpSocket%2CopenArray%5Bbyte%5D%2Cstring%2Cint" title="trySendToAddrBytes(sock: UdpSocket; data: openArray[byte]; ip: string; port: int): bool">trySendToAddrBytes(sock: UdpSocket; data: openArray[byte]; ip: string; port: int): bool</a></li>
 
@@ -174,9 +189,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>CPS I/O UDP</p>
 <p>Provides UDP socket support with non-blocking sendTo and recvFrom integrated with the CPS event loop.</p>
 <p>Also provides low-level building blocks for multiplexed UDP protocols (e.g., DNS): fire-and-forget sends to pre-resolved IPs, persistent read callbacks, and raw datagram access.</p>
@@ -196,9 +211,9 @@
   <span class="Identifier">address</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">string</span>
   <span class="Identifier">port</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="RawDatagram">
@@ -207,9 +222,9 @@
   <span class="Identifier">srcAddr</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">Sockaddr_storage</span>
   <span class="Identifier">addrLen</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">SockLen</span></pre></dt>
   <dd>
-
+    
     A datagram with the raw sockaddr, avoiding getnameinfo cost.
-
+    
   </dd>
 </div>
 <div id="UdpRecvBorrowedCallback">
@@ -217,18 +232,18 @@
                                 <span class="Identifier">srcAddr</span><span class="Other">:</span> <span class="Identifier">Sockaddr_storage</span><span class="Other">;</span> <span class="Identifier">addrLen</span><span class="Other">:</span> <span class="Identifier">SockLen</span><span class="Other">)</span> {.
     <span class="Identifier">closure</span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="UdpRecvCallback">
   <dt><pre><a href="udp.html#UdpRecvCallback"><span class="Identifier">UdpRecvCallback</span></a> <span class="Other">=</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">data</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">srcAddr</span><span class="Other">:</span> <span class="Identifier">Sockaddr_storage</span><span class="Other">;</span>
                         <span class="Identifier">addrLen</span><span class="Other">:</span> <span class="Identifier">SockLen</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="UdpSocket">
@@ -237,9 +252,23 @@
   <span class="Identifier">domain</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">Domain</span>
   <span class="Identifier">closed</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
+    
+    
+    
+  </dd>
+</div>
 
-
-
+  </dl>
+</div>
+<div class="section" id="10">
+  <h1><a class="toc-backref" href="#10">Consts</a></h1>
+  <dl class="item">
+    <div id="MaxUdpSendBatch">
+  <dt><pre><a href="udp.html#MaxUdpSendBatch"><span class="Identifier">MaxUdpSendBatch</span></a> <span class="Other">=</span> <span class="DecNumber">32</span></pre></dt>
+  <dd>
+    
+    
+    
   </dd>
 </div>
 
@@ -249,13 +278,13 @@
   <h1><a class="toc-backref" href="#12">Procs</a></h1>
   <dl class="item">
     <div id="bindAddr-procs-all">
-  <div id="bindAddr,UdpSocket,string,int">
-  <dt><pre><span class="Keyword">proc</span> <a href="#bindAddr%2CUdpSocket%2Cstring%2Cint"><span class="Identifier">bindAddr</span></a><span class="Other">(</span><span class="Identifier">sock</span><span class="Other">:</span> <a href="udp.html#UdpSocket"><span class="Identifier">UdpSocket</span></a><span class="Other">;</span> <span class="Identifier">host</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">port</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">OSError</span><span class="Other">,</span> <span class="Identifier">AsyncIoError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <div id="bindAddr,UdpSocket,string,int,bool">
+  <dt><pre><span class="Keyword">proc</span> <a href="#bindAddr%2CUdpSocket%2Cstring%2Cint%2Cbool"><span class="Identifier">bindAddr</span></a><span class="Other">(</span><span class="Identifier">sock</span><span class="Other">:</span> <a href="udp.html#UdpSocket"><span class="Identifier">UdpSocket</span></a><span class="Other">;</span> <span class="Identifier">host</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">port</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span> <span class="Identifier">reusePort</span><span class="Other">:</span> <span class="Identifier">bool</span> <span class="Other">=</span> <span class="Identifier">false</span><span class="Other">)</span> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">,</span> <span class="Identifier">OSError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Bind the UDP socket to a local address.
-
+    
   </dd>
 </div>
 
@@ -264,9 +293,9 @@
   <div id="cancelOnRecv,UdpSocket">
   <dt><pre><span class="Keyword">proc</span> <a href="#cancelOnRecv%2CUdpSocket"><span class="Identifier">cancelOnRecv</span></a><span class="Other">(</span><span class="Identifier">sock</span><span class="Other">:</span> <a href="udp.html#UdpSocket"><span class="Identifier">UdpSocket</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Cancel a persistent read callback previously set with onRecv.
-
+    
   </dd>
 </div>
 
@@ -275,9 +304,9 @@
   <div id="close,UdpSocket">
   <dt><pre><span class="Keyword">proc</span> <a href="#close%2CUdpSocket"><span class="Identifier">close</span></a><span class="Other">(</span><span class="Identifier">sock</span><span class="Other">:</span> <a href="udp.html#UdpSocket"><span class="Identifier">UdpSocket</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Close the UDP socket.
-
+    
   </dd>
 </div>
 
@@ -287,9 +316,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#extractEndpoint%2Cptr.SockAddr%2CSockLen"><span class="Identifier">extractEndpoint</span></a><span class="Other">(</span><span class="Identifier">sa</span><span class="Other">:</span> <span class="Keyword">ptr</span> <span class="Identifier">SockAddr</span><span class="Other">;</span> <span class="Identifier">saLen</span><span class="Other">:</span> <span class="Identifier">SockLen</span><span class="Other">)</span><span class="Other">:</span> <span class="Other">(</span><span class="Identifier">string</span><span class="Other">,</span> <span class="Identifier">int</span><span class="Other">)</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Extract a numeric IP and port without resolver/service-database work for the normal IPv4 and IPv6 cases. Falls back to getnameinfo for any other address family.
-
+    
   </dd>
 </div>
 
@@ -299,9 +328,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#extractPort%2Cptr.SockAddr%2CSockLen"><span class="Identifier">extractPort</span></a><span class="Other">(</span><span class="Identifier">sa</span><span class="Other">:</span> <span class="Keyword">ptr</span> <span class="Identifier">SockAddr</span><span class="Other">;</span> <span class="Identifier">saLen</span><span class="Other">:</span> <span class="Identifier">SockLen</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Extract just the port from a sockaddr. Returns 0 on failure.
-
+    
   </dd>
 </div>
 
@@ -312,9 +341,9 @@
                            <span class="Identifier">sa</span><span class="Other">:</span> <span class="Keyword">var</span> <span class="Identifier">Sockaddr_storage</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">SockLen</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Build a sockaddr for sending on this socket. Handles dual-stack: IPv4 addresses on IPv6 sockets use IPv4-mapped IPv6.
-
+    
   </dd>
 </div>
 
@@ -325,9 +354,9 @@
                     <span class="Identifier">sa</span><span class="Other">:</span> <span class="Keyword">var</span> <span class="Identifier">Sockaddr_storage</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">SockLen</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Convert an IP string + port into a Sockaddr_storage. Returns the address length. Raises AsyncIoError on invalid IP.
-
+    
   </dd>
 </div>
 
@@ -337,9 +366,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#localPort%2CUdpSocket"><span class="Identifier">localPort</span></a><span class="Other">(</span><span class="Identifier">sock</span><span class="Other">:</span> <a href="udp.html#UdpSocket"><span class="Identifier">UdpSocket</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
                                        <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Get the local port the socket is bound to (useful for ephemeral ports).
-
+    
   </dd>
 </div>
 
@@ -349,9 +378,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#newUdpSocket%2CDomain"><span class="Identifier">newUdpSocket</span></a><span class="Other">(</span><span class="Identifier">domain</span><span class="Other">:</span> <span class="Identifier">Domain</span> <span class="Other">=</span> <span class="Identifier">AF_INET</span><span class="Other">)</span><span class="Other">:</span> <a href="udp.html#UdpSocket"><span class="Identifier">UdpSocket</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">,</span> <span class="Identifier">OSError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a new non-blocking UDP socket.
-
+    
   </dd>
 </div>
 
@@ -361,9 +390,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#onRecv%2CUdpSocket%2Cint%2CUdpRecvCallback"><span class="Identifier">onRecv</span></a><span class="Other">(</span><span class="Identifier">sock</span><span class="Other">:</span> <a href="udp.html#UdpSocket"><span class="Identifier">UdpSocket</span></a><span class="Other">;</span> <span class="Identifier">maxSize</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span> <span class="Identifier">callback</span><span class="Other">:</span> <a href="udp.html#UdpRecvCallback"><span class="Identifier">UdpRecvCallback</span></a><span class="Other">)</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Register a persistent read callback on the socket. When data arrives, all available datagrams are drained and the callback is invoked for each. The socket is then re-registered for more reads. Uses the unregister-drain-reregister pattern required by kqueue.
-
+    
   </dd>
 </div>
 
@@ -374,9 +403,9 @@
                     <span class="Identifier">callback</span><span class="Other">:</span> <a href="udp.html#UdpRecvBorrowedCallback"><span class="Identifier">UdpRecvBorrowedCallback</span></a><span class="Other">)</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Persistent zero-copy receive callback. <tt class="docutils literal"><span class="pre"><span class="Identifier">data</span></span></tt> is valid only for the duration of callback execution and must be copied if retained.
-
+    
   </dd>
 </div>
 
@@ -386,9 +415,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#parseSenderAddress%2CRawDatagram"><span class="Identifier">parseSenderAddress</span></a><span class="Other">(</span><span class="Identifier">rd</span><span class="Other">:</span> <a href="udp.html#RawDatagram"><span class="Identifier">RawDatagram</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Other">(</span><span class="Identifier">string</span><span class="Other">,</span> <span class="Identifier">int</span><span class="Other">)</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Extract the sender IP and port from a RawDatagram.
-
+    
   </dd>
 </div>
 
@@ -399,9 +428,9 @@
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">AsyncIoError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Receive a datagram. Returns the data and sender address.
-
+    
   </dd>
 </div>
 
@@ -409,12 +438,12 @@
 <div id="sendTo-procs-all">
   <div id="sendTo,UdpSocket,string,string,int">
   <dt><pre><span class="Keyword">proc</span> <a href="#sendTo%2CUdpSocket%2Cstring%2Cstring%2Cint"><span class="Identifier">sendTo</span></a><span class="Other">(</span><span class="Identifier">sock</span><span class="Other">:</span> <a href="udp.html#UdpSocket"><span class="Identifier">UdpSocket</span></a><span class="Other">;</span> <span class="Identifier">data</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">host</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">port</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">OSError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">OSError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Send a datagram to the specified host:port (uses getAddrInfo).
-
+    
   </dd>
 </div>
 
@@ -423,12 +452,12 @@
   <div id="sendToAddr,UdpSocket,string,string,int,Domain">
   <dt><pre><span class="Keyword">proc</span> <a href="#sendToAddr%2CUdpSocket%2Cstring%2Cstring%2Cint%2CDomain"><span class="Identifier">sendToAddr</span></a><span class="Other">(</span><span class="Identifier">sock</span><span class="Other">:</span> <a href="udp.html#UdpSocket"><span class="Identifier">UdpSocket</span></a><span class="Other">;</span> <span class="Identifier">data</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">ip</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">port</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span>
                 <span class="Identifier">domain</span><span class="Other">:</span> <span class="Identifier">Domain</span> <span class="Other">=</span> <span class="Identifier">AF_INET</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">,</span> <span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Async send to a pre-resolved IP address with write-readiness waiting. Auto-detects IPv6 when <tt class="docutils literal"><span class="pre"><span class="Identifier">ip</span></span></tt> contains a colon. On dual-stack IPv6 sockets, IPv4 addresses are sent as IPv4-mapped IPv6.
-
+    
   </dd>
 </div>
 
@@ -436,12 +465,12 @@
 <div id="sendToAddrBytes-procs-all">
   <div id="sendToAddrBytes,UdpSocket,seq[byte],string,int">
   <dt><pre><span class="Keyword">proc</span> <a href="#sendToAddrBytes%2CUdpSocket%2Cseq%5Bbyte%5D%2Cstring%2Cint"><span class="Identifier">sendToAddrBytes</span></a><span class="Other">(</span><span class="Identifier">sock</span><span class="Other">:</span> <a href="udp.html#UdpSocket"><span class="Identifier">UdpSocket</span></a><span class="Other">;</span> <span class="Identifier">data</span><span class="Other">:</span> <span class="Identifier">seq</span><span class="Other">[</span><span class="Identifier">byte</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">ip</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">port</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">AsyncIoError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">AsyncIoError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">,</span> <span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Send owned byte data to a numeric address without converting it to a string or resolving it. Ownership is retained across an EAGAIN retry.
-
+    
   </dd>
 </div>
 
@@ -451,9 +480,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#setBufferSizes%2CUdpSocket%2Cint%2Cint"><span class="Identifier">setBufferSizes</span></a><span class="Other">(</span><span class="Identifier">sock</span><span class="Other">:</span> <a href="udp.html#UdpSocket"><span class="Identifier">UdpSocket</span></a><span class="Other">;</span> <span class="Identifier">receiveBytes</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">0</span><span class="Other">;</span> <span class="Identifier">sendBytes</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">0</span><span class="Other">)</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Request larger kernel UDP buffers. The kernel may clamp these values to its configured limits; that is still preferable to failing socket setup.
-
+    
   </dd>
 </div>
 
@@ -464,9 +493,22 @@
                    <span class="Identifier">domain</span><span class="Other">:</span> <span class="Identifier">Domain</span> <span class="Other">=</span> <span class="Identifier">AF_INET</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Fire-and-forget send to a pre-resolved IP address. Returns true on success, false on EAGAIN/EWOULDBLOCK. Raises AsyncIoError on hard errors. Auto-detects IPv6 when <tt class="docutils literal"><span class="pre"><span class="Identifier">ip</span></span></tt> contains a colon. On dual-stack IPv6 sockets, IPv4 addresses are sent as IPv4-mapped IPv6.
+    
+  </dd>
+</div>
 
+</div>
+<div id="trySendToAddrBatchBytes-procs-all">
+  <div id="trySendToAddrBatchBytes,UdpSocket,openArray[seq[byte]],string,int">
+  <dt><pre><span class="Keyword">proc</span> <a href="#trySendToAddrBatchBytes%2CUdpSocket%2CopenArray%5Bseq%5Bbyte%5D%5D%2Cstring%2Cint"><span class="Identifier">trySendToAddrBatchBytes</span></a><span class="Other">(</span><span class="Identifier">sock</span><span class="Other">:</span> <a href="udp.html#UdpSocket"><span class="Identifier">UdpSocket</span></a><span class="Other">;</span> <span class="Identifier">datagrams</span><span class="Other">:</span> <span class="Identifier">openArray</span><span class="Other">[</span><span class="Identifier">seq</span><span class="Other">[</span><span class="Identifier">byte</span><span class="Other">]</span><span class="Other">]</span><span class="Other">;</span>
+                             <span class="Identifier">ip</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">port</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+    
+    Send a bounded prefix of datagrams to one numeric address without futures. Linux uses one <tt class="docutils literal"><span class="pre"><span class="Identifier">sendmmsg</span></span></tt>; other platforms preserve the same partial-send contract with the ordinary non-blocking send path.
+    
   </dd>
 </div>
 
@@ -477,9 +519,9 @@
                         <span class="Identifier">port</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Attempt an owned/borrowed byte datagram without allocating a future or retry closure. Returns false only when the non-blocking socket would block; callers can then fall back to <tt class="docutils literal"><span class="pre"><span class="Identifier">sendToAddrBytes</span></span></tt> for readiness-based retry.
-
+    
   </dd>
 </div>
 
@@ -494,10 +536,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:20 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:24 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

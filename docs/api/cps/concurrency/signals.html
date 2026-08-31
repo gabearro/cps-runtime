@@ -100,9 +100,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>CPS Async Signal Handling</p>
 <p>Provides async signal handling using the self-pipe trick. A POSIX signal handler writes the signal number to a pipe, and the event loop reads it and dispatches to registered handlers.</p>
 <p>Usage: initSignalHandling() onSignal(SIGINT, proc() = echo &quot;Got SIGINT&quot;) let fut = waitForShutdown() runCps(fut) deinitSignalHandling()</p>
@@ -119,9 +119,9 @@
     <div id="SignalHandler">
   <dt><pre><a href="signals.html#SignalHandler"><span class="Identifier">SignalHandler</span></a> <span class="Other">=</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
   <dd>
-
+    
     A callback invoked when a signal is received.
-
+    
   </dd>
 </div>
 
@@ -135,9 +135,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#deinitSignalHandling"><span class="Identifier">deinitSignalHandling</span></a><span class="Other">(</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
                               <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Clean up: restore default signal handlers, unregister from the event loop, close the pipe. Completes pending waitForSignal futures.
-
+    
   </dd>
 </div>
 
@@ -147,9 +147,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#initSignalHandling"><span class="Identifier">initSignalHandling</span></a><span class="Other">(</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">OSError</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
                             <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create the self-pipe and register the read end with the event loop. Must be called before any onSignal/waitForSignal calls.
-
+    
   </dd>
 </div>
 
@@ -159,9 +159,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#onSignal%2Ccint%2CSignalHandler"><span class="Identifier">onSignal</span></a><span class="Other">(</span><span class="Identifier">sig</span><span class="Other">:</span> <span class="Identifier">cint</span><span class="Other">;</span> <span class="Identifier">handler</span><span class="Other">:</span> <a href="signals.html#SignalHandler"><span class="Identifier">SignalHandler</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Register a persistent handler for the given signal. Multiple handlers per signal are supported. The POSIX sigaction is installed on first use.
-
+    
   </dd>
 </div>
 
@@ -170,9 +170,9 @@
   <div id="removeSignalHandlers,cint">
   <dt><pre><span class="Keyword">proc</span> <a href="#removeSignalHandlers%2Ccint"><span class="Identifier">removeSignalHandlers</span></a><span class="Other">(</span><span class="Identifier">sig</span><span class="Other">:</span> <span class="Identifier">cint</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Remove all handlers for the given signal and restore SIG_DFL.
-
+    
   </dd>
 </div>
 
@@ -181,9 +181,9 @@
   <div id="waitForShutdown">
   <dt><pre><span class="Keyword">proc</span> <a href="#waitForShutdown"><span class="Identifier">waitForShutdown</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Returns a future that completes when SIGINT or SIGTERM is received. One-shot: handlers are removed after the first signal fires.
-
+    
   </dd>
 </div>
 
@@ -192,9 +192,9 @@
   <div id="waitForSignal,cint">
   <dt><pre><span class="Keyword">proc</span> <a href="#waitForSignal%2Ccint"><span class="Identifier">waitForSignal</span></a><span class="Other">(</span><span class="Identifier">sig</span><span class="Other">:</span> <span class="Identifier">cint</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Returns a future that completes when the given signal is received. One-shot: the handler is removed after the signal fires.
-
+    
   </dd>
 </div>
 
@@ -209,10 +209,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:12 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:18 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

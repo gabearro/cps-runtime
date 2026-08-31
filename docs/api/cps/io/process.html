@@ -133,9 +133,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>CPS I/O Process</p>
 <p>Provides async subprocess execution with piped I/O, integrated with the CPS event loop. Pipe fds are registered with the OS selector for non-blocking reads/writes; exit status is polled via a timer.</p>
 </p>
@@ -157,9 +157,9 @@
   <span class="Identifier">exitCode</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int</span>
   <span class="Identifier">exited</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="PipeMode">
@@ -168,26 +168,26 @@
   <span class="Identifier">pmInherit</span><span class="Other">,</span>                <span class="Comment">## Inherit parent's fd</span>
   <span class="Identifier">pmNull</span>                     <span class="Comment">## Redirect to /dev/null</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="PipeStream">
   <dt><pre><a href="process.html#PipeStream"><span class="Identifier">PipeStream</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a>
   <span class="Identifier">fd</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">cint</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="ProcessError">
   <dt><pre><a href="process.html#ProcessError"><span class="Identifier">ProcessError</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <span class="Identifier">streams</span><span class="Other">.</span><span class="Identifier">AsyncIoError</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -205,9 +205,9 @@
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ProcessError</span><span class="Other">,</span> <span class="Identifier">OSError</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Run a command to completion, collecting stdout and stderr. If input is non-empty, it is written to stdin.
-
+    
   </dd>
 </div>
 
@@ -218,9 +218,9 @@
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ProcessError</span><span class="Other">,</span> <span class="Identifier">OSError</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Run a command and return its stdout. Raises on non-zero exit.
-
+    
   </dd>
 </div>
 
@@ -229,9 +229,9 @@
   <div id="forceKill,AsyncProcess">
   <dt><pre><span class="Keyword">proc</span> <a href="#forceKill%2CAsyncProcess"><span class="Identifier">forceKill</span></a><span class="Other">(</span><span class="Identifier">p</span><span class="Other">:</span> <a href="process.html#AsyncProcess"><span class="Identifier">AsyncProcess</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Send SIGKILL.
-
+    
   </dd>
 </div>
 
@@ -241,9 +241,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#kill%2CAsyncProcess%2Ccint"><span class="Identifier">kill</span></a><span class="Other">(</span><span class="Identifier">p</span><span class="Other">:</span> <a href="process.html#AsyncProcess"><span class="Identifier">AsyncProcess</span></a><span class="Other">;</span> <span class="Identifier">signal</span><span class="Other">:</span> <span class="Identifier">cint</span> <span class="Other">=</span> <span class="Identifier">SIGTERM</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Send a signal to the process.
-
+    
   </dd>
 </div>
 
@@ -252,9 +252,9 @@
   <div id="newPipeStream,cint">
   <dt><pre><span class="Keyword">proc</span> <a href="#newPipeStream%2Ccint"><span class="Identifier">newPipeStream</span></a><span class="Other">(</span><span class="Identifier">fd</span><span class="Other">:</span> <span class="Identifier">cint</span><span class="Other">)</span><span class="Other">:</span> <a href="process.html#PipeStream"><span class="Identifier">PipeStream</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Wrap a non-blocking pipe fd into an AsyncStream.
-
+    
   </dd>
 </div>
 
@@ -268,7 +268,7 @@
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ProcessError</span><span class="Other">,</span> <span class="Identifier">OSError</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Start a subprocess. Returns an AsyncProcess with piped streams.<ul class="simple"><li>command: the executable name (looked up in PATH via execvp)</li>
 <li>args: arguments (command is NOT prepended — args<a class="reference internal" href="#0">0</a> should be the first real arg)</li>
 <li>env: if non-empty, sets the child's environment</li>
@@ -276,7 +276,7 @@
 <li>stdin/stdout/stderrMode: pipe, inherit, or /dev/null</li>
 </ul>
 
-
+    
   </dd>
 </div>
 
@@ -285,9 +285,9 @@
   <div id="terminate,AsyncProcess">
   <dt><pre><span class="Keyword">proc</span> <a href="#terminate%2CAsyncProcess"><span class="Identifier">terminate</span></a><span class="Other">(</span><span class="Identifier">p</span><span class="Other">:</span> <a href="process.html#AsyncProcess"><span class="Identifier">AsyncProcess</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Send SIGTERM.
-
+    
   </dd>
 </div>
 
@@ -297,9 +297,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#wait%2CAsyncProcess"><span class="Identifier">wait</span></a><span class="Other">(</span><span class="Identifier">p</span><span class="Other">:</span> <a href="process.html#AsyncProcess"><span class="Identifier">AsyncProcess</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">int</span><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Wait for the process to exit. Returns exit code. Negative exit codes indicate death by signal (e.g. -9 = SIGKILL).
-
+    
   </dd>
 </div>
 
@@ -314,10 +314,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:17 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:22 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

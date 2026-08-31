@@ -121,9 +121,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>CPS I/O DNS</p>
 <p>Async DNS resolution using DNS wire protocol (RFC 1035) over UDP, driven by the CPS event loop.</p>
 <p>Features:</p>
@@ -150,17 +150,17 @@
     <div id="DnsCache">
   <dt><pre><a href="dns.html#DnsCache"><span class="Identifier">DnsCache</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-
+    
     DNS cache with TTL-based expiry.
-
+    
   </dd>
 </div>
 <div id="DnsError">
   <dt><pre><a href="dns.html#DnsError"><span class="Identifier">DnsError</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <span class="Identifier">streams</span><span class="Other">.</span><span class="Identifier">AsyncIoError</span></pre></dt>
   <dd>
-
+    
     Error during DNS resolution.
-
+    
   </dd>
 </div>
 
@@ -174,9 +174,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#asyncResolve%2Cstring%2CPort%2CDomain"><span class="Identifier">asyncResolve</span></a><span class="Other">(</span><span class="Identifier">host</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">port</span><span class="Other">:</span> <span class="Identifier">Port</span> <span class="Other">=</span> <span class="Identifier">Port</span><span class="Other">(</span><span class="DecNumber">0</span><span class="Other">)</span><span class="Other">;</span> <span class="Identifier">family</span><span class="Other">:</span> <span class="Identifier">Domain</span> <span class="Other">=</span> <span class="Identifier">AF_INET</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span>
     <span class="Identifier">seq</span><span class="Other">[</span><span class="Identifier">string</span><span class="Other">]</span><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -185,9 +185,9 @@
   <div id="clearDnsCache">
   <dt><pre><span class="Keyword">proc</span> <a href="#clearDnsCache"><span class="Identifier">clearDnsCache</span></a><span class="Other">(</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Clear all entries from the global DNS cache.
-
+    
   </dd>
 </div>
 
@@ -202,7 +202,7 @@
 </div>
 
     Release resources owned by DNS resolver.
-
+    
   </dd>
 </div>
 
@@ -211,9 +211,9 @@
   <div id="getDnsCache">
   <dt><pre><span class="Keyword">proc</span> <a href="#getDnsCache"><span class="Identifier">getDnsCache</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="dns.html#DnsCache"><span class="Identifier">DnsCache</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Get the global DNS cache, creating one if needed.
-
+    
   </dd>
 </div>
 
@@ -223,9 +223,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#initDnsCache%2Cint"><span class="Identifier">initDnsCache</span></a><span class="Other">(</span><span class="Identifier">ttlSeconds</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">300</span><span class="Other">)</span><span class="Other">:</span> <a href="dns.html#DnsCache"><span class="Identifier">DnsCache</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a new DNS cache with the given TTL (default 5 minutes).
-
+    
   </dd>
 </div>
 
@@ -241,7 +241,7 @@
 </div>
 
     Initialize DNS resolver.
-
+    
   </dd>
 </div>
 
@@ -250,9 +250,9 @@
   <div id="isIpAddress,string">
   <dt><pre><span class="Keyword">proc</span> <a href="#isIpAddress%2Cstring"><span class="Identifier">isIpAddress</span></a><span class="Other">(</span><span class="Identifier">host</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Check if the string is already an IP address (v4 or v6).
-
+    
   </dd>
 </div>
 
@@ -261,9 +261,9 @@
   <div id="resetDnsResolver">
   <dt><pre><span class="Keyword">proc</span> <a href="#resetDnsResolver"><span class="Identifier">resetDnsResolver</span></a><span class="Other">(</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Reset DNS resolver state. Closes sockets, clears pending queries and caches.
-
+    
   </dd>
 </div>
 
@@ -273,9 +273,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#resolve%2Cstring%2CPort%2CDomain"><span class="Identifier">resolve</span></a><span class="Other">(</span><span class="Identifier">host</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">port</span><span class="Other">:</span> <span class="Identifier">Port</span> <span class="Other">=</span> <span class="Identifier">Port</span><span class="Other">(</span><span class="DecNumber">0</span><span class="Other">)</span><span class="Other">;</span> <span class="Identifier">family</span><span class="Other">:</span> <span class="Identifier">Domain</span> <span class="Other">=</span> <span class="Identifier">AF_INET</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span>
     <span class="Identifier">seq</span><span class="Other">[</span><span class="Identifier">string</span><span class="Other">]</span><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -284,9 +284,9 @@
   <div id="setDnsCacheTtl,int">
   <dt><pre><span class="Keyword">proc</span> <a href="#setDnsCacheTtl%2Cint"><span class="Identifier">setDnsCacheTtl</span></a><span class="Other">(</span><span class="Identifier">ttlSeconds</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Set the TTL for the global DNS cache.
-
+    
   </dd>
 </div>
 
@@ -301,10 +301,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:15 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:21 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

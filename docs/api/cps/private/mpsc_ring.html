@@ -93,9 +93,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>Bounded lock-free MPSC ring queue.</p>
 <p>Multiple producers reserve slots through one enqueue cursor. The single consumer owns the dequeue cursor, so consuming an item needs no CAS. Slot sequence numbers distinguish empty, published, and recycled generations.</p>
 </p>
@@ -105,9 +105,9 @@
     <div id="MpscRingQueue">
   <dt><pre><a href="mpsc_ring.html#MpscRingQueue"><span class="Identifier">MpscRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span> <span class="Other">=</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -120,9 +120,9 @@
   <div id="deinitMpscRingQueue,MpscRingQueue[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#deinitMpscRingQueue%2CMpscRingQueue%5BT%5D"><span class="Identifier">deinitMpscRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">q</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="mpsc_ring.html#MpscRingQueue"><span class="Identifier">MpscRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Drain and release queue storage after all producers have stopped.
-
+    
   </dd>
 </div>
 
@@ -131,9 +131,9 @@
   <div id="initMpscRingQueue,MpscRingQueue[T],int">
   <dt><pre><span class="Keyword">proc</span> <a href="#initMpscRingQueue%2CMpscRingQueue%5BT%5D%2Cint"><span class="Identifier">initMpscRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">q</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="mpsc_ring.html#MpscRingQueue"><span class="Identifier">MpscRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">requestedCapacity</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Initialize a bounded queue, rounding capacity up to a power of two.
-
+    
   </dd>
 </div>
 
@@ -142,9 +142,9 @@
   <div id="isEmpty,MpscRingQueue[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#isEmpty%2CMpscRingQueue%5BT%5D"><span class="Identifier">isEmpty</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">q</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="mpsc_ring.html#MpscRingQueue"><span class="Identifier">MpscRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Return whether the next consumer-owned slot has not been published.
-
+    
   </dd>
 </div>
 
@@ -153,9 +153,9 @@
   <div id="tryDequeue,MpscRingQueue[T],T">
   <dt><pre><span class="Keyword">proc</span> <a href="#tryDequeue%2CMpscRingQueue%5BT%5D%2CT"><span class="Identifier">tryDequeue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">q</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="mpsc_ring.html#MpscRingQueue"><span class="Identifier">MpscRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">value</span><span class="Other">:</span> <span class="Keyword">var</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Consume one item. This operation must only be called by the owning worker.
-
+    
   </dd>
 </div>
 
@@ -164,9 +164,9 @@
   <div id="tryEnqueue,MpscRingQueue[T],T">
   <dt><pre><span class="Keyword">proc</span> <a href="#tryEnqueue%2CMpscRingQueue%5BT%5D%2CT"><span class="Identifier">tryEnqueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">q</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="mpsc_ring.html#MpscRingQueue"><span class="Identifier">MpscRingQueue</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">value</span><span class="Other">:</span> <span class="Keyword">var</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Move one item into the ring, leaving <tt class="docutils literal"><span class="pre">value</span></tt> unchanged when full.
-
+    
   </dd>
 </div>
 
@@ -181,10 +181,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:25 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:28 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

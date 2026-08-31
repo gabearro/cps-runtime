@@ -62,7 +62,11 @@
 <li><a class="reference" href="#AsyncStream" title="AsyncStream = ref object of RootObj
   closed*: bool
   readProc*: proc (s: AsyncStream; size: int): CpsFuture[string]
-  writeProc*: proc (s: AsyncStream; data: string): CpsVoidFuture
+  writeProc*: proc (s: AsyncStream; data: string): CpsVoidFuture ## Optional borrowed write. The caller retains `data` until completion.
+                                                                 ## Transports use it to avoid refcounting/copying connection-owned buffers.
+  writeBorrowedProc*: proc (s: AsyncStream; data: pointer; size: int): CpsVoidFuture
+  writevBorrowedProc*: proc (s: AsyncStream; first: pointer; firstLen: int;
+                             second: pointer; secondLen: int): CpsVoidFuture
   closeProc*: proc (s: AsyncStream) ## Optional zero-copy read API for buffered consumers.
                                     ## readIntoProc: read up to `size` bytes directly into `buf`.
                                     ##   Returns &gt;0 = bytes read, 0 = EOF, -1 = EAGAIN, &lt; -1 = error.
@@ -108,6 +112,16 @@
   <li><a class="reference" href="#write%2CAsyncStream%2Cstring" title="write(s: AsyncStream; data: string): CpsVoidFuture">write(s: AsyncStream; data: string): CpsVoidFuture</a></li>
 
 </ul>
+<ul class="simple nested-toc-section">writeBorrowed
+  <li><a class="reference" href="#writeBorrowed%2CAsyncStream%2Cpointer%2Cint" title="writeBorrowed(s: AsyncStream; data: pointer; size: int): CpsVoidFuture">writeBorrowed(s: AsyncStream; data: pointer; size: int): CpsVoidFuture</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">writevBorrowed
+  <li><a class="reference" href="#writevBorrowed%2CAsyncStream%2Cpointer%2Cint%2Cpointer%2Cint" title="writevBorrowed(s: AsyncStream; first: pointer; firstLen: int; second: pointer;
+               secondLen: int): CpsVoidFuture">writevBorrowed(s: AsyncStream; first: pointer; firstLen: int; second: pointer;
+               secondLen: int): CpsVoidFuture</a></li>
+
+</ul>
 
     </ul>
   </details>
@@ -117,9 +131,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>CPS I/O Streams</p>
 <p>Provides the base stream abstraction and error types for the CPS I/O library. AsyncStream uses proc-field vtable dispatch (matching the Continuation.fn pattern). BufferStream is an in-memory stream for testing and piping.</p>
 </p>
@@ -135,16 +149,20 @@
     <div id="AsyncIoError">
   <dt><pre><a href="streams.html#AsyncIoError"><span class="Identifier">AsyncIoError</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <span class="Identifier">CatchableError</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="AsyncStream">
   <dt><pre><a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <span class="Identifier">RootObj</span>
   <span class="Identifier">closed</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span>
   <span class="Identifier">readProc</span><span class="Operator">*</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">;</span> <span class="Identifier">size</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">string</span><span class="Other">]</span>
-  <span class="Identifier">writeProc</span><span class="Operator">*</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">;</span> <span class="Identifier">data</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a>
+  <span class="Identifier">writeProc</span><span class="Operator">*</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">;</span> <span class="Identifier">data</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> <span class="Comment">## Optional borrowed write. The caller retains `data` until completion.</span>
+                                                                 <span class="Comment">## Transports use it to avoid refcounting/copying connection-owned buffers.</span>
+  <span class="Identifier">writeBorrowedProc</span><span class="Operator">*</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">;</span> <span class="Identifier">data</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">;</span> <span class="Identifier">size</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a>
+  <span class="Identifier">writevBorrowedProc</span><span class="Operator">*</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">;</span> <span class="Identifier">first</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">;</span> <span class="Identifier">firstLen</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span>
+                             <span class="Identifier">second</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">;</span> <span class="Identifier">secondLen</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a>
   <span class="Identifier">closeProc</span><span class="Operator">*</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">)</span> <span class="Comment">## Optional zero-copy read API for buffered consumers.</span>
                                     <span class="Comment">## readIntoProc: read up to `size` bytes directly into `buf`.</span>
                                     <span class="Comment">##   Returns &gt;0 = bytes read, 0 = EOF, -1 = EAGAIN, &lt; -1 = error.</span>
@@ -153,25 +171,25 @@
   <span class="Identifier">readIntoProc</span><span class="Operator">*</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">;</span> <span class="Identifier">buf</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">;</span> <span class="Identifier">size</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span>
   <span class="Identifier">waitReadableProc</span><span class="Operator">*</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a></pre></dt>
   <dd>
-
+    
     Base stream type with proc-field vtable dispatch.
-
+    
   </dd>
 </div>
 <div id="BufferStream">
   <dt><pre><a href="streams.html#BufferStream"><span class="Identifier">BufferStream</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="ConnectionClosedError">
   <dt><pre><a href="streams.html#ConnectionClosedError"><span class="Identifier">ConnectionClosedError</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <a href="streams.html#AsyncIoError"><span class="Identifier">AsyncIoError</span></a></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="IoError">
@@ -181,25 +199,25 @@
   <b>Deprecated:</b> Use AsyncIoError instead
 </div>
 
-
-
+    
+    
   </dd>
 </div>
 <div id="PrefixedStream">
   <dt><pre><a href="streams.html#PrefixedStream"><span class="Identifier">PrefixedStream</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a>
   <span class="Identifier">inner</span><span class="Operator">*</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="TimeoutError">
   <dt><pre><a href="streams.html#TimeoutError"><span class="Identifier">TimeoutError</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <a href="streams.html#AsyncIoError"><span class="Identifier">AsyncIoError</span></a></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -213,9 +231,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#close%2CAsyncStream"><span class="Identifier">close</span></a><span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
                              <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Close the stream.
-
+    
   </dd>
 </div>
 
@@ -224,9 +242,9 @@
   <div id="newBufferStream">
   <dt><pre><span class="Keyword">proc</span> <a href="#newBufferStream"><span class="Identifier">newBufferStream</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="streams.html#BufferStream"><span class="Identifier">BufferStream</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create an in-memory stream for testing and piping.
-
+    
   </dd>
 </div>
 
@@ -236,9 +254,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#newPrefixedStream%2CAsyncStream%2Cstring"><span class="Identifier">newPrefixedStream</span></a><span class="Other">(</span><span class="Identifier">inner</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">;</span> <span class="Identifier">prefix</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span><span class="Other">:</span> <a href="streams.html#PrefixedStream"><span class="Identifier">PrefixedStream</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Wrap a stream with prefix data that is read first. After the prefix is consumed, reads pass through to the inner stream.
-
+    
   </dd>
 </div>
 
@@ -248,9 +266,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#read%2CAsyncStream%2Cint"><span class="Identifier">read</span></a><span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">;</span> <span class="Identifier">size</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">string</span><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Read up to <tt class="docutils literal"><span class="pre"><span class="Identifier">size</span></span></tt> bytes from the stream. Returns &quot;&quot; on EOF.
-
+    
   </dd>
 </div>
 
@@ -260,9 +278,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#signalEof%2CBufferStream"><span class="Identifier">signalEof</span></a><span class="Other">(</span><span class="Identifier">bs</span><span class="Other">:</span> <a href="streams.html#BufferStream"><span class="Identifier">BufferStream</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
                                    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Signal that no more data will be written. Completes all waiting readers with &quot;&quot;.
-
+    
   </dd>
 </div>
 
@@ -272,9 +290,34 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#write%2CAsyncStream%2Cstring"><span class="Identifier">write</span></a><span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">;</span> <span class="Identifier">data</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Write <tt class="docutils literal"><span class="pre"><span class="Identifier">data</span></span></tt> to the stream.
+    
+  </dd>
+</div>
 
+</div>
+<div id="writeBorrowed-procs-all">
+  <div id="writeBorrowed,AsyncStream,pointer,int">
+  <dt><pre><span class="Keyword">proc</span> <a href="#writeBorrowed%2CAsyncStream%2Cpointer%2Cint"><span class="Identifier">writeBorrowed</span></a><span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">;</span> <span class="Identifier">data</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">;</span> <span class="Identifier">size</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+    
+    Write borrowed bytes. <tt class="docutils literal"><span class="pre"><span class="Identifier">data</span></span></tt> must remain valid until the future completes.
+    
+  </dd>
+</div>
+
+</div>
+<div id="writevBorrowed-procs-all">
+  <div id="writevBorrowed,AsyncStream,pointer,int,pointer,int">
+  <dt><pre><span class="Keyword">proc</span> <a href="#writevBorrowed%2CAsyncStream%2Cpointer%2Cint%2Cpointer%2Cint"><span class="Identifier">writevBorrowed</span></a><span class="Other">(</span><span class="Identifier">s</span><span class="Other">:</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a><span class="Other">;</span> <span class="Identifier">first</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">;</span> <span class="Identifier">firstLen</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span>
+                    <span class="Identifier">second</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">;</span> <span class="Identifier">secondLen</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+    
+    Write two borrowed spans as one logical operation.
+    
   </dd>
 </div>
 
@@ -289,10 +332,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:18 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:23 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

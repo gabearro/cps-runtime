@@ -154,13 +154,17 @@
 <li><a class="reference external"
           data-doc-search-tag="atomic_parker: object AtomicParker" href="cps/private/atomic_parker.html#AtomicParker">atomic_parker: object AtomicParker</a></li>
           </ul></dd>
+<dt><a name="available" href="#available"><span>available:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="buffered: proc available(br: BufferedReader): int" href="cps/io/buffered.html#available%2CBufferedReader">buffered: proc available(br: BufferedReader): int</a></li>
+          </ul></dd>
 <dt><a name="availablePermits" href="#availablePermits"><span>availablePermits:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="sync: proc availablePermits(sem: AsyncSemaphore): int" href="cps/concurrency/sync.html#availablePermits%2CAsyncSemaphore">sync: proc availablePermits(sem: AsyncSemaphore): int</a></li>
           </ul></dd>
 <dt><a name="bindAddr" href="#bindAddr"><span>bindAddr:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
-          data-doc-search-tag="udp: proc bindAddr(sock: UdpSocket; host: string; port: int)" href="cps/io/udp.html#bindAddr%2CUdpSocket%2Cstring%2Cint">udp: proc bindAddr(sock: UdpSocket; host: string; port: int)</a></li>
+          data-doc-search-tag="udp: proc bindAddr(sock: UdpSocket; host: string; port: int; reusePort: bool = false)" href="cps/io/udp.html#bindAddr%2CUdpSocket%2Cstring%2Cint%2Cbool">udp: proc bindAddr(sock: UdpSocket; host: string; port: int; reusePort: bool = false)</a></li>
           </ul></dd>
 <dt><a name="bindClosureReturnRoute" href="#bindClosureReturnRoute"><span>bindClosureReturnRoute:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -202,6 +206,14 @@
 <li><a class="reference external"
           data-doc-search-tag="broadcast: type BroadcastReceiver" href="cps/concurrency/broadcast.html#BroadcastReceiver">broadcast: type BroadcastReceiver</a></li>
           </ul></dd>
+<dt><a name="bufferData" href="#bufferData"><span>bufferData:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="buffered: proc bufferData(br: BufferedReader): ptr UncheckedArray[char]" href="cps/io/buffered.html#bufferData%2CBufferedReader">buffered: proc bufferData(br: BufferedReader): ptr UncheckedArray[char]</a></li>
+          </ul></dd>
+<dt><a name="bufferedChar" href="#bufferedChar"><span>bufferedChar:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="buffered: proc bufferedChar(br: BufferedReader; offset: int): char" href="cps/io/buffered.html#bufferedChar%2CBufferedReader%2Cint">buffered: proc bufferedChar(br: BufferedReader; offset: int): char</a></li>
+          </ul></dd>
 <dt><a name="BufferedReader" href="#BufferedReader"><span>BufferedReader:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="buffered: type BufferedReader" href="cps/io/buffered.html#BufferedReader">buffered: type BufferedReader</a></li>
@@ -213,6 +225,10 @@
 <dt><a name="BufferStream" href="#BufferStream"><span>BufferStream:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="streams: type BufferStream" href="cps/io/streams.html#BufferStream">streams: type BufferStream</a></li>
+          </ul></dd>
+<dt><a name="cachedCompletedVoidFuture" href="#cachedCompletedVoidFuture"><span>cachedCompletedVoidFuture:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="runtime: proc cachedCompletedVoidFuture(): CpsVoidFuture" href="cps/runtime.html#cachedCompletedVoidFuture">runtime: proc cachedCompletedVoidFuture(): CpsVoidFuture</a></li>
           </ul></dd>
 <dt><a name="cancel" href="#cancel"><span>cancel:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -360,6 +376,10 @@
 <li><a class="reference external"
           data-doc-search-tag="streams: object ConnectionClosedError" href="cps/io/streams.html#ConnectionClosedError">streams: object ConnectionClosedError</a></li>
           </ul></dd>
+<dt><a name="consumeBuffered" href="#consumeBuffered"><span>consumeBuffered:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="buffered: proc consumeBuffered(br: BufferedReader; count: int)" href="cps/io/buffered.html#consumeBuffered%2CBufferedReader%2Cint">buffered: proc consumeBuffered(br: BufferedReader; count: int)</a></li>
+          </ul></dd>
 <dt><a name="contains" href="#contains"><span>contains:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="concurrent_table: proc contains[K, V](ct: var ConcurrentTable[K, V]; key: K): bool" href="cps/private/concurrent_table.html#contains%2CConcurrentTable%5BK%2CV%5D%2CK">concurrent_table: proc contains[K, V](ct: var ConcurrentTable[K, V]; key: K): bool</a></li>
@@ -444,6 +464,14 @@
 <li><a class="reference external"
           data-doc-search-tag="runtime: var currentIoShardId" href="cps/runtime.html#currentIoShardId">runtime: var currentIoShardId</a></li>
           </ul></dd>
+<dt><a name="currentReactorCpuId" href="#currentReactorCpuId"><span>currentReactorCpuId:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="runtime: var currentReactorCpuId" href="cps/runtime.html#currentReactorCpuId">runtime: var currentReactorCpuId</a></li>
+          </ul></dd>
+<dt><a name="currentReactorPinned" href="#currentReactorPinned"><span>currentReactorPinned:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="runtime: var currentReactorPinned" href="cps/runtime.html#currentReactorPinned">runtime: var currentReactorPinned</a></li>
+          </ul></dd>
 <dt><a name="currentRuntime" href="#currentRuntime"><span>currentRuntime:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="runtime: proc currentRuntime(): RuntimeHandle" href="cps/runtime.html#currentRuntime">runtime: proc currentRuntime(): RuntimeHandle</a></li>
@@ -471,6 +499,10 @@
 <dt><a name="defaultRuntimeConfig" href="#defaultRuntimeConfig"><span>defaultRuntimeConfig:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="runtime: proc defaultRuntimeConfig(): RuntimeConfig" href="cps/runtime.html#defaultRuntimeConfig">runtime: proc defaultRuntimeConfig(): RuntimeConfig</a></li>
+          </ul></dd>
+<dt><a name="deferCurrentWorker" href="#deferCurrentWorker"><span>deferCurrentWorker:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="runtime: proc deferCurrentWorker(cbArg: sink proc () {.closure.}): bool" href="cps/runtime.html#deferCurrentWorker%2Csinkproc%29">runtime: proc deferCurrentWorker(cbArg: sink proc () {.closure.}): bool</a></li>
           </ul></dd>
 <dt><a name="deinitDnsResolver" href="#deinitDnsResolver"><span>deinitDnsResolver:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -512,6 +544,12 @@
 <li><a class="reference external"
           data-doc-search-tag="eventloop: proc disableCrossThreadWake(loop: EventLoop)" href="cps/eventloop.html#disableCrossThreadWake%2CEventLoop">eventloop: proc disableCrossThreadWake(loop: EventLoop)</a></li>
           </ul></dd>
+<dt><a name="disarm" href="#disarm"><span>disarm:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="eventloop: proc disarm(loop: EventLoop; fd: int)" href="cps/eventloop.html#disarm%2CEventLoop%2Cint">eventloop: proc disarm(loop: EventLoop; fd: int)</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="eventloop: proc disarm(loop: EventLoop; fd: SocketHandle)" href="cps/eventloop.html#disarm%2CEventLoop%2CSocketHandle">eventloop: proc disarm(loop: EventLoop; fd: SocketHandle)</a></li>
+          </ul></dd>
 <dt><a name="discardAll" href="#discardAll"><span>discardAll:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="mpsc_queue: proc discardAll[T](q: var MpscQueue[T])" href="cps/private/mpsc_queue.html#discardAll%2CMpscQueue%5BT%5D">mpsc_queue: proc discardAll[T](q: var MpscQueue[T])</a></li>
@@ -551,6 +589,10 @@
 <dt><a name="enqueue" href="#enqueue"><span>enqueue:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="mpsc_queue: proc enqueue[T](q: var MpscQueue[T]; node: ptr MpscNode[T])" href="cps/private/mpsc_queue.html#enqueue%2CMpscQueue%5BT%5D%2Cptr.MpscNode%5BT%5D">mpsc_queue: proc enqueue[T](q: var MpscQueue[T]; node: ptr MpscNode[T])</a></li>
+          </ul></dd>
+<dt><a name="ensureBuffered" href="#ensureBuffered"><span>ensureBuffered:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="buffered: proc ensureBuffered(br: BufferedReader; size: int): CpsFuture[bool]" href="cps/io/buffered.html#ensureBuffered%2CBufferedReader%2Cint">buffered: proc ensureBuffered(br: BufferedReader; size: int): CpsFuture[bool]</a></li>
           </ul></dd>
 <dt><a name="ensureShared" href="#ensureShared"><span>ensureShared:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -849,8 +891,10 @@
 <dt><a name="initMtRuntime" href="#initMtRuntime"><span>initMtRuntime:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="mtruntime: proc initMtRuntime(numWorkers: int = 0; numBlockingThreads: int = 0;
-              maxSchedulerQueue: int = 65536; maxBlockingQueue: int = 65536): EventLoop" href="cps/mt/mtruntime.html#initMtRuntime%2Cint%2Cint%2Cint%2Cint">mtruntime: proc initMtRuntime(numWorkers: int = 0; numBlockingThreads: int = 0;
-              maxSchedulerQueue: int = 65536; maxBlockingQueue: int = 65536): EventLoop</a></li>
+              maxSchedulerQueue: int = 65536; maxBlockingQueue: int = 65536;
+              pinWorkers: bool = true): EventLoop" href="cps/mt/mtruntime.html#initMtRuntime%2Cint%2Cint%2Cint%2Cint%2Cbool">mtruntime: proc initMtRuntime(numWorkers: int = 0; numBlockingThreads: int = 0;
+              maxSchedulerQueue: int = 65536; maxBlockingQueue: int = 65536;
+              pinWorkers: bool = true): EventLoop</a></li>
           </ul></dd>
 <dt><a name="initSignalHandling" href="#initSignalHandling"><span>initSignalHandling:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -1058,6 +1102,10 @@
 <li><a class="reference external"
           data-doc-search-tag="eventloop: proc markWakeDrained(loop: EventLoop)" href="cps/eventloop.html#markWakeDrained%2CEventLoop">eventloop: proc markWakeDrained(loop: EventLoop)</a></li>
           </ul></dd>
+<dt><a name="MaxUdpSendBatch" href="#MaxUdpSendBatch"><span>MaxUdpSendBatch:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="udp: const MaxUdpSendBatch" href="cps/io/udp.html#MaxUdpSendBatch">udp: const MaxUdpSendBatch</a></li>
+          </ul></dd>
 <dt><a name="migrateTo" href="#migrateTo"><span>migrateTo:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="eventloop: proc migrateTo[T](t: Task[T]; handle: RuntimeHandle)" href="cps/eventloop.html#migrateTo%2CTask%5BT%5D%2CRuntimeHandle">eventloop: proc migrateTo[T](t: Task[T]; handle: RuntimeHandle)</a></li>
@@ -1232,9 +1280,11 @@
 <li><a class="reference external"
           data-doc-search-tag="runtime: proc newMultiThreadRuntime(numWorkers: int = 0; numBlockingThreads: int = 0;
                       maxSchedulerQueue: int = DefaultSchedulerQueueCap;
-                      maxBlockingQueue: int = DefaultBlockingQueueCap): CpsRuntime" href="cps/runtime.html#newMultiThreadRuntime%2Cint%2Cint%2Cint%2Cint">runtime: proc newMultiThreadRuntime(numWorkers: int = 0; numBlockingThreads: int = 0;
+                      maxBlockingQueue: int = DefaultBlockingQueueCap;
+                      pinWorkers: bool = true): CpsRuntime" href="cps/runtime.html#newMultiThreadRuntime%2Cint%2Cint%2Cint%2Cint%2Cbool">runtime: proc newMultiThreadRuntime(numWorkers: int = 0; numBlockingThreads: int = 0;
                       maxSchedulerQueue: int = DefaultSchedulerQueueCap;
-                      maxBlockingQueue: int = DefaultBlockingQueueCap): CpsRuntime</a></li>
+                      maxBlockingQueue: int = DefaultBlockingQueueCap;
+                      pinWorkers: bool = true): CpsRuntime</a></li>
           </ul></dd>
 <dt><a name="newNatManager" href="#newNatManager"><span>newNatManager:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -1262,7 +1312,8 @@
              reactorPollNow: SchedulerReactorPollHook = nil;
              reactorShouldDrain: SchedulerReactorPredicateHook = nil;
              reactorWake: SchedulerReactorHook = nil;
-             reactorTeardown: SchedulerReactorHook = nil): Scheduler" href="cps/mt/scheduler.html#newScheduler%2CCpsRuntime%2Cint%2Cint%2Cpointer%2CSchedulerReactorHook%2CSchedulerReactorHook%2CSchedulerReactorPollHook%2CSchedulerReactorPredicateHook%2CSchedulerReactorHook%2CSchedulerReactorHook">scheduler: proc newScheduler(runtime: CpsRuntime; numWorkers: int = 0;
+             reactorTeardown: SchedulerReactorHook = nil;
+             pinWorkers: bool = true): Scheduler" href="cps/mt/scheduler.html#newScheduler%2CCpsRuntime%2Cint%2Cint%2Cpointer%2CSchedulerReactorHook%2CSchedulerReactorHook%2CSchedulerReactorPollHook%2CSchedulerReactorPredicateHook%2CSchedulerReactorHook%2CSchedulerReactorHook%2Cbool">scheduler: proc newScheduler(runtime: CpsRuntime; numWorkers: int = 0;
              maxGlobalQueue: int = DefaultGlobalQueueCapacity;
              reactorCtx: pointer = nil;
              reactorSetup: SchedulerReactorHook = nil;
@@ -1270,7 +1321,8 @@
              reactorPollNow: SchedulerReactorPollHook = nil;
              reactorShouldDrain: SchedulerReactorPredicateHook = nil;
              reactorWake: SchedulerReactorHook = nil;
-             reactorTeardown: SchedulerReactorHook = nil): Scheduler</a></li>
+             reactorTeardown: SchedulerReactorHook = nil;
+             pinWorkers: bool = true): Scheduler</a></li>
           </ul></dd>
 <dt><a name="newTaskGroup" href="#newTaskGroup"><span>newTaskGroup:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -1696,7 +1748,9 @@
           </ul></dd>
 <dt><a name="runReactorPool" href="#runReactorPool"><span>runReactorPool:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
-          data-doc-search-tag="reactorpool: proc runReactorPool(setup: ReactorSetup; numReactors: int = 0)" href="cps/mt/reactorpool.html#runReactorPool%2CReactorSetup%2Cint">reactorpool: proc runReactorPool(setup: ReactorSetup; numReactors: int = 0)</a></li>
+          data-doc-search-tag="reactorpool: proc runReactorPool(setup: ReactorSetup; numReactors: int = 0;
+               pinReactors: bool = true)" href="cps/mt/reactorpool.html#runReactorPool%2CReactorSetup%2Cint%2Cbool">reactorpool: proc runReactorPool(setup: ReactorSetup; numReactors: int = 0;
+               pinReactors: bool = true)</a></li>
           </ul></dd>
 <dt><a name="RuntimeAffinityError" href="#RuntimeAffinityError"><span>RuntimeAffinityError:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -1760,9 +1814,19 @@
 <li><a class="reference external"
           data-doc-search-tag="scheduler: proc schedulePinned(s: Scheduler; workerId: int; taskArg: sink SchedulerTask): bool" href="cps/mt/scheduler.html#schedulePinned%2CScheduler%2Cint%2CsinkSchedulerTask">scheduler: proc schedulePinned(s: Scheduler; workerId: int; taskArg: sink SchedulerTask): bool</a></li>
           </ul></dd>
+<dt><a name="schedulePinnedCall" href="#schedulePinnedCall"><span>schedulePinnedCall:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="scheduler: proc schedulePinnedCall(s: Scheduler; workerId: int; fn: SchedulerPinnedCall;
+                   ctx: pointer): bool" href="cps/mt/scheduler.html#schedulePinnedCall%2CScheduler%2Cint%2CSchedulerPinnedCall%2Cpointer">scheduler: proc schedulePinnedCall(s: Scheduler; workerId: int; fn: SchedulerPinnedCall;
+                   ctx: pointer): bool</a></li>
+          </ul></dd>
 <dt><a name="Scheduler" href="#Scheduler"><span>Scheduler:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="scheduler: type Scheduler" href="cps/mt/scheduler.html#Scheduler">scheduler: type Scheduler</a></li>
+          </ul></dd>
+<dt><a name="SchedulerPinnedCall" href="#SchedulerPinnedCall"><span>SchedulerPinnedCall:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="scheduler: type SchedulerPinnedCall" href="cps/mt/scheduler.html#SchedulerPinnedCall">scheduler: type SchedulerPinnedCall</a></li>
           </ul></dd>
 <dt><a name="SchedulerReactorHook" href="#SchedulerReactorHook"><span>SchedulerReactorHook:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -1783,6 +1847,10 @@
 <dt><a name="searchHeaderEnd" href="#searchHeaderEnd"><span>searchHeaderEnd:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="buffered: proc searchHeaderEnd(br: BufferedReader): int" href="cps/io/buffered.html#searchHeaderEnd%2CBufferedReader">buffered: proc searchHeaderEnd(br: BufferedReader): int</a></li>
+          </ul></dd>
+<dt><a name="searchHeaderEndOffset" href="#searchHeaderEndOffset"><span>searchHeaderEndOffset:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="buffered: proc searchHeaderEndOffset(br: BufferedReader): int" href="cps/io/buffered.html#searchHeaderEndOffset%2CBufferedReader">buffered: proc searchHeaderEndOffset(br: BufferedReader): int</a></li>
           </ul></dd>
 <dt><a name="seedFromTime" href="#seedFromTime"><span>seedFromTime:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -1990,7 +2058,9 @@
           </ul></dd>
 <dt><a name="startReactorPool" href="#startReactorPool"><span>startReactorPool:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
-          data-doc-search-tag="reactorpool: proc startReactorPool(setup: ReactorSetup; numReactors: int = 0): ReactorPool" href="cps/mt/reactorpool.html#startReactorPool%2CReactorSetup%2Cint">reactorpool: proc startReactorPool(setup: ReactorSetup; numReactors: int = 0): ReactorPool</a></li>
+          data-doc-search-tag="reactorpool: proc startReactorPool(setup: ReactorSetup; numReactors: int = 0;
+                 pinReactors: bool = true): ReactorPool" href="cps/mt/reactorpool.html#startReactorPool%2CReactorSetup%2Cint%2Cbool">reactorpool: proc startReactorPool(setup: ReactorSetup; numReactors: int = 0;
+                 pinReactors: bool = true): ReactorPool</a></li>
           </ul></dd>
 <dt><a name="startRenewal" href="#startRenewal"><span>startRenewal:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -2169,6 +2239,12 @@
           data-doc-search-tag="udp: proc trySendToAddr(sock: UdpSocket; data: string; ip: string; port: int;
               domain: Domain = AF_INET): bool" href="cps/io/udp.html#trySendToAddr%2CUdpSocket%2Cstring%2Cstring%2Cint%2CDomain">udp: proc trySendToAddr(sock: UdpSocket; data: string; ip: string; port: int;
               domain: Domain = AF_INET): bool</a></li>
+          </ul></dd>
+<dt><a name="trySendToAddrBatchBytes" href="#trySendToAddrBatchBytes"><span>trySendToAddrBatchBytes:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="udp: proc trySendToAddrBatchBytes(sock: UdpSocket; datagrams: openArray[seq[byte]];
+                        ip: string; port: int): int" href="cps/io/udp.html#trySendToAddrBatchBytes%2CUdpSocket%2CopenArray%5Bseq%5Bbyte%5D%5D%2Cstring%2Cint">udp: proc trySendToAddrBatchBytes(sock: UdpSocket; datagrams: openArray[seq[byte]];
+                        ip: string; port: int): int</a></li>
           </ul></dd>
 <dt><a name="trySendToAddrBytes" href="#trySendToAddrBytes"><span>trySendToAddrBytes:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -2356,11 +2432,21 @@
           <li><a class="reference external"
           data-doc-search-tag="streams: proc write(s: AsyncStream; data: string): CpsVoidFuture" href="cps/io/streams.html#write%2CAsyncStream%2Cstring">streams: proc write(s: AsyncStream; data: string): CpsVoidFuture</a></li>
           </ul></dd>
+<dt><a name="writeBorrowed" href="#writeBorrowed"><span>writeBorrowed:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="streams: proc writeBorrowed(s: AsyncStream; data: pointer; size: int): CpsVoidFuture" href="cps/io/streams.html#writeBorrowed%2CAsyncStream%2Cpointer%2Cint">streams: proc writeBorrowed(s: AsyncStream; data: pointer; size: int): CpsVoidFuture</a></li>
+          </ul></dd>
 <dt><a name="writeLine" href="#writeLine"><span>writeLine:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="buffered: proc writeLine(bw: BufferedWriter; line: string; delimiter: string = &quot;\r
 &quot;): CpsVoidFuture" href="cps/io/buffered.html#writeLine%2CBufferedWriter%2Cstring%2Cstring">buffered: proc writeLine(bw: BufferedWriter; line: string; delimiter: string = &quot;\r
 &quot;): CpsVoidFuture</a></li>
+          </ul></dd>
+<dt><a name="writevBorrowed" href="#writevBorrowed"><span>writevBorrowed:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="streams: proc writevBorrowed(s: AsyncStream; first: pointer; firstLen: int; second: pointer;
+               secondLen: int): CpsVoidFuture" href="cps/io/streams.html#writevBorrowed%2CAsyncStream%2Cpointer%2Cint%2Cpointer%2Cint">streams: proc writevBorrowed(s: AsyncStream; first: pointer; firstLen: int; second: pointer;
+               secondLen: int): CpsVoidFuture</a></li>
           </ul></dd>
 <dt><a name="XorShift32" href="#XorShift32"><span>XorShift32:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -2370,10 +2456,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:28 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:30 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

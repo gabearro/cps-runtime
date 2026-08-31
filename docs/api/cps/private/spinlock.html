@@ -101,9 +101,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>Lightweight CAS-based spinlock for microsecond-hold critical sections.</p>
 <p>Unlike std/locks.Lock (pthread_mutex), this never makes a syscall, ensuring the reactor thread is never blocked by the OS scheduler. Suitable only for very short critical sections (&lt; 10µs).</p>
 <p>Properties:</p>
@@ -119,9 +119,9 @@
     <div id="SpinLock">
   <dt><pre><a href="spinlock.html#SpinLock"><span class="Identifier">SpinLock</span></a> <span class="Other">=</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -134,9 +134,9 @@
   <div id="acquire,SpinLock">
   <dt><pre><span class="Keyword">proc</span> <a href="#acquire%2CSpinLock"><span class="Identifier">acquire</span></a><span class="Other">(</span><span class="Identifier">sl</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="spinlock.html#SpinLock"><span class="Identifier">SpinLock</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Acquire the spinlock. Spins with PAUSE until available.
-
+    
   </dd>
 </div>
 
@@ -145,9 +145,9 @@
   <div id="initSpinLock,SpinLock">
   <dt><pre><span class="Keyword">proc</span> <a href="#initSpinLock%2CSpinLock"><span class="Identifier">initSpinLock</span></a><span class="Other">(</span><span class="Identifier">sl</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="spinlock.html#SpinLock"><span class="Identifier">SpinLock</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Initialize spin lock.
-
+    
   </dd>
 </div>
 
@@ -156,9 +156,9 @@
   <div id="release,SpinLock">
   <dt><pre><span class="Keyword">proc</span> <a href="#release%2CSpinLock"><span class="Identifier">release</span></a><span class="Other">(</span><span class="Identifier">sl</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="spinlock.html#SpinLock"><span class="Identifier">SpinLock</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Release the spinlock.
-
+    
   </dd>
 </div>
 
@@ -168,9 +168,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#tryAcquire%2CSpinLock"><span class="Identifier">tryAcquire</span></a><span class="Other">(</span><span class="Identifier">sl</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="spinlock.html#SpinLock"><span class="Identifier">SpinLock</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Try to acquire the spinlock without spinning. Returns true if acquired, false if already held.
-
+    
   </dd>
 </div>
 
@@ -185,9 +185,9 @@
   <div id="withSpinLock.t,SpinLock,untyped">
   <dt><pre><span class="Keyword">template</span> <a href="#withSpinLock.t%2CSpinLock%2Cuntyped"><span class="Identifier">withSpinLock</span></a><span class="Other">(</span><span class="Identifier">sl</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="spinlock.html#SpinLock"><span class="Identifier">SpinLock</span></a><span class="Other">;</span> <span class="Identifier">body</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Acquire the spinlock, execute body, then release. Guarantees release even if body raises an exception.
-
+    
   </dd>
 </div>
 
@@ -202,10 +202,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:25 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:28 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

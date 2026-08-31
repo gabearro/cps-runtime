@@ -1,18 +1,24 @@
 nimTitle	buffered	cps/io/buffered.html	module cps/io/buffered		0
 nim	BufferedReader	cps/io/buffered.html#BufferedReader	type BufferedReader		16
 nim	newBufferedReader	cps/io/buffered.html#newBufferedReader,AsyncStream,int	proc newBufferedReader(stream: AsyncStream; bufSize: int = 8192): BufferedReader		24
-nim	atEof	cps/io/buffered.html#atEof,BufferedReader	proc atEof(br: BufferedReader): bool		39
-nim	drainBuffer	cps/io/buffered.html#drainBuffer,BufferedReader	proc drainBuffer(br: BufferedReader): string		60
-nim	fillBuffer	cps/io/buffered.html#fillBuffer,BufferedReader	proc fillBuffer(br: BufferedReader): CpsFuture[bool]		107
-nim	readLine	cps/io/buffered.html#readLine,BufferedReader,string,int	proc readLine(br: BufferedReader; delimiter: string = "\r\n"; maxLen: int = 65536): CpsFuture[\n    string]		189
-nim	searchHeaderEnd	cps/io/buffered.html#searchHeaderEnd,BufferedReader	proc searchHeaderEnd(br: BufferedReader): int		249
-nim	extractHeaderBlock	cps/io/buffered.html#extractHeaderBlock,BufferedReader,int	proc extractHeaderBlock(br: BufferedReader; endIdx: int): string		263
-nim	readUntilHeaderEnd	cps/io/buffered.html#readUntilHeaderEnd,BufferedReader,int	proc readUntilHeaderEnd(br: BufferedReader; maxLen: int = 65536): CpsFuture[string]		278
-nim	readExact	cps/io/buffered.html#readExact,BufferedReader,int	proc readExact(br: BufferedReader; size: int): CpsFuture[string]		332
-nim	read	cps/io/buffered.html#read,BufferedReader,int	proc read(br: BufferedReader; size: int): CpsFuture[string]		356
-nim	BufferedWriter	cps/io/buffered.html#BufferedWriter	type BufferedWriter		386
-nim	newBufferedWriter	cps/io/buffered.html#newBufferedWriter,AsyncStream,int	proc newBufferedWriter(stream: AsyncStream; bufSize: int = 8192): BufferedWriter		391
-nim	flush	cps/io/buffered.html#flush,BufferedWriter	proc flush(bw: BufferedWriter): CpsVoidFuture		399
-nim	write	cps/io/buffered.html#write,BufferedWriter,string	proc write(bw: BufferedWriter; data: string): CpsVoidFuture		407
-nim	writeLine	cps/io/buffered.html#writeLine,BufferedWriter,string,string	proc writeLine(bw: BufferedWriter; line: string; delimiter: string = "\r\n"): CpsVoidFuture		414
-nim	close	cps/io/buffered.html#close,BufferedWriter	proc close(bw: BufferedWriter): CpsVoidFuture		421
+nim	available	cps/io/buffered.html#available,BufferedReader	proc available(br: BufferedReader): int		36
+nim	bufferData	cps/io/buffered.html#bufferData,BufferedReader	proc bufferData(br: BufferedReader): ptr UncheckedArray[char]		40
+nim	bufferedChar	cps/io/buffered.html#bufferedChar,BufferedReader,int	proc bufferedChar(br: BufferedReader; offset: int): char		49
+nim	consumeBuffered	cps/io/buffered.html#consumeBuffered,BufferedReader,int	proc consumeBuffered(br: BufferedReader; count: int)		53
+nim	atEof	cps/io/buffered.html#atEof,BufferedReader	proc atEof(br: BufferedReader): bool		61
+nim	drainBuffer	cps/io/buffered.html#drainBuffer,BufferedReader	proc drainBuffer(br: BufferedReader): string		82
+nim	fillBuffer	cps/io/buffered.html#fillBuffer,BufferedReader	proc fillBuffer(br: BufferedReader): CpsFuture[bool]		129
+nim	readLine	cps/io/buffered.html#readLine,BufferedReader,string,int	proc readLine(br: BufferedReader; delimiter: string = "\r\n"; maxLen: int = 65536): CpsFuture[\n    string]		211
+nim	searchHeaderEnd	cps/io/buffered.html#searchHeaderEnd,BufferedReader	proc searchHeaderEnd(br: BufferedReader): int		271
+nim	searchHeaderEndOffset	cps/io/buffered.html#searchHeaderEndOffset,BufferedReader	proc searchHeaderEndOffset(br: BufferedReader): int		285
+nim	extractHeaderBlock	cps/io/buffered.html#extractHeaderBlock,BufferedReader,int	proc extractHeaderBlock(br: BufferedReader; endIdx: int): string		297
+nim	readUntilHeaderEnd	cps/io/buffered.html#readUntilHeaderEnd,BufferedReader,int	proc readUntilHeaderEnd(br: BufferedReader; maxLen: int = 65536): CpsFuture[string]		312
+nim	readExact	cps/io/buffered.html#readExact,BufferedReader,int	proc readExact(br: BufferedReader; size: int): CpsFuture[string]		366
+nim	ensureBuffered	cps/io/buffered.html#ensureBuffered,BufferedReader,int	proc ensureBuffered(br: BufferedReader; size: int): CpsFuture[bool]		390
+nim	read	cps/io/buffered.html#read,BufferedReader,int	proc read(br: BufferedReader; size: int): CpsFuture[string]		417
+nim	BufferedWriter	cps/io/buffered.html#BufferedWriter	type BufferedWriter		447
+nim	newBufferedWriter	cps/io/buffered.html#newBufferedWriter,AsyncStream,int	proc newBufferedWriter(stream: AsyncStream; bufSize: int = 8192): BufferedWriter		452
+nim	flush	cps/io/buffered.html#flush,BufferedWriter	proc flush(bw: BufferedWriter): CpsVoidFuture		460
+nim	write	cps/io/buffered.html#write,BufferedWriter,string	proc write(bw: BufferedWriter; data: string): CpsVoidFuture		468
+nim	writeLine	cps/io/buffered.html#writeLine,BufferedWriter,string,string	proc writeLine(bw: BufferedWriter; line: string; delimiter: string = "\r\n"): CpsVoidFuture		475
+nim	close	cps/io/buffered.html#close,BufferedWriter	proc close(bw: BufferedWriter): CpsVoidFuture		482

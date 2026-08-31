@@ -105,9 +105,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>CPS I/O Unix Domain Sockets</p>
 <p>Provides Unix domain socket client (UnixStream) and server (UnixListener) for local IPC, integrated with the CPS event loop.</p>
 </p>
@@ -126,18 +126,18 @@
   <span class="Identifier">path</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">string</span>
   <span class="Identifier">closed</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="UnixStream">
   <dt><pre><a href="unix.html#UnixStream"><span class="Identifier">UnixStream</span></a> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <a href="streams.html#AsyncStream"><span class="Identifier">AsyncStream</span></a>
   <span class="Identifier">fd</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -152,9 +152,9 @@
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">OSError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Accept a new connection asynchronously. Returns a UnixStream.
-
+    
   </dd>
 </div>
 
@@ -163,9 +163,9 @@
   <div id="close,UnixListener">
   <dt><pre><span class="Keyword">proc</span> <a href="#close%2CUnixListener"><span class="Identifier">close</span></a><span class="Other">(</span><span class="Identifier">listener</span><span class="Other">:</span> <a href="unix.html#UnixListener"><span class="Identifier">UnixListener</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Close the listening socket and unlink the socket file.
-
+    
   </dd>
 </div>
 
@@ -175,9 +175,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#newUnixStream%2CSocketHandle"><span class="Identifier">newUnixStream</span></a><span class="Other">(</span><span class="Identifier">fd</span><span class="Other">:</span> <span class="Identifier">SocketHandle</span><span class="Other">)</span><span class="Other">:</span> <a href="unix.html#UnixStream"><span class="Identifier">UnixStream</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Wrap a connected, non-blocking Unix socket fd into a UnixStream.
-
+    
   </dd>
 </div>
 
@@ -188,9 +188,9 @@
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">OSError</span><span class="Other">,</span> <span class="Identifier">AsyncIoError</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Connect to a Unix domain socket at <tt class="docutils literal"><span class="pre"><span class="Identifier">path</span></span></tt> asynchronously. Returns a UnixStream.
-
+    
   </dd>
 </div>
 
@@ -200,9 +200,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#unixListen%2Cstring%2Cint"><span class="Identifier">unixListen</span></a><span class="Other">(</span><span class="Identifier">path</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">backlog</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">128</span><span class="Other">)</span><span class="Other">:</span> <a href="unix.html#UnixListener"><span class="Identifier">UnixListener</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">AsyncIoError</span><span class="Other">,</span> <span class="Identifier">OSError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ReadIOEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a Unix domain socket listener. Binds to the given path and starts listening. This is a synchronous operation -- the socket is ready for accept() calls. If the socket file already exists it will be unlinked first.
-
+    
   </dd>
 </div>
 
@@ -212,9 +212,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#unixSocketIsReachable%2Cstring"><span class="Identifier">unixSocketIsReachable</span></a><span class="Other">(</span><span class="Identifier">path</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return true only when a process is actively accepting connections at <tt class="docutils literal"><span class="pre"><span class="Identifier">path</span></span></tt>. A Unix socket directory entry can outlive its owner, so checking the filesystem alone is not enough for daemon discovery.
-
+    
   </dd>
 </div>
 
@@ -229,10 +229,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:21 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:24 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

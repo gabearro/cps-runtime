@@ -72,9 +72,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>CPS I/O Timeouts</p>
 <p>Provides a withTimeout combinator that races any future against a timer. The first to complete wins; the loser's callback becomes a no-op. Uses compareExchange on an atomic flag for MT-safe once semantics. Closure factories avoid cyclic references (ORC issue).</p>
 </p>
@@ -93,17 +93,17 @@
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">IOSelectorsException</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">,</span> <span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Race a void future against a timer. Completes if the future finishes within <tt class="docutils literal"><span class="pre"><span class="Identifier">ms</span></span></tt> milliseconds, or fails with TimeoutError. On timeout, the inner future is cancelled.
-
+    
   </dd>
 </div>
 <div id="withTimeout,CpsFuture[T],int">
   <dt><pre><span class="Keyword">proc</span> <a href="#withTimeout%2CCpsFuture%5BT%5D%2Cint"><span class="Identifier">withTimeout</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">ms</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Race a future against a timer. Returns the future's value if it completes within <tt class="docutils literal"><span class="pre"><span class="Identifier">ms</span></span></tt> milliseconds, or fails with TimeoutError. On timeout, the inner future is cancelled.
-
+    
   </dd>
 </div>
 
@@ -118,10 +118,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:20 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:24 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

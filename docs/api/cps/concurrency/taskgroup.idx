@@ -8,8 +8,8 @@ nim	newTaskGroup	cps/concurrency/taskgroup.html#newTaskGroup,ErrorPolicy	proc ne
 nim	cancelAll	cps/concurrency/taskgroup.html#cancelAll,TaskGroup	proc cancelAll(group: TaskGroup)		62
 nim	len	cps/concurrency/taskgroup.html#len,TaskGroup	proc len(group: TaskGroup): int		95
 nim	activeCount	cps/concurrency/taskgroup.html#activeCount,TaskGroup	proc activeCount(group: TaskGroup): int		99
-nim	spawn	cps/concurrency/taskgroup.html#spawn,TaskGroup,CpsVoidFuture,string	proc spawn(group: TaskGroup; fut: CpsVoidFuture; name: string = "")		179
-nim	spawn	cps/concurrency/taskgroup.html#spawn,TaskGroup,CpsFuture[T],string	proc spawn[T](group: TaskGroup; fut: CpsFuture[T]; name: string = ""): Task[T]		186
-nim	wait	cps/concurrency/taskgroup.html#wait,TaskGroup	proc wait(group: TaskGroup): CpsVoidFuture		194
-nim	waitAll	cps/concurrency/taskgroup.html#waitAll,TaskGroup	proc waitAll(group: TaskGroup): CpsFuture[seq[ref CatchableError]]		213
-nimgrp	spawn	cps/concurrency/taskgroup.html#spawn-procs-all	proc		179
+nim	spawn	cps/concurrency/taskgroup.html#spawn,TaskGroup,CpsVoidFuture,string	proc spawn(group: TaskGroup; fut: CpsVoidFuture; name: string = "")		198
+nim	spawn	cps/concurrency/taskgroup.html#spawn,TaskGroup,CpsFuture[T],string	proc spawn[T](group: TaskGroup; fut: CpsFuture[T]; name: string = ""): Task[T]		208
+nim	wait	cps/concurrency/taskgroup.html#wait,TaskGroup	proc wait(group: TaskGroup): CpsVoidFuture		219
+nim	waitAll	cps/concurrency/taskgroup.html#waitAll,TaskGroup	proc waitAll(group: TaskGroup): CpsFuture[seq[ref CatchableError]]		238
+nimgrp	spawn	cps/concurrency/taskgroup.html#spawn-procs-all	proc		198

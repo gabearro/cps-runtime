@@ -129,9 +129,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>CPS Broadcast and Watch Channels</p>
 <p>Broadcast channels provide one-to-many message distribution: every subscriber receives a copy of each sent message. Each receiver has its own per-receiver ring buffer so slow consumers don't block the sender or other receivers. When a receiver's buffer overflows, the oldest messages are dropped (lagging receiver).</p>
 <p>Watch channels hold a single &quot;current value&quot; that receivers can read at any time without blocking (borrow). Receivers can also wait for the value to change (recv). Every receiver sees the latest value regardless of how many updates they missed.</p>
@@ -150,49 +150,49 @@
     <div id="BroadcastChannel">
   <dt><pre><a href="broadcast.html#BroadcastChannel"><span class="Identifier">BroadcastChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-
+    
     A broadcast channel. Messages sent are delivered to all subscribers.
-
+    
   </dd>
 </div>
 <div id="BroadcastClosed">
   <dt><pre><a href="broadcast.html#BroadcastClosed"><span class="Identifier">BroadcastClosed</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <span class="Identifier">CatchableError</span></pre></dt>
   <dd>
-
+    
     Raised when operating on a closed broadcast or watch channel.
-
+    
   </dd>
 </div>
 <div id="BroadcastReceiver">
   <dt><pre><a href="broadcast.html#BroadcastReceiver"><span class="Identifier">BroadcastReceiver</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-
+    
     Per-subscriber receiver with its own ring buffer.
-
+    
   </dd>
 </div>
 <div id="ReceiverLagged">
   <dt><pre><a href="broadcast.html#ReceiverLagged"><span class="Identifier">ReceiverLagged</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <span class="Identifier">CatchableError</span></pre></dt>
   <dd>
-
+    
     Raised when a receiver missed messages due to buffer overflow.
-
+    
   </dd>
 </div>
 <div id="WatchChannel">
   <dt><pre><a href="broadcast.html#WatchChannel"><span class="Identifier">WatchChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-
+    
     A watch channel holding a single current value.
-
+    
   </dd>
 </div>
 <div id="WatchReceiver">
   <dt><pre><a href="broadcast.html#WatchReceiver"><span class="Identifier">WatchReceiver</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span> <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-
+    
     A watch channel receiver. Tracks the last version seen.
-
+    
   </dd>
 </div>
 
@@ -205,9 +205,9 @@
   <div id="borrow,WatchReceiver[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#borrow%2CWatchReceiver%5BT%5D"><span class="Identifier">borrow</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">rx</span><span class="Other">:</span> <a href="broadcast.html#WatchReceiver"><span class="Identifier">WatchReceiver</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">T</span></pre></dt>
   <dd>
-
+    
     Read the current value without blocking. Does not update the receiver's version tracking, so hasChanged() is not affected.
-
+    
   </dd>
 </div>
 
@@ -216,17 +216,17 @@
   <div id="close,BroadcastChannel[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#close%2CBroadcastChannel%5BT%5D"><span class="Identifier">close</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="broadcast.html#BroadcastChannel"><span class="Identifier">BroadcastChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Close the broadcast channel. All receivers are closed and their pending waiters are failed with BroadcastClosed.
-
+    
   </dd>
 </div>
 <div id="close,WatchChannel[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#close%2CWatchChannel%5BT%5D"><span class="Identifier">close</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="broadcast.html#WatchChannel"><span class="Identifier">WatchChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Close the watch channel. All waiting receivers are woken with a BroadcastClosed error.
-
+    
   </dd>
 </div>
 
@@ -235,9 +235,9 @@
   <div id="hasChanged,WatchReceiver[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#hasChanged%2CWatchReceiver%5BT%5D"><span class="Identifier">hasChanged</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">rx</span><span class="Other">:</span> <a href="broadcast.html#WatchReceiver"><span class="Identifier">WatchReceiver</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-
+    
     Check if the watch channel's value has changed since the last recv() call on this receiver.
-
+    
   </dd>
 </div>
 
@@ -246,9 +246,9 @@
   <div id="len,BroadcastReceiver[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#len%2CBroadcastReceiver%5BT%5D"><span class="Identifier">len</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">rx</span><span class="Other">:</span> <a href="broadcast.html#BroadcastReceiver"><span class="Identifier">BroadcastReceiver</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int</span></pre></dt>
   <dd>
-
+    
     Number of items currently buffered in this receiver.
-
+    
   </dd>
 </div>
 
@@ -257,9 +257,9 @@
   <div id="newBroadcast,int">
   <dt><pre><span class="Keyword">proc</span> <a href="#newBroadcast%2Cint"><span class="Identifier">newBroadcast</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">capacity</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">16</span><span class="Other">)</span><span class="Other">:</span> <a href="broadcast.html#BroadcastChannel"><span class="Identifier">BroadcastChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Create a new broadcast channel. Each subscriber will have a ring buffer of the given capacity. When a receiver's buffer is full, the oldest message is dropped.
-
+    
   </dd>
 </div>
 
@@ -268,9 +268,9 @@
   <div id="newWatch,T">
   <dt><pre><span class="Keyword">proc</span> <a href="#newWatch%2CT"><span class="Identifier">newWatch</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">initial</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <a href="broadcast.html#WatchChannel"><span class="Identifier">WatchChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Create a new watch channel with an initial value.
-
+    
   </dd>
 </div>
 
@@ -279,17 +279,17 @@
   <div id="recv,BroadcastReceiver[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#recv%2CBroadcastReceiver%5BT%5D"><span class="Identifier">recv</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">rx</span><span class="Other">:</span> <a href="broadcast.html#BroadcastReceiver"><span class="Identifier">BroadcastReceiver</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Receive the next message from the broadcast channel. If the receiver's buffer is empty, the returned future suspends until a message arrives. If the receiver is closed, fails with BroadcastClosed.
-
+    
   </dd>
 </div>
 <div id="recv,WatchReceiver[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#recv%2CWatchReceiver%5BT%5D"><span class="Identifier">recv</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">rx</span><span class="Other">:</span> <a href="broadcast.html#WatchReceiver"><span class="Identifier">WatchReceiver</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Wait until the watch channel's value changes, then return the new value. If the value has already changed since the last recv, returns immediately with the current value.
-
+    
   </dd>
 </div>
 
@@ -298,17 +298,17 @@
   <div id="send,BroadcastChannel[T],T">
   <dt><pre><span class="Keyword">proc</span> <a href="#send%2CBroadcastChannel%5BT%5D%2CT"><span class="Identifier">send</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="broadcast.html#BroadcastChannel"><span class="Identifier">BroadcastChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">value</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Send a value to all receivers. This is non-blocking for the sender. Each receiver either gets direct delivery (if waiting), gets the value buffered, or drops its oldest message if its buffer is full.
-
+    
   </dd>
 </div>
 <div id="send,WatchChannel[T],T">
   <dt><pre><span class="Keyword">proc</span> <a href="#send%2CWatchChannel%5BT%5D%2CT"><span class="Identifier">send</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="broadcast.html#WatchChannel"><span class="Identifier">WatchChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">value</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Update the watch channel's value and wake all waiting receivers.
-
+    
   </dd>
 </div>
 
@@ -317,17 +317,17 @@
   <div id="subscribe,BroadcastChannel[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#subscribe%2CBroadcastChannel%5BT%5D"><span class="Identifier">subscribe</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="broadcast.html#BroadcastChannel"><span class="Identifier">BroadcastChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="broadcast.html#BroadcastReceiver"><span class="Identifier">BroadcastReceiver</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Create a new receiver for this broadcast channel. The receiver will receive all future messages (not past ones).
-
+    
   </dd>
 </div>
 <div id="subscribe,WatchChannel[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#subscribe%2CWatchChannel%5BT%5D"><span class="Identifier">subscribe</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="broadcast.html#WatchChannel"><span class="Identifier">WatchChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="broadcast.html#WatchReceiver"><span class="Identifier">WatchReceiver</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Create a new receiver for this watch channel. The receiver starts at version 0 so the first borrow/recv sees the initial value. Use borrow() to read immediately.
-
+    
   </dd>
 </div>
 
@@ -336,9 +336,9 @@
   <div id="tryRecv,BroadcastReceiver[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#tryRecv%2CBroadcastReceiver%5BT%5D"><span class="Identifier">tryRecv</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">rx</span><span class="Other">:</span> <a href="broadcast.html#BroadcastReceiver"><span class="Identifier">BroadcastReceiver</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">Option</span><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Try to receive without blocking. Returns none if no data is buffered.
-
+    
   </dd>
 </div>
 
@@ -347,9 +347,9 @@
   <div id="unsubscribe,BroadcastChannel[T],BroadcastReceiver[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#unsubscribe%2CBroadcastChannel%5BT%5D%2CBroadcastReceiver%5BT%5D"><span class="Identifier">unsubscribe</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">ch</span><span class="Other">:</span> <a href="broadcast.html#BroadcastChannel"><span class="Identifier">BroadcastChannel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">rx</span><span class="Other">:</span> <a href="broadcast.html#BroadcastReceiver"><span class="Identifier">BroadcastReceiver</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Remove a receiver from the broadcast channel.
-
+    
   </dd>
 </div>
 
@@ -364,10 +364,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:12 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:18 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

@@ -19,6 +19,12 @@ type
     closed*: bool
     readProc*: proc(s: AsyncStream, size: int): CpsFuture[string]
     writeProc*: proc(s: AsyncStream, data: string): CpsVoidFuture
+    ## Optional borrowed write. The caller retains `data` until completion.
+    ## Transports use it to avoid refcounting/copying connection-owned buffers.
+    writeBorrowedProc*: proc(s: AsyncStream, data: pointer,
+                             size: int): CpsVoidFuture
+    writevBorrowedProc*: proc(s: AsyncStream, first: pointer, firstLen: int,
+                              second: pointer, secondLen: int): CpsVoidFuture
     closeProc*: proc(s: AsyncStream)
     ## Optional zero-copy read API for buffered consumers.
     ## readIntoProc: read up to `size` bytes directly into `buf`.
@@ -51,6 +57,33 @@ proc write*(s: AsyncStream, data: string): CpsVoidFuture =
   if s.writeProc == nil:
     return failedVoidFuture(newException(AsyncIoError, "Stream does not support writing"))
   s.writeProc(s, data)
+
+proc writeBorrowed*(s: AsyncStream, data: pointer,
+                    size: int): CpsVoidFuture =
+  ## Write borrowed bytes. `data` must remain valid until the future completes.
+  if s == nil:
+    return failedVoidFuture(newException(AsyncIoError, "Cannot write to nil stream"))
+  if s.closed:
+    return failedVoidFuture(newException(AsyncIoError, "Cannot write to closed stream"))
+  if size <= 0:
+    return cachedCompletedVoidFuture()
+  if s.writeBorrowedProc != nil:
+    return s.writeBorrowedProc(s, data, size)
+  var owned = newString(size)
+  copyMem(addr owned[0], data, size)
+  s.write(owned)
+
+proc writevBorrowed*(s: AsyncStream, first: pointer, firstLen: int,
+                     second: pointer, secondLen: int): CpsVoidFuture =
+  ## Write two borrowed spans as one logical operation.
+  if secondLen <= 0: return s.writeBorrowed(first, firstLen)
+  if firstLen <= 0: return s.writeBorrowed(second, secondLen)
+  if s != nil and s.writevBorrowedProc != nil:
+    return s.writevBorrowedProc(s, first, firstLen, second, secondLen)
+  var owned = newString(firstLen + secondLen)
+  copyMem(addr owned[0], first, firstLen)
+  copyMem(addr owned[firstLen], second, secondLen)
+  s.write(owned)
 
 proc close*(s: AsyncStream) =
   ## Close the stream.

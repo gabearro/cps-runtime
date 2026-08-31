@@ -93,9 +93,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>Atomic parking primitive for lock-free worker queues.</p>
 <p>The sequence counter closes the enqueue-before-sleep race without a mutex: a waiter snapshots the counter, publishes that it is parked, rechecks its queue, then sleeps only while the counter still matches. Notifications advance the counter before waking the kernel waiter, so an early wake is observed instead of lost.</p>
 </p>
@@ -105,9 +105,9 @@
     <div id="AtomicParker">
   <dt><pre><a href="atomic_parker.html#AtomicParker"><span class="Identifier">AtomicParker</span></a> <span class="Other">=</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -121,9 +121,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#initAtomicParker%2CAtomicParker"><span class="Identifier">initAtomicParker</span></a><span class="Other">(</span><span class="Identifier">parker</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="atomic_parker.html#AtomicParker"><span class="Identifier">AtomicParker</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Initialize a parker before it becomes visible to another thread.
-
+    
   </dd>
 </div>
 
@@ -132,9 +132,9 @@
   <div id="notifyAll,AtomicParker">
   <dt><pre><span class="Keyword">proc</span> <a href="#notifyAll%2CAtomicParker"><span class="Identifier">notifyAll</span></a><span class="Other">(</span><span class="Identifier">parker</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="atomic_parker.html#AtomicParker"><span class="Identifier">AtomicParker</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Publish a wake and release every kernel waiter on this address.
-
+    
   </dd>
 </div>
 
@@ -143,9 +143,9 @@
   <div id="notifyOne,AtomicParker">
   <dt><pre><span class="Keyword">proc</span> <a href="#notifyOne%2CAtomicParker"><span class="Identifier">notifyOne</span></a><span class="Other">(</span><span class="Identifier">parker</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="atomic_parker.html#AtomicParker"><span class="Identifier">AtomicParker</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Publish a wake and release at most one kernel waiter.
-
+    
   </dd>
 </div>
 
@@ -155,9 +155,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#prepareWait%2CAtomicParker"><span class="Identifier">prepareWait</span></a><span class="Other">(</span><span class="Identifier">parker</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="atomic_parker.html#AtomicParker"><span class="Identifier">AtomicParker</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int32</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Snapshot the wake epoch before publishing the parked state.
-
+    
   </dd>
 </div>
 
@@ -167,9 +167,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#wait%2CAtomicParker%2Cint32"><span class="Identifier">wait</span></a><span class="Other">(</span><span class="Identifier">parker</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="atomic_parker.html#AtomicParker"><span class="Identifier">AtomicParker</span></a><span class="Other">;</span> <span class="Identifier">observedEpoch</span><span class="Other">:</span> <span class="Identifier">int32</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Park only if no notification arrived since <tt class="docutils literal"><span class="pre">prepareWait</span></tt>.
-
+    
   </dd>
 </div>
 
@@ -184,10 +184,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:24 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:27 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

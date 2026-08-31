@@ -32,11 +32,11 @@ nim	soapGetExternalIPAddress	cps/io/nat.html#soapGetExternalIPAddress,string	pro
 nim	withTimeoutBool	cps/io/nat.html#withTimeoutBool,CpsFuture[T],int	proc withTimeoutBool[T](fut: CpsFuture[T]; timeoutMs: int): CpsFuture[bool]		641
 nim	withTimeoutBool	cps/io/nat.html#withTimeoutBool,CpsVoidFuture,int	proc withTimeoutBool(fut: CpsVoidFuture; timeoutMs: int): CpsFuture[bool]		669
 nim	newNatManager	cps/io/nat.html#newNatManager,string,int	proc newNatManager(gatewayIp: string = ""; maxDepth: int = 0): NatManager		933
-nim	discover	cps/io/nat.html#discover,NatManager	proc discover(mgr: NatManager): CpsVoidFuture		2420
-nim	addMapping	cps/io/nat.html#addMapping,NatManager,MappingProto,uint16,uint16,uint32	proc addMapping(mgr: NatManager; proto: MappingProto; internalPort: uint16;\n           externalPort: uint16 = 0; lifetime: uint32 = 7200): CpsFuture[\n    NatMapping]		2420
-nim	deleteMapping	cps/io/nat.html#deleteMapping,NatManager,NatMapping	proc deleteMapping(mgr: NatManager; mapping: NatMapping): CpsVoidFuture		2420
-nim	deleteAllMappings	cps/io/nat.html#deleteAllMappings,NatManager	proc deleteAllMappings(mgr: NatManager): CpsVoidFuture		2420
-nim	startRenewal	cps/io/nat.html#startRenewal,NatManager	proc startRenewal(mgr: NatManager): CpsVoidFuture		2420
-nim	shutdown	cps/io/nat.html#shutdown,NatManager	proc shutdown(mgr: NatManager): CpsVoidFuture		2420
+nim	discover	cps/io/nat.html#discover,NatManager	proc discover(mgr: NatManager): CpsVoidFuture		2425
+nim	addMapping	cps/io/nat.html#addMapping,NatManager,MappingProto,uint16,uint16,uint32	proc addMapping(mgr: NatManager; proto: MappingProto; internalPort: uint16;\n           externalPort: uint16 = 0; lifetime: uint32 = 7200): CpsFuture[\n    NatMapping]		2425
+nim	deleteMapping	cps/io/nat.html#deleteMapping,NatManager,NatMapping	proc deleteMapping(mgr: NatManager; mapping: NatMapping): CpsVoidFuture		2425
+nim	deleteAllMappings	cps/io/nat.html#deleteAllMappings,NatManager	proc deleteAllMappings(mgr: NatManager): CpsVoidFuture		2425
+nim	startRenewal	cps/io/nat.html#startRenewal,NatManager	proc startRenewal(mgr: NatManager): CpsVoidFuture		2425
+nim	shutdown	cps/io/nat.html#shutdown,NatManager	proc shutdown(mgr: NatManager): CpsVoidFuture		2425
 nim	getExternalIp	cps/io/nat.html#getExternalIp,NatManager	proc getExternalIp(mgr: NatManager): string		1366
 nimgrp	withtimeoutbool	cps/io/nat.html#withTimeoutBool-procs-all	proc		641

@@ -105,6 +105,7 @@
 <li><a class="reference" href="#RuntimeConfig" title="RuntimeConfig = object
   flavor*: RuntimeFlavor
   numWorkers*: int
+  pinWorkers*: bool
   numBlockingThreads*: int
   maxSchedulerQueue*: int
   maxBlockingQueue*: int">RuntimeConfig</a></li>
@@ -138,6 +139,8 @@
       <li><a class="reference" href="#currentEventLoopPtr" title="currentEventLoopPtr {.threadvar.}: pointer">currentEventLoopPtr</a></li>
 <li><a class="reference" href="#currentEventLoopRuntimePtr" title="currentEventLoopRuntimePtr {.threadvar.}: pointer">currentEventLoopRuntimePtr</a></li>
 <li><a class="reference" href="#currentIoShardId" title="currentIoShardId {.threadvar.}: int">currentIoShardId</a></li>
+<li><a class="reference" href="#currentReactorCpuId" title="currentReactorCpuId {.threadvar.}: int">currentReactorCpuId</a></li>
+<li><a class="reference" href="#currentReactorPinned" title="currentReactorPinned {.threadvar.}: bool">currentReactorPinned</a></li>
 <li><a class="reference" href="#currentSchedulerPtr" title="currentSchedulerPtr {.threadvar.}: pointer">currentSchedulerPtr</a></li>
 <li><a class="reference" href="#currentWorkerId" title="currentWorkerId {.threadvar.}: int">currentWorkerId</a></li>
 <li><a class="reference" href="#isReactorThread" title="isReactorThread {.threadvar.}: bool">isReactorThread</a></li>
@@ -180,6 +183,10 @@
 </ul>
 <ul class="simple nested-toc-section">bounce
   <li><a class="reference" href="#bounce%2CTrampoline" title="bounce(t: var Trampoline): bool">bounce(t: var Trampoline): bool</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">cachedCompletedVoidFuture
+  <li><a class="reference" href="#cachedCompletedVoidFuture" title="cachedCompletedVoidFuture(): CpsVoidFuture">cachedCompletedVoidFuture(): CpsVoidFuture</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">cancel
@@ -226,6 +233,10 @@
 </ul>
 <ul class="simple nested-toc-section">defaultRuntimeConfig
   <li><a class="reference" href="#defaultRuntimeConfig" title="defaultRuntimeConfig(): RuntimeConfig">defaultRuntimeConfig(): RuntimeConfig</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">deferCurrentWorker
+  <li><a class="reference" href="#deferCurrentWorker%2Csinkproc%29" title="deferCurrentWorker(cbArg: sink proc () {.closure.}): bool">deferCurrentWorker(cbArg: sink proc () {.closure.}): bool</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">ensureShared
@@ -379,11 +390,13 @@
 
 </ul>
 <ul class="simple nested-toc-section">newMultiThreadRuntime
-  <li><a class="reference" href="#newMultiThreadRuntime%2Cint%2Cint%2Cint%2Cint" title="newMultiThreadRuntime(numWorkers: int = 0; numBlockingThreads: int = 0;
+  <li><a class="reference" href="#newMultiThreadRuntime%2Cint%2Cint%2Cint%2Cint%2Cbool" title="newMultiThreadRuntime(numWorkers: int = 0; numBlockingThreads: int = 0;
                       maxSchedulerQueue: int = DefaultSchedulerQueueCap;
-                      maxBlockingQueue: int = DefaultBlockingQueueCap): CpsRuntime">newMultiThreadRuntime(numWorkers: int = 0; numBlockingThreads: int = 0;
+                      maxBlockingQueue: int = DefaultBlockingQueueCap;
+                      pinWorkers: bool = true): CpsRuntime">newMultiThreadRuntime(numWorkers: int = 0; numBlockingThreads: int = 0;
                       maxSchedulerQueue: int = DefaultSchedulerQueueCap;
-                      maxBlockingQueue: int = DefaultBlockingQueueCap): CpsRuntime</a></li>
+                      maxBlockingQueue: int = DefaultBlockingQueueCap;
+                      pinWorkers: bool = true): CpsRuntime</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">newRuntime
@@ -526,9 +539,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>CPS Runtime Core</p>
 <p>Provides the fundamental types and execution machinery for continuation-passing style async programming in Nim.</p>
 <p>The core idea: every suspendable procedure is transformed into a chain of continuation objects. Each continuation captures:</p>
@@ -552,17 +565,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <span class="Identifier">value</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">Atomic</span><span class="Other">[</span><span class="Identifier">int</span><span class="Other">]</span>
   <span class="Identifier">failed</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">Atomic</span><span class="Other">[</span><span class="Identifier">bool</span><span class="Other">]</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="CancellationError">
   <dt><pre><a href="runtime.html#CancellationError"><span class="Identifier">CancellationError</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <span class="Identifier">CatchableError</span></pre></dt>
   <dd>
-
+    
     Raised when a future or task is cancelled.
-
+    
   </dd>
 </div>
 <div id="Continuation">
@@ -571,9 +584,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <span class="Identifier">state</span><span class="Operator">*</span><span class="Other">:</span> <a href="runtime.html#ContinuationState"><span class="Identifier">ContinuationState</span></a>
   <span class="Identifier">runtimeOwner</span><span class="Operator">*</span> {.<span class="Identifier">cursor</span>.}<span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a></pre></dt>
   <dd>
-
+    
     Base type for all CPS continuations. Concrete continuations inherit from this and add their local state.
-
+    
   </dd>
 </div>
 <div id="ContinuationState">
@@ -583,26 +596,26 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <span class="Identifier">csFinished</span><span class="Other">,</span>               <span class="Comment">## Completed successfully</span>
   <span class="Identifier">csError</span>                    <span class="Comment">## Completed with an error</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="CpsContractError">
   <dt><pre><a href="runtime.html#CpsContractError"><span class="Identifier">CpsContractError</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <span class="Identifier">CatchableError</span></pre></dt>
   <dd>
-
+    
     Raised when CPS-generated code violates required control-flow contracts.
-
+    
   </dd>
 </div>
 <div id="CpsFuture">
   <dt><pre><a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span> {.<span class="Identifier">acyclic</span>.} <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span>
   <span class="Identifier">ownerRuntime</span><span class="Operator">*</span> {.<span class="Identifier">cursor</span>.}<span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a></pre></dt>
   <dd>
-
+    
     A future value produced by a CPS computation. Uses atomic state + lock-free callback stack.
-
+    
   </dd>
 </div>
 <div id="CpsRuntime">
@@ -630,57 +643,58 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <span class="Identifier">wakeIoShard</span><span class="Operator">*</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">workerId</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span> {.<span class="Identifier">closure</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}
   <span class="Identifier">mtActive</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-
+    
     Owning runtime object (Tokio-like Runtime).
-
+    
   </dd>
 </div>
 <div id="CpsVoidFuture">
   <dt><pre><a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span class="Identifier">acyclic</span>.} <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span>
   <span class="Identifier">ownerRuntime</span><span class="Operator">*</span> {.<span class="Identifier">cursor</span>.}<span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a></pre></dt>
   <dd>
-
+    
     A future for void-returning CPS computations. Uses atomic state + lock-free callback stack.
-
+    
   </dd>
 </div>
 <div id="FuturePerfMode">
   <dt><pre><a href="runtime.html#FuturePerfMode"><span class="Identifier">FuturePerfMode</span></a> <span class="Other">=</span> <span class="Keyword">enum</span>
   <span class="Identifier">fpSharedSafe</span><span class="Other">,</span> <span class="Identifier">fpLocalFast</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="RuntimeAffinityError">
   <dt><pre><a href="runtime.html#RuntimeAffinityError"><span class="Identifier">RuntimeAffinityError</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <span class="Identifier">CatchableError</span></pre></dt>
   <dd>
-
+    
     Raised when a future/resource cannot move across runtimes.
-
+    
   </dd>
 </div>
 <div id="RuntimeConfig">
   <dt><pre><a href="runtime.html#RuntimeConfig"><span class="Identifier">RuntimeConfig</span></a> <span class="Other">=</span> <span class="Keyword">object</span>
   <span class="Identifier">flavor</span><span class="Operator">*</span><span class="Other">:</span> <a href="runtime.html#RuntimeFlavor"><span class="Identifier">RuntimeFlavor</span></a>
   <span class="Identifier">numWorkers</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int</span>
+  <span class="Identifier">pinWorkers</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span>
   <span class="Identifier">numBlockingThreads</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int</span>
   <span class="Identifier">maxSchedulerQueue</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int</span>
   <span class="Identifier">maxBlockingQueue</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="RuntimeFlavor">
   <dt><pre><a href="runtime.html#RuntimeFlavor"><span class="Identifier">RuntimeFlavor</span></a> <span class="Other">=</span> <span class="Keyword">enum</span>
   <span class="Identifier">rfCurrentThread</span><span class="Other">,</span> <span class="Identifier">rfMultiThread</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="RuntimeGuard">
@@ -688,18 +702,18 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <span class="Identifier">prev</span><span class="Operator">*</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a>
   <span class="Identifier">active</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-
+    
     Scoped enter guard restoring prior runtime context.
-
+    
   </dd>
 </div>
 <div id="RuntimeHandle">
   <dt><pre><a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a> <span class="Other">=</span> <span class="Keyword">object</span>
   <span class="Identifier">runtime</span><span class="Operator">*</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a></pre></dt>
   <dd>
-
+    
     Cloneable lightweight runtime reference (Tokio-like Handle).
-
+    
   </dd>
 </div>
 <div id="RuntimeStats">
@@ -715,17 +729,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <span class="Identifier">runCpsWaits</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int</span>
   <span class="Identifier">runCpsWakeSignals</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="Trampoline">
   <dt><pre><a href="runtime.html#Trampoline"><span class="Identifier">Trampoline</span></a> <span class="Other">=</span> <span class="Keyword">object</span></pre></dt>
   <dd>
-
+    
     Drives a continuation chain to completion without stack growth.
-
+    
   </dd>
 </div>
 
@@ -737,99 +751,115 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
     <div id="currentEventLoopPtr">
   <dt><pre><a href="runtime.html#currentEventLoopPtr"><span class="Identifier">currentEventLoopPtr</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Identifier">pointer</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="currentEventLoopRuntimePtr">
   <dt><pre><a href="runtime.html#currentEventLoopRuntimePtr"><span class="Identifier">currentEventLoopRuntimePtr</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Identifier">pointer</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="currentIoShardId">
   <dt><pre><a href="runtime.html#currentIoShardId"><span class="Identifier">currentIoShardId</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Identifier">int</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
+  </dd>
+</div>
+<div id="currentReactorCpuId">
+  <dt><pre><a href="runtime.html#currentReactorCpuId"><span class="Identifier">currentReactorCpuId</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Identifier">int</span></pre></dt>
+  <dd>
+    
+    
+    
+  </dd>
+</div>
+<div id="currentReactorPinned">
+  <dt><pre><a href="runtime.html#currentReactorPinned"><span class="Identifier">currentReactorPinned</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
+  <dd>
+    
+    
+    
   </dd>
 </div>
 <div id="currentSchedulerPtr">
   <dt><pre><a href="runtime.html#currentSchedulerPtr"><span class="Identifier">currentSchedulerPtr</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Identifier">pointer</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="currentWorkerId">
   <dt><pre><a href="runtime.html#currentWorkerId"><span class="Identifier">currentWorkerId</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Identifier">int</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="isReactorThread">
   <dt><pre><a href="runtime.html#isReactorThread"><span class="Identifier">isReactorThread</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="isSchedulerWorker">
   <dt><pre><a href="runtime.html#isSchedulerWorker"><span class="Identifier">isSchedulerWorker</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="mtCallbackDispatcher">
   <dt><pre><a href="runtime.html#mtCallbackDispatcher"><span class="Identifier">mtCallbackDispatcher</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">cb</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.
     <span class="Identifier">closure</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="mtDispatcher">
   <dt><pre><a href="runtime.html#mtDispatcher"><span class="Identifier">mtDispatcher</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">c</span><span class="Other">:</span> <span class="Identifier">sink</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span> {.<span class="Identifier">nimcall</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="mtModeEnabled">
   <dt><pre><a href="runtime.html#mtModeEnabled"><span class="Identifier">mtModeEnabled</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="mtWakeReactor">
   <dt><pre><a href="runtime.html#mtWakeReactor"><span class="Identifier">mtWakeReactor</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="mtYieldDispatcher">
   <dt><pre><a href="runtime.html#mtYieldDispatcher"><span class="Identifier">mtYieldDispatcher</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">cb</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}<span class="Other">)</span> {.
     <span class="Identifier">closure</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -843,17 +873,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#addCallback%2CCpsVoidFuture%2Csinkproc%29"><span class="Identifier">addCallback</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">;</span> <span class="Identifier">cb</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span>
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Register a callback to run when the future completes.
-
+    
   </dd>
 </div>
 <div id="addCallback,CpsFuture[T],sinkproc)">
   <dt><pre><span class="Keyword">proc</span> <a href="#addCallback%2CCpsFuture%5BT%5D%2Csinkproc%29"><span class="Identifier">addCallback</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">cb</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Register a callback to run when the future completes.
-
+    
   </dd>
 </div>
 
@@ -864,18 +894,18 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
                    <span class="Identifier">cb</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Register a callback on the future's owning runtime.
-
+    
   </dd>
 </div>
 <div id="addCallbackOn,CpsFuture[T],RuntimeHandle,sinkproc)">
   <dt><pre><span class="Keyword">proc</span> <a href="#addCallbackOn%2CCpsFuture%5BT%5D%2CRuntimeHandle%2Csinkproc%29"><span class="Identifier">addCallbackOn</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">rt</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">;</span>
                       <span class="Identifier">cb</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Register a callback on the future's owning runtime.
-
+    
   </dd>
 </div>
 
@@ -885,9 +915,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#bindCurrentEventLoop%2CCpsRuntime%2Cpointer%2Cint"><span class="Identifier">bindCurrentEventLoop</span></a><span class="Other">(</span><span class="Identifier">rt</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a><span class="Other">;</span> <span class="Identifier">loopPtr</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">;</span> <span class="Identifier">shardId</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span> {.
     <span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Bind a worker-owned event loop to the calling thread.
-
+    
   </dd>
 </div>
 
@@ -897,17 +927,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#bindFutureRuntime%2CCpsVoidFuture%2CRuntimeHandle"><span class="Identifier">bindFutureRuntime</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">;</span> <span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span>
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Associate the future with the supplied runtime.
-
+    
   </dd>
 </div>
 <div id="bindFutureRuntime,CpsFuture[T],RuntimeHandle">
   <dt><pre><span class="Keyword">proc</span> <a href="#bindFutureRuntime%2CCpsFuture%5BT%5D%2CRuntimeHandle"><span class="Identifier">bindFutureRuntime</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Associate the future with the supplied runtime.
-
+    
   </dd>
 </div>
 
@@ -917,9 +947,21 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#bounce%2CTrampoline"><span class="Identifier">bounce</span></a><span class="Other">(</span><span class="Identifier">t</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="runtime.html#Trampoline"><span class="Identifier">Trampoline</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
                                        <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Execute one step. Returns true if there are more steps.
+    
+  </dd>
+</div>
 
+</div>
+<div id="cachedCompletedVoidFuture-procs-all">
+  <div id="cachedCompletedVoidFuture">
+  <dt><pre><span class="Keyword">proc</span> <a href="#cachedCompletedVoidFuture"><span class="Identifier">cachedCompletedVoidFuture</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+    
+    Return a reusable completed future owned by the current thread. Completed futures are immutable and callbacks run inline, so synchronous I/O paths can avoid allocating one completion object per operation.
+    
   </dd>
 </div>
 
@@ -929,17 +971,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#cancel%2CCpsVoidFuture"><span class="Identifier">cancel</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
                                   <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Cancel runtime and notify its waiters.
-
+    
   </dd>
 </div>
 <div id="cancel,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#cancel%2CCpsFuture%5BT%5D"><span class="Identifier">cancel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Cancel runtime and notify its waiters.
-
+    
   </dd>
 </div>
 
@@ -948,9 +990,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="clearCurrentEventLoop">
   <dt><pre><span class="Keyword">proc</span> <a href="#clearCurrentEventLoop"><span class="Identifier">clearCurrentEventLoop</span></a><span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Clear the worker-owned event-loop binding on the calling thread.
-
+    
   </dd>
 </div>
 
@@ -960,17 +1002,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#complete%2CCpsVoidFuture"><span class="Identifier">complete</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
                                     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="complete,CpsFuture[T],T">
   <dt><pre><span class="Keyword">proc</span> <a href="#complete%2CCpsFuture%5BT%5D%2CT"><span class="Identifier">complete</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">val</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -979,9 +1021,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="completedFuture,T">
   <dt><pre><span class="Keyword">proc</span> <a href="#completedFuture%2CT"><span class="Identifier">completedFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">val</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Create a future that is already completed with a value. Uses relaxed store (no CAS needed since the future hasn't been shared yet).
-
+    
   </dd>
 </div>
 
@@ -990,9 +1032,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="completedLocalFuture,T">
   <dt><pre><span class="Keyword">proc</span> <a href="#completedLocalFuture%2CT"><span class="Identifier">completedLocalFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">val</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Create an already-completed reactor-local future.
-
+    
   </dd>
 </div>
 
@@ -1002,9 +1044,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#completedLocalVoidFuture"><span class="Identifier">completedLocalVoidFuture</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create an already-completed reactor-local void future.
-
+    
   </dd>
 </div>
 
@@ -1014,9 +1056,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#completedVoidFuture"><span class="Identifier">completedVoidFuture</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a void future that is already completed.
-
+    
   </dd>
 </div>
 
@@ -1025,9 +1067,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="currentRuntime">
   <dt><pre><span class="Keyword">proc</span> <a href="#currentRuntime"><span class="Identifier">currentRuntime</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return the runtime bound to this thread, creating the main runtime when needed.
-
+    
   </dd>
 </div>
 
@@ -1037,9 +1079,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#currentRuntimePointer"><span class="Identifier">currentRuntimePointer</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">pointer</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
                                         <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Borrow the current runtime without reference-count traffic. Internal reactor code uses this while the active runtime is retained by its owner.
-
+    
   </dd>
 </div>
 
@@ -1049,9 +1091,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#currentThreadIdentity"><span class="Identifier">currentThreadIdentity</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">pointer</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
                                         <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return a stable identity for the calling thread.
-
+    
   </dd>
 </div>
 
@@ -1060,9 +1102,23 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="defaultRuntimeConfig">
   <dt><pre><span class="Keyword">proc</span> <a href="#defaultRuntimeConfig"><span class="Identifier">defaultRuntimeConfig</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#RuntimeConfig"><span class="Identifier">RuntimeConfig</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return the default runtime config.
+    
+  </dd>
+</div>
 
+</div>
+<div id="deferCurrentWorker-procs-all">
+  <div id="deferCurrentWorker,sinkproc)">
+  <dt><pre><span class="Keyword">proc</span> <a href="#deferCurrentWorker%2Csinkproc%29"><span class="Identifier">deferCurrentWorker</span></a><span class="Other">(</span><span class="Identifier">cbArg</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span>.}<span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+    
+    <p>Defer <tt class="docutils literal"><span class="pre"><span class="Identifier">cbArg</span></span></tt> onto the current multithreaded-runtime worker.</p>
+<p>This is the allocation-light primitive for batching owner-local work: the callback stays on the worker that owns its ARC/ORC graph and enters that worker's bounded pinned inbox. Callers can provide their event-loop fallback when no multithreaded worker is active.</p>
+
+    
   </dd>
 </div>
 
@@ -1072,17 +1128,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#ensureShared%2CCpsVoidFuture"><span class="Identifier">ensureShared</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
                                         <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="ensureShared,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#ensureShared%2CCpsFuture%5BT%5D"><span class="Identifier">ensureShared</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -1092,9 +1148,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#enter%2CRuntimeHandle"><span class="Identifier">enter</span></a><span class="Other">(</span><span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#RuntimeGuard"><span class="Identifier">RuntimeGuard</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ValueError</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Enter the referenced runtime and retain the previous thread-local binding.
-
+    
   </dd>
 </div>
 
@@ -1104,26 +1160,26 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#fail%2CsinkContinuation%2Cref.CatchableError"><span class="Identifier">fail</span></a><span class="Other">(</span><span class="Identifier">c</span><span class="Other">:</span> <span class="Identifier">sink</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">;</span> <span class="Identifier">err</span><span class="Other">:</span> <span class="Keyword">ref</span> <span class="Identifier">CatchableError</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a> {.<span class="Identifier">inline</span><span class="Other">,</span>
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Set the continuation into an error state.
-
+    
   </dd>
 </div>
 <div id="fail,CpsVoidFuture,ref.CatchableError">
   <dt><pre><span class="Keyword">proc</span> <a href="#fail%2CCpsVoidFuture%2Cref.CatchableError"><span class="Identifier">fail</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">;</span> <span class="Identifier">err</span><span class="Other">:</span> <span class="Keyword">ref</span> <span class="Identifier">CatchableError</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="fail,CpsFuture[T],ref.CatchableError">
   <dt><pre><span class="Keyword">proc</span> <a href="#fail%2CCpsFuture%5BT%5D%2Cref.CatchableError"><span class="Identifier">fail</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">err</span><span class="Other">:</span> <span class="Keyword">ref</span> <span class="Identifier">CatchableError</span><span class="Other">)</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -1132,9 +1188,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="failedFuture,ref.CatchableError">
   <dt><pre><span class="Keyword">proc</span> <a href="#failedFuture%2Cref.CatchableError"><span class="Identifier">failedFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">err</span><span class="Other">:</span> <span class="Keyword">ref</span> <span class="Identifier">CatchableError</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Create a future that is already failed with an error.
-
+    
   </dd>
 </div>
 
@@ -1143,9 +1199,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="failedLocalFuture,ref.CatchableError">
   <dt><pre><span class="Keyword">proc</span> <a href="#failedLocalFuture%2Cref.CatchableError"><span class="Identifier">failedLocalFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">err</span><span class="Other">:</span> <span class="Keyword">ref</span> <span class="Identifier">CatchableError</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Create an already-failed reactor-local future.
-
+    
   </dd>
 </div>
 
@@ -1155,9 +1211,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#failedLocalVoidFuture%2Cref.CatchableError"><span class="Identifier">failedLocalVoidFuture</span></a><span class="Other">(</span><span class="Identifier">err</span><span class="Other">:</span> <span class="Keyword">ref</span> <span class="Identifier">CatchableError</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create an already-failed reactor-local void future.
-
+    
   </dd>
 </div>
 
@@ -1167,9 +1223,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#failedVoidFuture%2Cref.CatchableError"><span class="Identifier">failedVoidFuture</span></a><span class="Other">(</span><span class="Identifier">err</span><span class="Other">:</span> <span class="Keyword">ref</span> <span class="Identifier">CatchableError</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span class="Identifier">inline</span><span class="Other">,</span>
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a void future that is already failed with an error.
-
+    
   </dd>
 </div>
 
@@ -1179,17 +1235,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#finished%2CCpsVoidFuture"><span class="Identifier">finished</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Check if the void future has completed (successfully or with error).
-
+    
   </dd>
 </div>
 <div id="finished,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#finished%2CCpsFuture%5BT%5D"><span class="Identifier">finished</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Check if the future has completed (successfully or with error).
-
+    
   </dd>
 </div>
 
@@ -1198,9 +1254,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="freeAtomicCounter,ptr.AtomicCounter">
   <dt><pre><span class="Keyword">proc</span> <a href="#freeAtomicCounter%2Cptr.AtomicCounter"><span class="Identifier">freeAtomicCounter</span></a><span class="Other">(</span><span class="Identifier">c</span><span class="Other">:</span> <span class="Keyword">ptr</span> <a href="runtime.html#AtomicCounter"><span class="Identifier">AtomicCounter</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Release resources owned by atomic counter.
-
+    
   </dd>
 </div>
 
@@ -1210,17 +1266,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#futureRuntime%2CCpsVoidFuture"><span class="Identifier">futureRuntime</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return the runtime currently associated with the future.
-
+    
   </dd>
 </div>
 <div id="futureRuntime,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#futureRuntime%2CCpsFuture%5BT%5D"><span class="Identifier">futureRuntime</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Return the runtime currently associated with the future.
-
+    
   </dd>
 </div>
 
@@ -1230,17 +1286,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#getError%2CCpsVoidFuture"><span class="Identifier">getError</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Keyword">ref</span> <span class="Identifier">CatchableError</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return the error that failed the future.
-
+    
   </dd>
 </div>
 <div id="getError,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#getError%2CCpsFuture%5BT%5D"><span class="Identifier">getError</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Keyword">ref</span> <span class="Identifier">CatchableError</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Return the error that failed the future.
-
+    
   </dd>
 </div>
 
@@ -1249,9 +1305,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="getRuntimeStats">
   <dt><pre><span class="Keyword">proc</span> <a href="#getRuntimeStats"><span class="Identifier">getRuntimeStats</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#RuntimeStats"><span class="Identifier">RuntimeStats</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return a snapshot of runtime counters and queue depth.
-
+    
   </dd>
 </div>
 
@@ -1261,9 +1317,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#halt%2CsinkContinuation"><span class="Identifier">halt</span></a><span class="Other">(</span><span class="Identifier">c</span><span class="Other">:</span> <span class="Identifier">sink</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Mark the continuation as finished and stop the chain.
-
+    
   </dd>
 </div>
 
@@ -1273,17 +1329,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#hasError%2CCpsVoidFuture"><span class="Identifier">hasError</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return whether the operation completed with an error.
-
+    
   </dd>
 </div>
 <div id="hasError,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#hasError%2CCpsFuture%5BT%5D"><span class="Identifier">hasError</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Return whether the operation completed with an error.
-
+    
   </dd>
 </div>
 
@@ -1293,9 +1349,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#initTrampoline%2CsinkContinuation"><span class="Identifier">initTrampoline</span></a><span class="Other">(</span><span class="Identifier">c</span><span class="Other">:</span> <span class="Identifier">sink</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#Trampoline"><span class="Identifier">Trampoline</span></a> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Initialize trampoline.
-
+    
   </dd>
 </div>
 
@@ -1305,17 +1361,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#isCancelled%2CCpsVoidFuture"><span class="Identifier">isCancelled</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Check if a void future has been cancelled.
-
+    
   </dd>
 </div>
 <div id="isCancelled,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#isCancelled%2CCpsFuture%5BT%5D"><span class="Identifier">isCancelled</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Check if a future has been cancelled.
-
+    
   </dd>
 </div>
 
@@ -1325,9 +1381,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#isFinished%2CContinuation"><span class="Identifier">isFinished</span></a><span class="Other">(</span><span class="Identifier">c</span><span class="Other">:</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return whether the future has reached a terminal state.
-
+    
   </dd>
 </div>
 
@@ -1337,17 +1393,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#isLocalFast%2CCpsVoidFuture"><span class="Identifier">isLocalFast</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return whether the future uses reactor-local fast state.
-
+    
   </dd>
 </div>
 <div id="isLocalFast,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#isLocalFast%2CCpsFuture%5BT%5D"><span class="Identifier">isLocalFast</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Return whether the future uses reactor-local fast state.
-
+    
   </dd>
 </div>
 
@@ -1356,9 +1412,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="isNil,RuntimeHandle">
   <dt><pre><span class="Keyword">proc</span> <a href="#isNil%2CRuntimeHandle"><span class="Identifier">isNil</span></a><span class="Other">(</span><span class="Identifier">h</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return whether the runtime handle has no runtime attached.
-
+    
   </dd>
 </div>
 
@@ -1368,9 +1424,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#isRunning%2CContinuation"><span class="Identifier">isRunning</span></a><span class="Other">(</span><span class="Identifier">c</span><span class="Other">:</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
                                         <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return whether the future is currently running.
-
+    
   </dd>
 </div>
 
@@ -1380,17 +1436,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#isRuntimePinned%2CCpsVoidFuture"><span class="Identifier">isRuntimePinned</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return whether the future is pinned to a runtime.
-
+    
   </dd>
 </div>
 <div id="isRuntimePinned,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#isRuntimePinned%2CCpsFuture%5BT%5D"><span class="Identifier">isRuntimePinned</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Return whether the future is pinned to a runtime.
-
+    
   </dd>
 </div>
 
@@ -1400,17 +1456,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#isSharedSafe%2CCpsVoidFuture"><span class="Identifier">isSharedSafe</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return whether the future can cross thread boundaries.
-
+    
   </dd>
 </div>
 <div id="isSharedSafe,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#isSharedSafe%2CCpsFuture%5BT%5D"><span class="Identifier">isSharedSafe</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Return whether the future can cross thread boundaries.
-
+    
   </dd>
 </div>
 
@@ -1420,9 +1476,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#isSuspended%2CContinuation"><span class="Identifier">isSuspended</span></a><span class="Other">(</span><span class="Identifier">c</span><span class="Other">:</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return whether the future is suspended.
-
+    
   </dd>
 </div>
 
@@ -1431,9 +1487,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="leave,RuntimeGuard">
   <dt><pre><span class="Keyword">proc</span> <a href="#leave%2CRuntimeGuard"><span class="Identifier">leave</span></a><span class="Other">(</span><span class="Identifier">guard</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="runtime.html#RuntimeGuard"><span class="Identifier">RuntimeGuard</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Restore the runtime binding retained by the guard.
-
+    
   </dd>
 </div>
 
@@ -1443,9 +1499,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#localFutureDefaultEnabled"><span class="Identifier">localFutureDefaultEnabled</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return whether new futures use reactor-local storage by default.
-
+    
   </dd>
 </div>
 
@@ -1454,9 +1510,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="mainRuntime">
   <dt><pre><span class="Keyword">proc</span> <a href="#mainRuntime"><span class="Identifier">mainRuntime</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return the process-wide main runtime handle.
-
+    
   </dd>
 </div>
 
@@ -1466,17 +1522,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#migrateTo%2CCpsVoidFuture%2CRuntimeHandle"><span class="Identifier">migrateTo</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">;</span> <span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">RuntimeAffinityError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Move the future to another runtime.
-
+    
   </dd>
 </div>
 <div id="migrateTo,CpsFuture[T],RuntimeHandle">
   <dt><pre><span class="Keyword">proc</span> <a href="#migrateTo%2CCpsFuture%5BT%5D%2CRuntimeHandle"><span class="Identifier">migrateTo</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Move the future to another runtime.
-
+    
   </dd>
 </div>
 
@@ -1486,9 +1542,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#newAtomicCounter%2Cint"><span class="Identifier">newAtomicCounter</span></a><span class="Other">(</span><span class="Identifier">initial</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <span class="Keyword">ptr</span> <a href="runtime.html#AtomicCounter"><span class="Identifier">AtomicCounter</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a new atomic counter.
-
+    
   </dd>
 </div>
 
@@ -1498,9 +1554,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#newContinuation%2Ctypedesc%5BContinuation%5D%2Cproc%28sinkContinuation%29"><span class="Identifier">newContinuation</span></a><span class="Other">(</span><span class="Identifier">T</span><span class="Other">:</span> <span class="Identifier">typedesc</span><span class="Other">[</span><a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">]</span><span class="Other">;</span>
                      <span class="Identifier">fn</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">c</span><span class="Other">:</span> <span class="Identifier">sink</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a> {.<span class="Identifier">nimcall</span>.}<span class="Other">)</span><span class="Other">:</span> <span class="Identifier">T:type</span></pre></dt>
   <dd>
-
+    
     Create a new continuation.
-
+    
   </dd>
 </div>
 
@@ -1509,9 +1565,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="newCpsFuture">
   <dt><pre><span class="Keyword">proc</span> <a href="#newCpsFuture"><span class="Identifier">newCpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Create a new CPS future.
-
+    
   </dd>
 </div>
 
@@ -1520,9 +1576,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="newCpsVoidFuture">
   <dt><pre><span class="Keyword">proc</span> <a href="#newCpsVoidFuture"><span class="Identifier">newCpsVoidFuture</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a new CPS void future.
-
+    
   </dd>
 </div>
 
@@ -1531,9 +1587,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="newCurrentThreadRuntime">
   <dt><pre><span class="Keyword">proc</span> <a href="#newCurrentThreadRuntime"><span class="Identifier">newCurrentThreadRuntime</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a new current thread runtime.
-
+    
   </dd>
 </div>
 
@@ -1542,9 +1598,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="newLocalCpsFuture">
   <dt><pre><span class="Keyword">proc</span> <a href="#newLocalCpsFuture"><span class="Identifier">newLocalCpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Create a new local CPS future.
-
+    
   </dd>
 </div>
 
@@ -1553,23 +1609,24 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="newLocalCpsVoidFuture">
   <dt><pre><span class="Keyword">proc</span> <a href="#newLocalCpsVoidFuture"><span class="Identifier">newLocalCpsVoidFuture</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a new local CPS void future.
-
+    
   </dd>
 </div>
 
 </div>
 <div id="newMultiThreadRuntime-procs-all">
-  <div id="newMultiThreadRuntime,int,int,int,int">
-  <dt><pre><span class="Keyword">proc</span> <a href="#newMultiThreadRuntime%2Cint%2Cint%2Cint%2Cint"><span class="Identifier">newMultiThreadRuntime</span></a><span class="Other">(</span><span class="Identifier">numWorkers</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">0</span><span class="Other">;</span> <span class="Identifier">numBlockingThreads</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">0</span><span class="Other">;</span>
+  <div id="newMultiThreadRuntime,int,int,int,int,bool">
+  <dt><pre><span class="Keyword">proc</span> <a href="#newMultiThreadRuntime%2Cint%2Cint%2Cint%2Cint%2Cbool"><span class="Identifier">newMultiThreadRuntime</span></a><span class="Other">(</span><span class="Identifier">numWorkers</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">0</span><span class="Other">;</span> <span class="Identifier">numBlockingThreads</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">0</span><span class="Other">;</span>
                            <span class="Identifier">maxSchedulerQueue</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="Identifier">DefaultSchedulerQueueCap</span><span class="Other">;</span>
-                           <span class="Identifier">maxBlockingQueue</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="Identifier">DefaultBlockingQueueCap</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a> {.
+                           <span class="Identifier">maxBlockingQueue</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="Identifier">DefaultBlockingQueueCap</span><span class="Other">;</span>
+                           <span class="Identifier">pinWorkers</span><span class="Other">:</span> <span class="Identifier">bool</span> <span class="Other">=</span> <span class="Identifier">true</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ValueError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a new multi thread runtime.
-
+    
   </dd>
 </div>
 
@@ -1579,9 +1636,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#newRuntime%2CRuntimeConfig"><span class="Identifier">newRuntime</span></a><span class="Other">(</span><span class="Identifier">config</span><span class="Other">:</span> <a href="runtime.html#RuntimeConfig"><span class="Identifier">RuntimeConfig</span></a><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ValueError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a new runtime.
-
+    
   </dd>
 </div>
 
@@ -1591,9 +1648,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#pass%2CsinkContinuation"><span class="Identifier">pass</span></a><span class="Other">(</span><span class="Identifier">c</span><span class="Other">:</span> <span class="Identifier">sink</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return the continuation as-is for the trampoline to execute next.
-
+    
   </dd>
 </div>
 
@@ -1603,17 +1660,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#pinFutureRuntime%2CCpsVoidFuture"><span class="Identifier">pinFutureRuntime</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Pin the future and its root continuation to the supplied runtime.
-
+    
   </dd>
 </div>
 <div id="pinFutureRuntime,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#pinFutureRuntime%2CCpsFuture%5BT%5D"><span class="Identifier">pinFutureRuntime</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Pin the future and its root continuation to the supplied runtime.
-
+    
   </dd>
 </div>
 
@@ -1623,17 +1680,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#pinFutureWaitWorker%2CCpsVoidFuture"><span class="Identifier">pinFutureWaitWorker</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Record the scheduler worker whose nested <tt class="docutils literal"><span class="pre">runCps</span></tt> loop must be woken.
-
+    
   </dd>
 </div>
 <div id="pinFutureWaitWorker,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#pinFutureWaitWorker%2CCpsFuture%5BT%5D"><span class="Identifier">pinFutureWaitWorker</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Record the scheduler worker whose nested <tt class="docutils literal"><span class="pre">runCps</span></tt> loop must be woken.
-
+    
   </dd>
 </div>
 
@@ -1643,17 +1700,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#race%2Cvarargs%5BCpsVoidFuture%5D"><span class="Identifier">race</span></a><span class="Other">(</span><span class="Identifier">futures</span><span class="Other">:</span> <span class="Identifier">varargs</span><span class="Other">[</span><a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Returns a void future that completes when the first input future completes. If that future has an error, the error propagates.
-
+    
   </dd>
 </div>
 <div id="race,varargs[CpsFuture[T]]">
   <dt><pre><span class="Keyword">proc</span> <a href="#race%2Cvarargs%5BCpsFuture%5BT%5D%5D"><span class="Identifier">race</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">futures</span><span class="Other">:</span> <span class="Identifier">varargs</span><span class="Other">[</span><a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Returns a future that completes with the value of the first input future to complete. If that future has an error, the error propagates. Non-winning futures are left running.
-
+    
   </dd>
 </div>
 
@@ -1663,17 +1720,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#raceCancel%2Cvarargs%5BCpsVoidFuture%5D"><span class="Identifier">raceCancel</span></a><span class="Other">(</span><span class="Identifier">futures</span><span class="Other">:</span> <span class="Identifier">varargs</span><span class="Other">[</span><a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Like race for void futures, but cancels all non-winning futures after the winner is determined.
-
+    
   </dd>
 </div>
 <div id="raceCancel,varargs[CpsFuture[T]]">
   <dt><pre><span class="Keyword">proc</span> <a href="#raceCancel%2Cvarargs%5BCpsFuture%5BT%5D%5D"><span class="Identifier">raceCancel</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">futures</span><span class="Other">:</span> <span class="Identifier">varargs</span><span class="Other">[</span><a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Like race, but cancels all non-winning futures after the winner is determined. Uses the existing cancel() which is a no-op on already-completed futures.
-
+    
   </dd>
 </div>
 
@@ -1682,17 +1739,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="read,CpsVoidFuture">
   <dt><pre><span class="Keyword">proc</span> <a href="#read%2CCpsVoidFuture"><span class="Identifier">read</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">CatchableError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return the completed future's value or raise its terminal error.
-
+    
   </dd>
 </div>
 <div id="read,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#read%2CCpsFuture%5BT%5D"><span class="Identifier">read</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">T</span></pre></dt>
   <dd>
-
+    
     Return the completed future's value or raise its terminal error.
-
+    
   </dd>
 </div>
 
@@ -1702,9 +1759,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#registerMtRuntimeFactory%2CMtRuntimeFactoryProc"><span class="Identifier">registerMtRuntimeFactory</span></a><span class="Other">(</span><span class="Identifier">factory</span><span class="Other">:</span> <span class="Identifier">MtRuntimeFactoryProc</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Register the factory used to construct multithreaded runtimes.
-
+    
   </dd>
 </div>
 
@@ -1713,9 +1770,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="resetRuntimeStats">
   <dt><pre><span class="Keyword">proc</span> <a href="#resetRuntimeStats"><span class="Identifier">resetRuntimeStats</span></a><span class="Other">(</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Reset runtime stats to its initial state.
-
+    
   </dd>
 </div>
 
@@ -1725,9 +1782,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#run%2CsinkContinuation"><span class="Identifier">run</span></a><span class="Other">(</span><span class="Identifier">c</span><span class="Other">:</span> <span class="Identifier">sink</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a> {.<span class="Identifier">discardable</span><span class="Other">,</span>
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Run a continuation chain to completion or suspension via trampoline. Uses a direct while loop — no Trampoline struct overhead. The fn pointer is loaded exactly once per iteration to prevent TOCTOU races when another thread modifies the continuation.
-
+    
   </dd>
 </div>
 
@@ -1736,17 +1793,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="runCpsWaitEnter">
   <dt><pre><span class="Keyword">proc</span> <a href="#runCpsWaitEnter"><span class="Identifier">runCpsWaitEnter</span></a><span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Register a synchronous waiter with the runtime.
-
+    
   </dd>
 </div>
 <div id="runCpsWaitEnter,CpsRuntime">
   <dt><pre><span class="Keyword">proc</span> <a href="#runCpsWaitEnter%2CCpsRuntime"><span class="Identifier">runCpsWaitEnter</span></a><span class="Other">(</span><span class="Identifier">rt</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Register a synchronous waiter with the runtime.
-
+    
   </dd>
 </div>
 
@@ -1755,17 +1812,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="runCpsWaitLeave">
   <dt><pre><span class="Keyword">proc</span> <a href="#runCpsWaitLeave"><span class="Identifier">runCpsWaitLeave</span></a><span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Remove a synchronous waiter from the runtime.
-
+    
   </dd>
 </div>
 <div id="runCpsWaitLeave,CpsRuntime">
   <dt><pre><span class="Keyword">proc</span> <a href="#runCpsWaitLeave%2CCpsRuntime"><span class="Identifier">runCpsWaitLeave</span></a><span class="Other">(</span><span class="Identifier">rt</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Remove a synchronous waiter from the runtime.
-
+    
   </dd>
 </div>
 
@@ -1775,9 +1832,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#runtimeFlavor%2CRuntimeHandle"><span class="Identifier">runtimeFlavor</span></a><span class="Other">(</span><span class="Identifier">h</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#RuntimeFlavor"><span class="Identifier">RuntimeFlavor</span></a> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return the execution model used by the referenced runtime.
-
+    
   </dd>
 </div>
 
@@ -1787,9 +1844,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#runtimeId%2CRuntimeHandle"><span class="Identifier">runtimeId</span></a><span class="Other">(</span><span class="Identifier">h</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int64</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return the stable identifier of the referenced runtime.
-
+    
   </dd>
 </div>
 
@@ -1799,9 +1856,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#runUntilSuspend%2CsinkContinuation"><span class="Identifier">runUntilSuspend</span></a><span class="Other">(</span><span class="Identifier">c</span><span class="Other">:</span> <span class="Identifier">sink</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Run until the continuation suspends or finishes. Single-load fn to match run() TOCTOU fix.
-
+    
   </dd>
 </div>
 
@@ -1811,9 +1868,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#select%2Cvarargs%5BCpsFuture%5BT%5D%5D"><span class="Identifier">select</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">futures</span><span class="Other">:</span> <span class="Identifier">varargs</span><span class="Other">[</span><a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span>
     <span class="Keyword">tuple</span><span class="Other">[</span><span class="Identifier">index</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">,</span> <span class="Identifier">value</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">]</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Returns a future that completes with (index, value) of the first input future to complete. The index indicates which future won.
-
+    
   </dd>
 </div>
 
@@ -1822,9 +1879,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="setCurrentRuntime,CpsRuntime">
   <dt><pre><span class="Keyword">proc</span> <a href="#setCurrentRuntime%2CCpsRuntime"><span class="Identifier">setCurrentRuntime</span></a><span class="Other">(</span><span class="Identifier">rt</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Bind the supplied runtime to the current thread.
-
+    
   </dd>
 </div>
 
@@ -1834,17 +1891,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#setFutureRootContinuation%2CCpsVoidFuture%2CContinuation"><span class="Identifier">setFutureRootContinuation</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">;</span> <span class="Identifier">c</span><span class="Other">:</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span>
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Set the future's root continuation for cancellation and migration.
-
+    
   </dd>
 </div>
 <div id="setFutureRootContinuation,CpsFuture[T],Continuation">
   <dt><pre><span class="Keyword">proc</span> <a href="#setFutureRootContinuation%2CCpsFuture%5BT%5D%2CContinuation"><span class="Identifier">setFutureRootContinuation</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">c</span><span class="Other">:</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
-
+    
     Set the future's root continuation for cancellation and migration.
-
+    
   </dd>
 </div>
 
@@ -1854,9 +1911,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#setLocalFutureDefault%2Cbool"><span class="Identifier">setLocalFutureDefault</span></a><span class="Other">(</span><span class="Identifier">enabled</span><span class="Other">:</span> <span class="Identifier">bool</span><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Select local-fast futures for constructors called on this thread. Isolated reactor threads use this because their continuations and I/O callbacks never cross a thread boundary. Shared and work-stealing runtimes leave it disabled.
-
+    
   </dd>
 </div>
 
@@ -1865,9 +1922,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="setMainRuntime,CpsRuntime">
   <dt><pre><span class="Keyword">proc</span> <a href="#setMainRuntime%2CCpsRuntime"><span class="Identifier">setMainRuntime</span></a><span class="Other">(</span><span class="Identifier">rt</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Replace the process-wide main runtime binding.
-
+    
   </dd>
 </div>
 
@@ -1877,9 +1934,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#suspend%2CsinkContinuation"><span class="Identifier">suspend</span></a><span class="Other">(</span><span class="Identifier">c</span><span class="Other">:</span> <span class="Identifier">sink</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Suspend the continuation. It will be resumed by an external event.
-
+    
   </dd>
 </div>
 
@@ -1889,9 +1946,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#toHandle%2CCpsRuntime"><span class="Identifier">toHandle</span></a><span class="Other">(</span><span class="Identifier">rt</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return a runtime handle for the supplied runtime.
-
+    
   </dd>
 </div>
 
@@ -1900,9 +1957,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="tryCurrentRuntime">
   <dt><pre><span class="Keyword">proc</span> <a href="#tryCurrentRuntime"><span class="Identifier">tryCurrentRuntime</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Return the runtime bound to this thread without creating one.
-
+    
   </dd>
 </div>
 
@@ -1912,17 +1969,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#tryMigrateTo%2CCpsVoidFuture%2CRuntimeHandle"><span class="Identifier">tryMigrateTo</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">;</span> <span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Attempt to move the future to another runtime without blocking.
-
+    
   </dd>
 </div>
 <div id="tryMigrateTo,CpsFuture[T],RuntimeHandle">
   <dt><pre><span class="Keyword">proc</span> <a href="#tryMigrateTo%2CCpsFuture%5BT%5D%2CRuntimeHandle"><span class="Identifier">tryMigrateTo</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
-
+    
     Attempt to move the future to another runtime without blocking.
-
+    
   </dd>
 </div>
 
@@ -1932,34 +1989,34 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dt><pre><span class="Keyword">proc</span> <a href="#waitRunCpsSignal%2CCpsVoidFuture"><span class="Identifier">waitRunCpsSignal</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Wait until the future completes, fails, or is cancelled.
-
+    
   </dd>
 </div>
 <div id="waitRunCpsSignal,CpsRuntime,CpsVoidFuture">
   <dt><pre><span class="Keyword">proc</span> <a href="#waitRunCpsSignal%2CCpsRuntime%2CCpsVoidFuture"><span class="Identifier">waitRunCpsSignal</span></a><span class="Other">(</span><span class="Identifier">rt</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a><span class="Other">;</span> <span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">,</span> <span class="Identifier">TimeEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Wait until the future completes, fails, or is cancelled.
-
+    
   </dd>
 </div>
 <div id="waitRunCpsSignal,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#waitRunCpsSignal%2CCpsFuture%5BT%5D"><span class="Identifier">waitRunCpsSignal</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Wait until the future completes, fails, or is cancelled.
-
+    
   </dd>
 </div>
 <div id="waitRunCpsSignal,CpsRuntime,CpsFuture[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#waitRunCpsSignal%2CCpsRuntime%2CCpsFuture%5BT%5D"><span class="Identifier">waitRunCpsSignal</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">rt</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a><span class="Other">;</span> <span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Wait until the future completes, fails, or is cancelled.
-
+    
   </dd>
 </div>
 
@@ -1974,9 +2031,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="setContinuation.t,Continuation,untyped">
   <dt><pre><span class="Keyword">template</span> <a href="#setContinuation.t%2CContinuation%2Cuntyped"><span class="Identifier">setContinuation</span></a><span class="Other">(</span><span class="Identifier">env</span><span class="Other">:</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">;</span> <span class="Identifier">nextFn</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">)</span></pre></dt>
   <dd>
-
+    
     Set the next step function on a continuation.
-
+    
   </dd>
 </div>
 
@@ -1985,9 +2042,9 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <div id="withRuntime.t,RuntimeHandle,untyped">
   <dt><pre><span class="Keyword">template</span> <a href="#withRuntime.t%2CRuntimeHandle%2Cuntyped"><span class="Identifier">withRuntime</span></a><span class="Other">(</span><span class="Identifier">handle</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a><span class="Other">;</span> <span class="Identifier">body</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">untyped</span></pre></dt>
   <dd>
-
+    
     Run a block with a temporary thread-local runtime binding.
-
+    
   </dd>
 </div>
 
@@ -2008,10 +2065,10 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:26 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:29 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

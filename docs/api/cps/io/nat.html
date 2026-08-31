@@ -245,9 +245,9 @@
 
   </div>
   <div class="nine columns" id="content">
-
+    
     <div id="tocRoot"></div>
-
+    
     <p class="module-desc"><p>CPS I/O NAT Traversal</p>
 <p>Automatic port forwarding via NAT-PMP (RFC 6886), PCP (RFC 6887), and UPnP IGD (ISO/IEC 29341). Provides a unified NatManager API that auto-detects the available protocol and manages port mappings with automatic renewal.</p>
 <p>Detection order: PCP -&gt; NAT-PMP -&gt; UPnP IGD. All protocols are best-effort: failure leaves protocol = npNone.</p>
@@ -265,17 +265,17 @@
   <dt><pre><a href="nat.html#MappingProto"><span class="Identifier">MappingProto</span></a> <span class="Other">=</span> <span class="Keyword">enum</span>
   <span class="Identifier">mpTcp</span><span class="Other">,</span> <span class="Identifier">mpUdp</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 <div id="NatError">
   <dt><pre><a href="nat.html#NatError"><span class="Identifier">NatError</span></a> <span class="Other">=</span> <span class="Keyword">object</span> <span class="Keyword">of</span> <span class="Identifier">streams</span><span class="Other">.</span><span class="Identifier">AsyncIoError</span></pre></dt>
   <dd>
-
+    
     Error during NAT traversal.
-
+    
   </dd>
 </div>
 <div id="NatManager">
@@ -289,9 +289,9 @@
   <span class="Identifier">outerMgr</span><span class="Operator">*</span><span class="Other">:</span> <a href="nat.html#NatManager"><span class="Identifier">NatManager</span></a>
   <span class="Identifier">doubleNat</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span>           <span class="Comment">## True if double-NAT was detected</span></pre></dt>
   <dd>
-
+    
     Orchestrates NAT protocol discovery, port mapping, and renewal.
-
+    
   </dd>
 </div>
 <div id="NatMapping">
@@ -304,9 +304,9 @@
   <span class="Identifier">natProto</span><span class="Operator">*</span><span class="Other">:</span> <a href="nat.html#NatProtocol"><span class="Identifier">NatProtocol</span></a>     <span class="Comment">## Which NAT protocol was used</span>
   <span class="Identifier">pcpNonce</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">array</span><span class="Other">[</span><span class="DecNumber">12</span><span class="Other">,</span> <span class="Identifier">byte</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Tracks an active port mapping.
-
+    
   </dd>
 </div>
 <div id="NatProtocol">
@@ -316,9 +316,9 @@
   <span class="Identifier">npPcp</span><span class="Other">,</span>                    <span class="Comment">## PCP (RFC 6887)</span>
   <span class="Identifier">npUpnpIgd</span>                  <span class="Comment">## UPnP IGD</span></pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -333,9 +333,9 @@
                 <span class="Identifier">externalPort</span><span class="Other">:</span> <span class="Identifier">uint16</span> <span class="Other">=</span> <span class="DecNumber">0</span><span class="Other">;</span> <span class="Identifier">lifetime</span><span class="Other">:</span> <span class="Identifier">uint32</span> <span class="Other">=</span> <span class="DecNumber">7200</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span>
     <a href="nat.html#NatMapping"><span class="Identifier">NatMapping</span></a><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -345,9 +345,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#checkPmpEpoch%2CNatManager%2Cuint32"><span class="Identifier">checkPmpEpoch</span></a><span class="Other">(</span><span class="Identifier">mgr</span><span class="Other">:</span> <a href="nat.html#NatManager"><span class="Identifier">NatManager</span></a><span class="Other">;</span> <span class="Identifier">epoch</span><span class="Other">:</span> <span class="Identifier">uint32</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     RFC 6886 Section 3.6: detect gateway reboot via epoch regression. If the gateway's Seconds Since Start of Epoch goes backwards, all existing mappings are presumed lost and flagged stale.
-
+    
   </dd>
 </div>
 
@@ -357,9 +357,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#deleteAllMappings%2CNatManager"><span class="Identifier">deleteAllMappings</span></a><span class="Other">(</span><span class="Identifier">mgr</span><span class="Other">:</span> <a href="nat.html#NatManager"><span class="Identifier">NatManager</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -369,9 +369,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#deleteMapping%2CNatManager%2CNatMapping"><span class="Identifier">deleteMapping</span></a><span class="Other">(</span><span class="Identifier">mgr</span><span class="Other">:</span> <a href="nat.html#NatManager"><span class="Identifier">NatManager</span></a><span class="Other">;</span> <span class="Identifier">mapping</span><span class="Other">:</span> <a href="nat.html#NatMapping"><span class="Identifier">NatMapping</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -381,9 +381,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#discover%2CNatManager"><span class="Identifier">discover</span></a><span class="Other">(</span><span class="Identifier">mgr</span><span class="Other">:</span> <a href="nat.html#NatManager"><span class="Identifier">NatManager</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -392,9 +392,9 @@
   <div id="getDefaultGateway">
   <dt><pre><span class="Keyword">proc</span> <a href="#getDefaultGateway"><span class="Identifier">getDefaultGateway</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Get the default gateway IP. Linux: parses /proc/net/route. macOS: uses .1 heuristic on local IP.
-
+    
   </dd>
 </div>
 
@@ -403,9 +403,9 @@
   <div id="getExternalIp,NatManager">
   <dt><pre><span class="Keyword">proc</span> <a href="#getExternalIp%2CNatManager"><span class="Identifier">getExternalIp</span></a><span class="Other">(</span><span class="Identifier">mgr</span><span class="Other">:</span> <a href="nat.html#NatManager"><span class="Identifier">NatManager</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Get the discovered external IP address.
-
+    
   </dd>
 </div>
 
@@ -414,9 +414,9 @@
   <div id="getLocalIp">
   <dt><pre><span class="Keyword">proc</span> <a href="#getLocalIp"><span class="Identifier">getLocalIp</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Get the local IP address by connecting a UDP socket to 8.8.8.8:53. This doesn't send any data — it just lets the OS pick the route.
-
+    
   </dd>
 </div>
 
@@ -425,9 +425,9 @@
   <div id="getLocalIpv6">
   <dt><pre><span class="Keyword">proc</span> <a href="#getLocalIpv6"><span class="Identifier">getLocalIpv6</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Get the local IPv6 address by connecting a UDP socket to <a class="reference internal" href="#2001:4860:4860::8888">2001:4860:4860::8888</a>:53. This doesn't send any data — it just lets the OS pick the route. Returns &quot;&quot; if no IPv6 connectivity is available.
-
+    
   </dd>
 </div>
 
@@ -437,9 +437,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#getU16BE%2Cstring%2Cint"><span class="Identifier">getU16BE</span></a><span class="Other">(</span><span class="Identifier">data</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">offset</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">uint16</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Decode a big-endian uint16 from the packet buffer.
-
+    
   </dd>
 </div>
 
@@ -449,9 +449,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#getU32BE%2Cstring%2Cint"><span class="Identifier">getU32BE</span></a><span class="Other">(</span><span class="Identifier">data</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">offset</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">uint32</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Decode a big-endian uint32 from the packet buffer.
-
+    
   </dd>
 </div>
 
@@ -460,9 +460,9 @@
   <div id="isPrivateIp,string">
   <dt><pre><span class="Keyword">proc</span> <a href="#isPrivateIp%2Cstring"><span class="Identifier">isPrivateIp</span></a><span class="Other">(</span><span class="Identifier">ip</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     True if the IPv4 address falls in a non-routable range: 10.0.0.0/8        (RFC 1918) 172.16.0.0/12     (RFC 1918) 192.168.0.0/16    (RFC 1918) 100.64.0.0/10     (CGNAT, RFC 6598) 169.254.0.0/16    (link-local)
-
+    
   </dd>
 </div>
 
@@ -472,9 +472,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#natPmpBuildExternalAddrRequest"><span class="Identifier">natPmpBuildExternalAddrRequest</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Build a 2-byte NAT-PMP external address request.
-
+    
   </dd>
 </div>
 
@@ -485,9 +485,9 @@
                                <span class="Identifier">externalPort</span><span class="Other">:</span> <span class="Identifier">uint16</span><span class="Other">;</span> <span class="Identifier">lifetime</span><span class="Other">:</span> <span class="Identifier">uint32</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Build a 12-byte NAT-PMP mapping request.
-
+    
   </dd>
 </div>
 
@@ -499,9 +499,9 @@
     <span class="Identifier">externalPort</span><span class="Other">:</span> <span class="Identifier">uint16</span><span class="Other">,</span> <span class="Identifier">lifetime</span><span class="Other">:</span> <span class="Identifier">uint32</span><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">NatError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Parse a NAT-PMP response. Raises NatError on invalid data.
-
+    
   </dd>
 </div>
 
@@ -511,9 +511,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#newNatManager%2Cstring%2Cint"><span class="Identifier">newNatManager</span></a><span class="Other">(</span><span class="Identifier">gatewayIp</span><span class="Other">:</span> <span class="Identifier">string</span> <span class="Other">=</span> <span class="StringLit">&quot;&quot;</span><span class="Other">;</span> <span class="Identifier">maxDepth</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">0</span><span class="Other">)</span><span class="Other">:</span> <a href="nat.html#NatManager"><span class="Identifier">NatManager</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Create a new NAT manager. If gatewayIp is empty, auto-detects the default gateway. maxDepth controls double-NAT: 0 = inner (will spawn outer if needed), 1 = outer (no further recursion).
-
+    
   </dd>
 </div>
 
@@ -523,9 +523,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#parseSoapResponse%2Cstring%2Cstring"><span class="Identifier">parseSoapResponse</span></a><span class="Other">(</span><span class="Identifier">xml</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">tagName</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Extract a value from a SOAP response XML by tag name.
-
+    
   </dd>
 </div>
 
@@ -535,9 +535,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#parseSsdpResponse%2Cstring"><span class="Identifier">parseSsdpResponse</span></a><span class="Other">(</span><span class="Identifier">data</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">[</span><span class="Identifier">location</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">,</span> <span class="Identifier">server</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">,</span>
     <span class="Identifier">st</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Parse an SSDP M-SEARCH response, extracting LOCATION, SERVER, and ST headers.
-
+    
   </dd>
 </div>
 
@@ -547,9 +547,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#parseUpnpControlUrl%2Cstring"><span class="Identifier">parseUpnpControlUrl</span></a><span class="Other">(</span><span class="Identifier">xml</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">[</span><span class="Identifier">controlUrl</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">,</span>
     <span class="Identifier">serviceType</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Extract the controlURL and serviceType from a UPnP device description XML. Uses simple string scanning (no XML library dependency). Searches within each &lt;service&gt;...&lt;/service&gt; block for the matching serviceType and its controlURL, regardless of element ordering.
-
+    
   </dd>
 </div>
 
@@ -559,9 +559,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#parseUrlComponents%2Cstring"><span class="Identifier">parseUrlComponents</span></a><span class="Other">(</span><span class="Identifier">url</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">[</span><span class="Identifier">host</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">,</span> <span class="Identifier">port</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">,</span>
     <span class="Identifier">path</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">,</span> <span class="Identifier">isHttps</span><span class="Other">:</span> <span class="Identifier">bool</span><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Parse a URL into host, port, path components.
-
+    
   </dd>
 </div>
 
@@ -573,9 +573,9 @@
                         <span class="Identifier">lifetime</span><span class="Other">:</span> <span class="Identifier">uint32</span><span class="Other">;</span> <span class="Identifier">nonce</span><span class="Other">:</span> <span class="Identifier">array</span><span class="Other">[</span><span class="DecNumber">12</span><span class="Other">,</span> <span class="Identifier">byte</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ValueError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Build a 60-byte PCP MAP request.
-
+    
   </dd>
 </div>
 
@@ -587,9 +587,9 @@
     <span class="Identifier">protocol</span><span class="Other">:</span> <span class="Identifier">byte</span><span class="Other">,</span> <span class="Identifier">internalPort</span><span class="Other">:</span> <span class="Identifier">uint16</span><span class="Other">,</span> <span class="Identifier">externalPort</span><span class="Other">:</span> <span class="Identifier">uint16</span><span class="Other">,</span>
     <span class="Identifier">externalIp</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">NatError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Parse a PCP response. Raises NatError on invalid data.
-
+    
   </dd>
 </div>
 
@@ -599,9 +599,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#shutdown%2CNatManager"><span class="Identifier">shutdown</span></a><span class="Other">(</span><span class="Identifier">mgr</span><span class="Other">:</span> <a href="nat.html#NatManager"><span class="Identifier">NatManager</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -614,9 +614,9 @@
                         <span class="Identifier">lifetime</span><span class="Other">:</span> <span class="Identifier">uint32</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Build a SOAP AddPortMapping XML envelope.
-
+    
   </dd>
 </div>
 
@@ -627,9 +627,9 @@
                            <span class="Identifier">proto</span><span class="Other">:</span> <a href="nat.html#MappingProto"><span class="Identifier">MappingProto</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Ask the gateway to remove a SOAP port mapping.
-
+    
   </dd>
 </div>
 
@@ -639,9 +639,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#soapGetExternalIPAddress%2Cstring"><span class="Identifier">soapGetExternalIPAddress</span></a><span class="Other">(</span><span class="Identifier">serviceType</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Ask the gateway for its external IP address over SOAP.
-
+    
   </dd>
 </div>
 
@@ -651,9 +651,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#startRenewal%2CNatManager"><span class="Identifier">startRenewal</span></a><span class="Other">(</span><span class="Identifier">mgr</span><span class="Other">:</span> <a href="nat.html#NatManager"><span class="Identifier">NatManager</span></a><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
-
-
+    
+    
+    
   </dd>
 </div>
 
@@ -664,17 +664,17 @@
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">IOSelectorsException</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">TimeEffect</span><span class="Other">,</span> <span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
-
+    
     Run the operation with a deadline and report whether it completed.
-
+    
   </dd>
 </div>
 <div id="withTimeoutBool,CpsFuture[T],int">
   <dt><pre><span class="Keyword">proc</span> <a href="#withTimeoutBool%2CCpsFuture%5BT%5D%2Cint"><span class="Identifier">withTimeoutBool</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">timeoutMs</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span><span class="Other">:</span> <a href="../runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">bool</span><span class="Other">]</span></pre></dt>
   <dd>
-
+    
     Run the operation with a deadline and report whether it completed.
-
+    
   </dd>
 </div>
 
@@ -689,10 +689,10 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-26 19:56:16 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:22 UTC</small>
       </div>
     </div>
   </div>
-
+  
 </body>
 </html>

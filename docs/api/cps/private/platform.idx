@@ -1,12 +1,12 @@
 nimTitle	platform	cps/private/platform.html	module cps/private/platform		0
-nim	isWouldBlock	cps/private/platform.html#isWouldBlock,OSErrorCode	proc isWouldBlock(err: OSErrorCode): bool		40
-nim	isInProgress	cps/private/platform.html#isInProgress,OSErrorCode	proc isInProgress(err: OSErrorCode): bool		49
-nim	isInterrupted	cps/private/platform.html#isInterrupted,OSErrorCode	proc isInterrupted(err: OSErrorCode): bool		60
-nim	isEPipe	cps/private/platform.html#isEPipe,OSErrorCode	proc isEPipe(err: OSErrorCode): bool		67
-nim	createWakePipe	cps/private/platform.html#createWakePipe	proc createWakePipe(): (SocketHandle, SocketHandle)		87
-nim	wakePipeSignal	cps/private/platform.html#wakePipeSignal,SocketHandle	proc wakePipeSignal(fd: SocketHandle)		97
-nim	wakePipeDrain	cps/private/platform.html#wakePipeDrain,SocketHandle	proc wakePipeDrain(fd: SocketHandle)		108
-nim	closePipeFd	cps/private/platform.html#closePipeFd,SocketHandle	proc closePipeFd(fd: SocketHandle)		114
-nim	getProcessId	cps/private/platform.html#getProcessId	proc getProcessId(): int		236
-nim	hostsFilePath	cps/private/platform.html#hostsFilePath	proc hostsFilePath(): string		250
-nim	resolvConfPath	cps/private/platform.html#resolvConfPath	proc resolvConfPath(): string		257
+nim	isWouldBlock	cps/private/platform.html#isWouldBlock,OSErrorCode	proc isWouldBlock(err: OSErrorCode): bool		81
+nim	isInProgress	cps/private/platform.html#isInProgress,OSErrorCode	proc isInProgress(err: OSErrorCode): bool		90
+nim	isInterrupted	cps/private/platform.html#isInterrupted,OSErrorCode	proc isInterrupted(err: OSErrorCode): bool		101
+nim	isEPipe	cps/private/platform.html#isEPipe,OSErrorCode	proc isEPipe(err: OSErrorCode): bool		108
+nim	createWakePipe	cps/private/platform.html#createWakePipe	proc createWakePipe(): (SocketHandle, SocketHandle)		128
+nim	wakePipeSignal	cps/private/platform.html#wakePipeSignal,SocketHandle	proc wakePipeSignal(fd: SocketHandle)		138
+nim	wakePipeDrain	cps/private/platform.html#wakePipeDrain,SocketHandle	proc wakePipeDrain(fd: SocketHandle)		149
+nim	closePipeFd	cps/private/platform.html#closePipeFd,SocketHandle	proc closePipeFd(fd: SocketHandle)		155
+nim	getProcessId	cps/private/platform.html#getProcessId	proc getProcessId(): int		278
+nim	hostsFilePath	cps/private/platform.html#hostsFilePath	proc hostsFilePath(): string		292
+nim	resolvConfPath	cps/private/platform.html#resolvConfPath	proc resolvConfPath(): string		299

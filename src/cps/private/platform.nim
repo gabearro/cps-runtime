@@ -173,7 +173,7 @@ elif defined(windows):
 
     var sAddr: Sockaddr_in
     zeroMem(addr sAddr, sizeof(sAddr))
-    sAddr.sin_family = AF_INET.TSa_Family
+    sAddr.sin_family = uint16(toInt(AF_INET))
     sAddr.sin_addr.s_addr = LoopbackAddr
 
     if bindAddr(listener, cast[ptr SockAddr](addr sAddr),
@@ -198,7 +198,7 @@ elif defined(windows):
 
     var connAddr: Sockaddr_in
     zeroMem(addr connAddr, sizeof(connAddr))
-    connAddr.sin_family = AF_INET.TSa_Family
+    connAddr.sin_family = uint16(toInt(AF_INET))
     connAddr.sin_port = localAddr.sin_port
     connAddr.sin_addr.s_addr = LoopbackAddr
 
@@ -269,6 +269,7 @@ when defined(windows):
   const NI_NUMERICSERV* = 2.cint
 
   var TCP_NODELAY* {.importc: "TCP_NODELAY", header: "<winsock2.h>".}: cint
+  var IPV6_V6ONLY* {.importc: "IPV6_V6ONLY", header: "<ws2tcpip.h>".}: cint
 
 # ============================================================
 # Process ID
