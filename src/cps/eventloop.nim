@@ -35,6 +35,9 @@ type LoopStats* = object
   lastTickDurationUs*: int64  ## Last tick duration in microseconds
 
 type
+  EventLoopRawProc* = proc(ctx: pointer) {.nimcall, gcsafe.}
+    ## Unmanaged callback accepted by ``postRawToEventLoop``.
+
   TimerState = ref object
     cancelled: Atomic[bool]
 
@@ -77,6 +80,8 @@ type
       # normally bounded by the 64-entry readiness batch.
       deferredDisarms: seq[SocketHandle]
     stats*: LoopStats
+
+const RawPostedCallback = -2
 
 proc timerLess(a, b: TimerEntry): bool {.inline.} =
   a.deadline < b.deadline
@@ -244,7 +249,9 @@ proc getEventLoopForRuntime*(rt: CpsRuntime): EventLoop =
 
 proc getEventLoop*(handle: RuntimeHandle): EventLoop =
   ## Return the event loop bound to the current thread.
-  let rt = if handle.runtime != nil: handle.runtime else: mainRuntime().runtime
+  let mainHandle = if handle.runtime == nil: mainRuntime() else: default(RuntimeHandle)
+  let rt {.cursor.} =
+    if handle.runtime != nil: handle.runtime else: mainHandle.runtime
   getEventLoopForRuntime(rt)
 
 proc getEventLoop*(): EventLoop =
@@ -254,7 +261,8 @@ proc getEventLoop*(): EventLoop =
 
 proc setEventLoop*(loop: EventLoop) =
   ## Compatibility helper: sets the main runtime's loop.
-  let rt = mainRuntime().runtime
+  let handle = mainRuntime()
+  let rt {.cursor.} = handle.runtime
   ensureLoopInitLockReady()
   acquire(gLoopInitLock)
   loop.ownerRuntime = rt
@@ -303,6 +311,31 @@ proc postToEventLoop*(loop: EventLoop, cbArg: sink CrossThreadCallback) =
       if route.release != nil:
         route.retain(route.ctx)
         posted.returnRoute = route
+  let node = allocNode(posted)
+  enqueue(loop.crossThreadQueue, node)
+  loop.tryWakeSelector()
+
+proc postOwnedToEventLoop*(loop: EventLoop, task: OwnedClosureTask) =
+  ## Post an already-owned callback task without changing its release owner.
+  ## The event-loop thread takes ownership of the closure environment.
+  assert loop.mtActive, "postOwnedToEventLoop called on non-MT event loop"
+  var posted = PostedCallback(
+    task: task,
+    sourceWorker: -1,
+    returnRoute: default(ClosureReturnRoute))
+  let node = allocNode(posted)
+  enqueue(loop.crossThreadQueue, node)
+  loop.tryWakeSelector()
+
+proc postRawToEventLoop*(loop: EventLoop, cb: EventLoopRawProc,
+                         ctx: pointer) =
+  ## Post an unmanaged function/context pair to the event-loop owner.
+  ## No managed closure environment crosses the thread boundary.
+  assert loop.mtActive, "postRawToEventLoop called on non-MT event loop"
+  var posted = PostedCallback(
+    task: OwnedClosureTask(fn: cast[pointer](cb), env: ctx),
+    sourceWorker: RawPostedCallback,
+    returnRoute: default(ClosureReturnRoute))
   let node = allocNode(posted)
   enqueue(loop.crossThreadQueue, node)
   loop.tryWakeSelector()
@@ -552,6 +585,14 @@ proc drainCrossThreadQueue*(loop: EventLoop) =
     var posted = takePayload(node)
     freeNode(node)
     if posted.task.fn != nil:
+      if posted.sourceWorker == RawPostedCallback:
+        try:
+          cast[EventLoopRawProc](posted.task.fn)(posted.task.env)
+          inc drained
+        except CatchableError:
+          loop.recordCallbackError()
+        posted.task = default(OwnedClosureTask)
+        continue
       when not compileOption("gc", "atomicArc"):
         if posted.sourceWorker >= 0 and
            (not isSchedulerWorker or currentWorkerId != posted.sourceWorker):
@@ -665,8 +706,12 @@ proc processIo(loop: EventLoop, timeoutMs: int): int {.warning[ProveInit]: off.}
     if ev.fd == int(loop.wakePipeRead):
       platform.wakePipeDrain(loop.wakePipeRead)
       loop.recordWakeSignal()
-      loop.drainCrossThreadQueue()
+      # The readiness event covers every producer that observed the old true
+      # state. Publish false before running callbacks so a completion arriving
+      # during the drain must emit a fresh byte instead of being stranded when
+      # this reactor returns to a blocking select.
       loop.markWakeDrained()
+      loop.drainCrossThreadQueue()
       if loop.crossThreadQueue.hasPending():
         loop.tryWakeSelector()
       inc result
@@ -953,8 +998,8 @@ proc blockOn*[T](handle: RuntimeHandle, fut: CpsFuture[T]): T =
   let rtHandle =
     if handle.runtime != nil: handle
     else: currentRuntime()
-  let targetRt = rtHandle.runtime
-  let futRt = fut.ownerRuntime
+  let targetRt {.cursor.} = rtHandle.runtime
+  let futRt {.cursor.} = fut.ownerRuntime
   if futRt == nil:
     fut.bindFutureRuntime(rtHandle)
   elif futRt != targetRt and not fut.tryMigrateTo(rtHandle):
@@ -990,8 +1035,8 @@ proc blockOn*(handle: RuntimeHandle, fut: CpsVoidFuture) =
   let rtHandle =
     if handle.runtime != nil: handle
     else: currentRuntime()
-  let targetRt = rtHandle.runtime
-  let futRt = fut.ownerRuntime
+  let targetRt {.cursor.} = rtHandle.runtime
+  let futRt {.cursor.} = fut.ownerRuntime
   if futRt == nil:
     fut.bindFutureRuntime(rtHandle)
   elif futRt != targetRt and not fut.tryMigrateTo(rtHandle):
@@ -1264,7 +1309,7 @@ proc spawnOn*[T](handle: RuntimeHandle, fut: CpsFuture[T], name: string = ""): T
   let target =
     if handle.runtime != nil: handle
     else: currentRuntime()
-  let futRt = fut.ownerRuntime
+  let futRt {.cursor.} = fut.ownerRuntime
   if futRt == nil:
     fut.bindFutureRuntime(target)
   elif futRt != target.runtime and not fut.tryMigrateTo(target):
@@ -1279,7 +1324,7 @@ proc spawnOn*(handle: RuntimeHandle, fut: CpsVoidFuture, name: string = ""): Voi
   let target =
     if handle.runtime != nil: handle
     else: currentRuntime()
-  let futRt = fut.ownerRuntime
+  let futRt {.cursor.} = fut.ownerRuntime
   if futRt == nil:
     fut.bindFutureRuntime(target)
   elif futRt != target.runtime and not fut.tryMigrateTo(target):

@@ -112,10 +112,10 @@
 <li><a class="reference" href="#RuntimeFlavor" title="RuntimeFlavor = enum
   rfCurrentThread, rfMultiThread">RuntimeFlavor</a></li>
 <li><a class="reference" href="#RuntimeGuard" title="RuntimeGuard = object
-  prev*: CpsRuntime
+  prev* {.cursor.}: CpsRuntime
   active*: bool">RuntimeGuard</a></li>
 <li><a class="reference" href="#RuntimeHandle" title="RuntimeHandle = object
-  runtime*: CpsRuntime">RuntimeHandle</a></li>
+  runtime* {.cursor.}: CpsRuntime">RuntimeHandle</a></li>
 <li><a class="reference" href="#RuntimeStats" title="RuntimeStats = object
   completions*: int
   failures*: int
@@ -152,6 +152,15 @@
 <li><a class="reference" href="#mtWakeReactor" title="mtWakeReactor {.threadvar.}: proc () {.closure, gcsafe.}">mtWakeReactor</a></li>
 <li><a class="reference" href="#mtYieldDispatcher" title="mtYieldDispatcher {.threadvar.}: proc (cb: sink proc () {.closure, gcsafe.}) {.
     closure, gcsafe.}">mtYieldDispatcher</a></li>
+
+    </ul>
+  </details>
+</li>
+<li>
+  <details open>
+    <summary><a class="reference reference-toplevel" href="#10" id="60">Consts</a></summary>
+    <ul class="simple simple-toc-section">
+      <li><a class="reference" href="#MainReactorCallbackWorker" title="MainReactorCallbackWorker = -2">MainReactorCallbackWorker</a></li>
 
     </ul>
   </details>
@@ -219,6 +228,10 @@
   <li><a class="reference" href="#completedVoidFuture" title="completedVoidFuture(): CpsVoidFuture">completedVoidFuture(): CpsVoidFuture</a></li>
 
 </ul>
+<ul class="simple nested-toc-section">completeTransferred
+  <li><a class="reference" href="#completeTransferred%2CCpsFuture%5BT%5D%2CsinkT" title="completeTransferred[T](fut: CpsFuture[T]; valArg: sink T)">completeTransferred[T](fut: CpsFuture[T]; valArg: sink T)</a></li>
+
+</ul>
 <ul class="simple nested-toc-section">currentRuntime
   <li><a class="reference" href="#currentRuntime" title="currentRuntime(): RuntimeHandle">currentRuntime(): RuntimeHandle</a></li>
 
@@ -268,6 +281,11 @@
 </ul>
 <ul class="simple nested-toc-section">failedVoidFuture
   <li><a class="reference" href="#failedVoidFuture%2Cref.CatchableError" title="failedVoidFuture(err: ref CatchableError): CpsVoidFuture">failedVoidFuture(err: ref CatchableError): CpsVoidFuture</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">failTransferred
+  <li><a class="reference" href="#failTransferred%2CCpsVoidFuture%2C" title="failTransferred(fut: CpsVoidFuture; errArg: sink ref CatchableError)">failTransferred(fut: CpsVoidFuture; errArg: sink ref CatchableError)</a></li>
+<li><a class="reference" href="#failTransferred%2CCpsFuture%5BT%5D%2C" title="failTransferred[T](fut: CpsFuture[T]; errArg: sink ref CatchableError)">failTransferred[T](fut: CpsFuture[T]; errArg: sink ref CatchableError)</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">finished
@@ -474,6 +492,10 @@
   <li><a class="reference" href="#setCurrentRuntime%2CCpsRuntime" title="setCurrentRuntime(rt: CpsRuntime)">setCurrentRuntime(rt: CpsRuntime)</a></li>
 
 </ul>
+<ul class="simple nested-toc-section">setCurrentRuntimeBorrowed
+  <li><a class="reference" href="#setCurrentRuntimeBorrowed%2CCpsRuntime" title="setCurrentRuntimeBorrowed(rt: CpsRuntime)">setCurrentRuntimeBorrowed(rt: CpsRuntime)</a></li>
+
+</ul>
 <ul class="simple nested-toc-section">setFutureRootContinuation
   <li><a class="reference" href="#setFutureRootContinuation%2CCpsVoidFuture%2CContinuation" title="setFutureRootContinuation(fut: CpsVoidFuture; c: Continuation)">setFutureRootContinuation(fut: CpsVoidFuture; c: Continuation)</a></li>
 <li><a class="reference" href="#setFutureRootContinuation%2CCpsFuture%5BT%5D%2CContinuation" title="setFutureRootContinuation[T](fut: CpsFuture[T]; c: Continuation)">setFutureRootContinuation[T](fut: CpsFuture[T]; c: Continuation)</a></li>
@@ -550,7 +572,7 @@
 <li>Error state for exception propagation</li>
 </ul>
 <p>Execution uses a trampoline: instead of recursing through continuations, each step returns the next continuation to run, and a loop drives them.</p>
-Promote the future to shared-safe state before it crosses a thread boundary.Promote the future to shared-safe state before it crosses a thread boundary.Complete the future and notify its waiters.Complete the future and notify its waiters.Fail the future and notify its waiters.Fail the future and notify its waiters.</p>
+Promote the future to shared-safe state before it crosses a thread boundary.Promote the future to shared-safe state before it crosses a thread boundary.Complete the future and notify its waiters.Complete the future and notify its waiters.Move a worker-owned value into a shared future without foreign RC traffic.Fail the future and notify its waiters.Fail the future and notify its waiters.Move a worker-owned error into a shared future without foreign RC traffic.Move a worker-owned error into a shared void future without foreign RC traffic.</p>
     <div class="section" id="6">
   <h1><a class="toc-backref" href="#6">Imports</a></h1>
   <dl class="item">
@@ -699,7 +721,7 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
 </div>
 <div id="RuntimeGuard">
   <dt><pre><a href="runtime.html#RuntimeGuard"><span class="Identifier">RuntimeGuard</span></a> <span class="Other">=</span> <span class="Keyword">object</span>
-  <span class="Identifier">prev</span><span class="Operator">*</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a>
+  <span class="Identifier">prev</span><span class="Operator">*</span> {.<span class="Identifier">cursor</span>.}<span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a>
   <span class="Identifier">active</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
   <dd>
     
@@ -709,10 +731,10 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
 </div>
 <div id="RuntimeHandle">
   <dt><pre><a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a> <span class="Other">=</span> <span class="Keyword">object</span>
-  <span class="Identifier">runtime</span><span class="Operator">*</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a></pre></dt>
+  <span class="Identifier">runtime</span><span class="Operator">*</span> {.<span class="Identifier">cursor</span>.}<span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a></pre></dt>
   <dd>
     
-    Cloneable lightweight runtime reference (Tokio-like Handle).
+    Borrowed lightweight runtime reference (Tokio-like Handle). The runtime remains valid until its explicit shutdown.
     
   </dd>
 </div>
@@ -856,6 +878,20 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
 <div id="mtYieldDispatcher">
   <dt><pre><a href="runtime.html#mtYieldDispatcher"><span class="Identifier">mtYieldDispatcher</span></a> {.<span class="Identifier">threadvar</span>.}<span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">cb</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span class="Identifier">closure</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}<span class="Other">)</span> {.
     <span class="Identifier">closure</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
+  <dd>
+    
+    
+    
+  </dd>
+</div>
+
+  </dl>
+</div>
+<div class="section" id="10">
+  <h1><a class="toc-backref" href="#10">Consts</a></h1>
+  <dl class="item">
+    <div id="MainReactorCallbackWorker">
+  <dt><pre><a href="runtime.html#MainReactorCallbackWorker"><span class="Identifier">MainReactorCallbackWorker</span></a> <span class="Other">=</span> <span class="DecNumber">-2</span></pre></dt>
   <dd>
     
     
@@ -1063,6 +1099,17 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
 </div>
 
 </div>
+<div id="completeTransferred-procs-all">
+  <div id="completeTransferred,CpsFuture[T],sinkT">
+  <dt><pre><span class="Keyword">proc</span> <a href="#completeTransferred%2CCpsFuture%5BT%5D%2CsinkT"><span class="Identifier">completeTransferred</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">valArg</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Identifier">T</span><span class="Other">)</span></pre></dt>
+  <dd>
+    
+    
+    
+  </dd>
+</div>
+
+</div>
 <div id="currentRuntime-procs-all">
   <div id="currentRuntime">
   <dt><pre><span class="Keyword">proc</span> <a href="#currentRuntime"><span class="Identifier">currentRuntime</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <a href="runtime.html#RuntimeHandle"><span class="Identifier">RuntimeHandle</span></a> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
@@ -1225,6 +1272,26 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
   <dd>
     
     Create a void future that is already failed with an error.
+    
+  </dd>
+</div>
+
+</div>
+<div id="failTransferred-procs-all">
+  <div id="failTransferred,CpsVoidFuture,">
+  <dt><pre><span class="Keyword">proc</span> <a href="#failTransferred%2CCpsVoidFuture%2C"><span class="Identifier">failTransferred</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">;</span> <span class="Identifier">errArg</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Keyword">ref</span> <span class="Identifier">CatchableError</span><span class="Other">)</span> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RuntimeAffinityError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+    
+    
+    
+  </dd>
+</div>
+<div id="failTransferred,CpsFuture[T],">
+  <dt><pre><span class="Keyword">proc</span> <a href="#failTransferred%2CCpsFuture%5BT%5D%2C"><span class="Identifier">failTransferred</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsFuture"><span class="Identifier">CpsFuture</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">errArg</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Keyword">ref</span> <span class="Identifier">CatchableError</span><span class="Other">)</span></pre></dt>
+  <dd>
+    
+    
     
   </dd>
 </div>
@@ -1886,6 +1953,18 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
 </div>
 
 </div>
+<div id="setCurrentRuntimeBorrowed-procs-all">
+  <div id="setCurrentRuntimeBorrowed,CpsRuntime">
+  <dt><pre><span class="Keyword">proc</span> <a href="#setCurrentRuntimeBorrowed%2CCpsRuntime"><span class="Identifier">setCurrentRuntimeBorrowed</span></a><span class="Other">(</span><span class="Identifier">rt</span><span class="Other">:</span> <a href="runtime.html#CpsRuntime"><span class="Identifier">CpsRuntime</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+    
+    Bind a runtime pointer on an auxiliary worker without copying its managed compatibility dispatch closures into that worker's ARC/ORC heap.
+    
+  </dd>
+</div>
+
+</div>
 <div id="setFutureRootContinuation-procs-all">
   <div id="setFutureRootContinuation,CpsVoidFuture,Continuation">
   <dt><pre><span class="Keyword">proc</span> <a href="#setFutureRootContinuation%2CCpsVoidFuture%2CContinuation"><span class="Identifier">setFutureRootContinuation</span></a><span class="Other">(</span><span class="Identifier">fut</span><span class="Other">:</span> <a href="runtime.html#CpsVoidFuture"><span class="Identifier">CpsVoidFuture</span></a><span class="Other">;</span> <span class="Identifier">c</span><span class="Other">:</span> <a href="runtime.html#Continuation"><span class="Identifier">Continuation</span></a><span class="Other">)</span> {.<span class="Identifier">inline</span><span class="Other">,</span>
@@ -2065,7 +2144,7 @@ Promote the future to shared-safe state before it crosses a thread boundary.Prom
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:29 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 17:32:49 UTC</small>
       </div>
     </div>
   </div>

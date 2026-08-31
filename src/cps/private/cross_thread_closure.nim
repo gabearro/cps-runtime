@@ -1,7 +1,5 @@
 ## Move-only two-word closure messages for ARC/ORC thread boundaries.
 
-import std/atomics
-
 type
   OwnedClosureTask* = object
     ## Ref-count-neutral representation of a Nim closure pair.
@@ -21,22 +19,6 @@ type
     retain*: ClosureRetainProc
     release*: ClosureReturnProc
 
-  # Mirrors system.TNimTypeV2 through `flags`. The optional name field is
-  # present in checked/type-named builds and was the source of the original
-  # bad offset. Keep the condition synchronized with system.nim.
-  OrcTypePrefix = object
-    destructor: pointer
-    size: int
-    alignment: int16
-    depth: int16
-    display: pointer
-    when defined(nimTypeNames) or defined(nimArcIds) or
-         defined(nimOrcLeakDetector):
-      name: cstring
-    traceImpl: pointer
-    typeInfoV1: pointer
-    flags: Atomic[int]
-
 var closureReturnRoute {.threadvar.}: ClosureReturnRoute
 
 proc bindClosureReturnRoute*(route: ClosureReturnRoute) {.inline.} =
@@ -52,18 +34,12 @@ proc currentClosureReturnRoute*(): ClosureReturnRoute {.inline.} =
   closureReturnRoute
 
 proc prepareCrossThreadClosure*[T](cb: var T) {.inline.} =
-  ## Prevent a transferred one-shot closure environment from entering the
-  ## producer's thread-local ORC cycle-root list. Generated closure types are
-  ## unique to their lexical task site; their captured graph is released on
-  ## its owner worker (or returned there after remote invocation).
+  ## Validate the closure-pair ABI used by the ownership queues.
+  ##
+  ## ARC/ORC type descriptors are process-global and immutable here. Closure
+  ## environments are instead invoked remotely as raw pairs and returned to
+  ## their allocating worker for destruction.
   static: assert sizeof(T) == sizeof(OwnedClosureTask)
-  when compileOption("gc", "orc"):
-    var words: array[2, pointer]
-    copyMem(addr words, addr cb, sizeof(words))
-    if words[1] != nil:
-      let desc = cast[ptr ptr OrcTypePrefix](words[1])[]
-      if desc != nil and (desc.flags.load(moRelaxed) and 1) == 0:
-        discard desc.flags.fetchOr(1, moRelaxed)
 
 proc takeClosureTask*[T](cb: var T): OwnedClosureTask {.inline.} =
   ## Move a Nim closure pair into a ref-count-neutral message.

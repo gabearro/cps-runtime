@@ -6,79 +6,59 @@
 
 import std/[cpuinfo, atomics, sysatomics]
 import ../private/mpmc_ring
-import ../private/mpsc_queue
 import ../private/atomic_parker
 import ../private/cross_thread_closure
 when defined(linux):
   import ../private/platform
 
 type
-  TaskProc = proc() {.gcsafe.}
+  ThreadSetupProc* = proc(ctx: pointer) {.nimcall, gcsafe.}
+    ## Initialize one blocking-pool worker from unmanaged state.
+  RawPoolTaskProc* = proc(ctx: pointer) {.nimcall, gcsafe.}
+    ## Execute an unmanaged blocking-pool work item.
+  RawPoolJobHeader* = object
+    ## Header embedded at offset zero in jobs submitted with ``submitRawJob``.
+    run*: RawPoolTaskProc
   PoolState = object
     tasks: MpmcRingQueue[OwnedClosureTask]
-    releaseQueues: ptr UncheckedArray[MpscQueue[OwnedClosureTask]]
-    workerCount: int
-    pendingReleases: Atomic[int]
     parker: AtomicParker
     shutdown: Atomic[bool]
     parkedCount: Atomic[int]
 
   WorkerArg = object
     state: ptr PoolState
-    idx: int
-    setup: proc() {.gcsafe.}
+    setup: ThreadSetupProc
+    setupCtx: pointer
 
   ThreadPool* {.acyclic.} = ref object
     workers: seq[Thread[WorkerArg]]
     state: ptr PoolState
     dead: bool
 
-proc retainReturnedClosure(ctx: pointer) {.nimcall, gcsafe.} =
-  let s = cast[ptr PoolState](ctx)
-  discard s.pendingReleases.fetchAdd(1, moAcquireRelease)
+proc rawPoolTaskMarker() {.nimcall, gcsafe.} = discard
 
-proc returnClosure(ctx: pointer, owner: int,
-                   task: OwnedClosureTask) {.nimcall, gcsafe.} =
-  let s = cast[ptr PoolState](ctx)
-  var owned = task
-  let node = allocNode(owned)
-  enqueue(s.releaseQueues[owner], node)
-  # A shared parker keeps idle memory to one epoch. Wake every pool worker so
-  # the exact ORC owner drains its shard without per-worker kernel objects.
-  s.parker.notifyAll()
-
-proc drainReturnedClosures(s: ptr PoolState, owner: int) {.inline.} =
-  while true:
-    let node = dequeue(s.releaseQueues[owner])
-    if node == nil:
-      break
-    var task = takePayload(node)
-    freeNode(node)
-    releaseClosureTask(task, TaskProc)
-    let previous = s.pendingReleases.fetchSub(1, moAcquireRelease)
-    if previous == 1 and s.shutdown.load(moAcquire):
-      s.parker.notifyAll()
+proc runPoolTask(task: var OwnedClosureTask) {.inline.} =
+  assert task.fn == cast[pointer](rawPoolTaskMarker),
+    "blocking pool received a managed closure task"
+  let job = cast[ptr RawPoolJobHeader](task.env)
+  task = default(OwnedClosureTask)
+  job.run(cast[pointer](job))
 
 proc workerMain(arg: WorkerArg) {.thread.} =
   if arg.setup != nil:
-    arg.setup()
+    arg.setup(arg.setupCtx)
   let s = arg.state
-  bindClosureReturnRoute(ClosureReturnRoute(
-    ctx: cast[pointer](s), owner: arg.idx,
-    retain: retainReturnedClosure, release: returnClosure))
   while true:
-    drainReturnedClosures(s, arg.idx)
     var task: OwnedClosureTask
     if s.tasks.tryDequeue(task):
       try:
-        runClosureTask(task, TaskProc)
+        runPoolTask(task)
       except CatchableError:
         discard
       continue
 
     # No work available — park until signalled
-    if s.shutdown.load(moAcquire) and
-       s.pendingReleases.load(moAcquire) == 0:
+    if s.shutdown.load(moAcquire):
       break
     let observedEpoch = s.parker.prepareWait()
     discard s.parkedCount.fetchAdd(1, moAcquireRelease)
@@ -86,18 +66,15 @@ proc workerMain(arg: WorkerArg) {.thread.} =
     if s.tasks.tryDequeue(task):
       discard s.parkedCount.fetchSub(1, moAcquireRelease)
       try:
-        runClosureTask(task, TaskProc)
+        runPoolTask(task)
       except CatchableError:
         discard
       continue
-    if s.shutdown.load(moAcquire) and
-       s.pendingReleases.load(moAcquire) == 0:
+    if s.shutdown.load(moAcquire):
       discard s.parkedCount.fetchSub(1, moAcquireRelease)
       break
     s.parker.wait(observedEpoch)
     discard s.parkedCount.fetchSub(1, moAcquireRelease)
-  drainReturnedClosures(s, arg.idx)
-  clearClosureReturnRoute()
 
 proc wakeOne(s: ptr PoolState) {.inline.} =
   if s.parkedCount.load(moAcquire) <= 0:
@@ -105,11 +82,12 @@ proc wakeOne(s: ptr PoolState) {.inline.} =
   s.parker.notifyOne()
 
 proc newThreadPool*(numThreads: int = 0,
-                    workerSetup: proc() {.gcsafe.} = nil,
+                    workerSetup: ThreadSetupProc = nil,
+                    workerSetupCtx: pointer = nil,
                     maxPendingTasks: int = 65536): ThreadPool =
   ## Create a thread pool with the given number of workers.
   ## If numThreads is 0, defaults to the process's available processors.
-  ## workerSetup is called once on each worker thread before it starts processing.
+  ## ``workerSetup`` is called with unmanaged context once on every worker.
   let detectedProcessors =
     when defined(linux):
       let allowed = platform.allowedCpuIds()
@@ -121,49 +99,30 @@ proc newThreadPool*(numThreads: int = 0,
   result = ThreadPool()
   result.state = cast[ptr PoolState](allocShared0(sizeof(PoolState)))
   initMpmcRingQueue(result.state.tasks, cap)
-  result.state.workerCount = n
-  result.state.releaseQueues = cast[ptr UncheckedArray[MpscQueue[OwnedClosureTask]]](
-    allocShared0(n * sizeof(MpscQueue[OwnedClosureTask])))
-  for i in 0 ..< n:
-    initMpscQueue(result.state.releaseQueues[i])
-  result.state.pendingReleases.store(0, moRelaxed)
   initAtomicParker(result.state.parker)
   result.state.shutdown.store(false, moRelaxed)
   result.state.parkedCount.store(0, moRelaxed)
   result.workers = newSeq[Thread[WorkerArg]](n)
-  var setup = workerSetup
-  if setup != nil:
-    prepareCrossThreadClosure(setup)
   for i in 0 ..< n:
-    let arg = WorkerArg(state: result.state, idx: i, setup: setup)
+    let arg = WorkerArg(state: result.state,
+                        setup: workerSetup, setupCtx: workerSetupCtx)
     createThread(result.workers[i], workerMain, arg)
 
-proc trySubmit*(pool: ThreadPool, taskArg: sink TaskProc): bool =
-  ## Non-blocking submit. Returns false if the queue is full or pool is shut down.
-  if pool.state.shutdown.load(moAcquire):
+proc submitRawJob*(pool: ThreadPool, job: pointer): bool =
+  ## Submit a shared unmanaged job whose first field is ``RawPoolJobHeader``.
+  ## The job owns its storage and must retire it from its ``run`` callback.
+  if job == nil or pool.state.shutdown.load(moAcquire):
     return false
-  var closure = move(taskArg)
-  var task = takeClosureTask(closure)
-  result = pool.state.tasks.tryEnqueue(task)
-  if result:
-    task = default(OwnedClosureTask)
-    wakeOne(pool.state)
-  else:
-    releaseClosureTask(task, TaskProc)
-
-proc submit*(pool: ThreadPool, taskArg: sink TaskProc) =
-  ## Submit a task. Spins briefly if the queue is full, then yields.
-  if pool.state.shutdown.load(moAcquire):
-    return
-  var closure = move(taskArg)
-  var task = takeClosureTask(closure)
+  let header = cast[ptr RawPoolJobHeader](job)
+  assert header.run != nil, "raw blocking-pool job has no runner"
+  var task = OwnedClosureTask(
+    fn: cast[pointer](rawPoolTaskMarker), env: job)
   while not pool.state.tasks.tryEnqueue(task):
     if pool.state.shutdown.load(moAcquire):
-      releaseClosureTask(task, TaskProc)
-      return
+      return false
     cpuRelax()
-  task = default(OwnedClosureTask)
   wakeOne(pool.state)
+  result = true
 
 proc len*(pool: ThreadPool): int =
   ## Number of worker threads.
@@ -183,8 +142,5 @@ proc shutdown*(pool: ThreadPool) =
   # leaves allocator metadata pointing into destroyed thread-local storage.
   pool.workers.setLen(0)
   deinitMpmcRingQueue(pool.state.tasks)
-  for i in 0 ..< pool.state.workerCount:
-    discardAll(pool.state.releaseQueues[i])
-  deallocShared(pool.state.releaseQueues)
   deallocShared(pool.state)
   pool.state = nil

@@ -41,6 +41,27 @@ type
     failed: Atomic[bool]
     setup: MtIoSetup
 
+  BlockingProc*[T] = proc(): T {.gcsafe.}
+    ## Thread-pool work that returns a value without touching reactor state.
+  BlockingVoidProc* = proc() {.gcsafe.}
+    ## Thread-pool work that completes without returning a value.
+
+  BlockingJob[T] = object
+    header: RawPoolJobHeader
+    runtime: pointer
+    future: pointer
+    ownerWorker: int
+    body: OwnedClosureTask
+
+  BlockingVoidJob = object
+    header: RawPoolJobHeader
+    runtime: pointer
+    future: pointer
+    ownerWorker: int
+    body: OwnedClosureTask
+
+  TransferredWorkerError {.cpsMtShardAcyclic.} = object of CatchableError
+
 const MtIoDrainHandleThreshold = 16
 
 var mtRuntimeLock: Lock
@@ -65,8 +86,8 @@ proc ensureMtRuntimeLockReady() {.inline.} =
 template asScheduler(rt: CpsRuntime): Scheduler =
   cast[Scheduler](if rt == nil: nil else: cast[pointer](rt.schedulerPtr))
 
-template asBlockingPool(rt: CpsRuntime): ThreadPool =
-  cast[ThreadPool](if rt == nil: nil else: cast[pointer](rt.blockingPoolPtr))
+template blockingPoolPointer(rt: CpsRuntime): pointer =
+  (if rt == nil: nil else: cast[pointer](rt.blockingPoolPtr))
 
 template asEventLoop(rt: CpsRuntime): EventLoop =
   cast[EventLoop](if rt == nil: nil else: cast[pointer](rt.eventLoopPtr))
@@ -143,11 +164,15 @@ proc runMtIoSetup(ctx: pointer, workerId: int) {.nimcall, gcsafe.} =
   finally:
     discard state.started.fetchAdd(1, moAcquireRelease)
 
-proc ensureBlockingPool(rt: CpsRuntime): ThreadPool =
+proc setupBlockingWorker(ctx: pointer) {.nimcall, gcsafe.} =
+  {.cast(gcsafe).}:
+    setCurrentRuntimeBorrowed(cast[CpsRuntime](ctx))
+
+proc ensureBlockingPool(rt: CpsRuntime): pointer =
   ## Lazily create the blocking pool. Most asynchronous applications never
   ## submit blocking work, so starting another CPU-sized thread set at runtime
   ## initialization wastes memory and scheduler resources.
-  result = asBlockingPool(rt)
+  result = blockingPoolPointer(rt)
   if result != nil:
     return
   ensureMtRuntimeLockReady()
@@ -155,25 +180,116 @@ proc ensureBlockingPool(rt: CpsRuntime): ThreadPool =
   try:
     if not rt.mtActive:
       return nil
-    result = asBlockingPool(rt)
+    result = blockingPoolPointer(rt)
     if result == nil:
       let rtPtr = cast[pointer](rt)
-      let workerSetup = proc() {.gcsafe.} =
-        {.cast(gcsafe).}:
-          setCurrentRuntime(cast[CpsRuntime](rtPtr))
-      result = newThreadPool(rt.blockingThreadCount, workerSetup,
-                             rt.maxBlockingQueue)
-      rt.blockingPoolPtr = cast[RootRef](cast[pointer](result))
+      let created = newThreadPool(rt.blockingThreadCount, setupBlockingWorker,
+                                  rtPtr, rt.maxBlockingQueue)
+      GC_ref(created)
+      copyMem(addr rt.blockingPoolPtr, unsafeAddr created,
+              sizeof(rt.blockingPoolPtr))
+      result = cast[pointer](created)
   finally:
     release(mtRuntimeLock)
 
-proc runtimeFromHandle(handle: RuntimeHandle): CpsRuntime {.inline.} =
+proc runtimeFromHandle(handle: RuntimeHandle): pointer {.inline.} =
   if handle.runtime != nil:
-    return handle.runtime
-  let cur = currentRuntime().runtime
-  if cur != nil:
-    return cur
-  mainRuntime().runtime
+    return cast[pointer](handle.runtime)
+  currentRuntimePointer()
+
+proc captureWorkerError(e: ref CatchableError): ref CatchableError {.inline.}
+
+proc cleanupBlockingJob[T](ctx: pointer,
+                           workerId: int) {.nimcall, gcsafe.} =
+  ## Retire the body and future root on their submitting scheduler worker.
+  let job = cast[ptr BlockingJob[T]](ctx)
+  releaseClosureTask(job.body, BlockingProc[T])
+  {.cast(gcsafe).}:
+    let fut {.cursor.} = cast[CpsFuture[T]](job.future)
+    GC_unref(fut)
+  deallocShared(job)
+
+proc cleanupMainBlockingJob[T](ctx: pointer) {.nimcall, gcsafe.} =
+  cleanupBlockingJob[T](ctx, MainReactorCallbackWorker)
+
+proc cleanupBlockingVoidJob(ctx: pointer,
+                            workerId: int) {.nimcall, gcsafe.} =
+  ## Retire a void body and future root on their submitting scheduler worker.
+  let job = cast[ptr BlockingVoidJob](ctx)
+  releaseClosureTask(job.body, BlockingVoidProc)
+  {.cast(gcsafe).}:
+    let fut {.cursor.} = cast[CpsVoidFuture](job.future)
+    GC_unref(fut)
+  deallocShared(job)
+
+proc cleanupMainBlockingVoidJob(ctx: pointer) {.nimcall, gcsafe.} =
+  cleanupBlockingVoidJob(ctx, MainReactorCallbackWorker)
+
+proc returnBlockingJob[T](job: ptr BlockingJob[T]) {.gcsafe.} =
+  let rt {.cursor.} = cast[CpsRuntime](job.runtime)
+  if job.ownerWorker >= 0:
+    let sched {.cursor.} = asScheduler(rt)
+    if sched != nil and sched.schedulePinnedCall(
+        job.ownerWorker, cleanupBlockingJob[T], cast[pointer](job)):
+      return
+  else:
+    let loop {.cursor.} = asEventLoop(rt)
+    if loop != nil and loop.mtActive:
+      loop.postRawToEventLoop(cleanupMainBlockingJob[T], cast[pointer](job))
+      return
+  when compileOption("gc", "atomicArc"):
+    cleanupMainBlockingJob[T](cast[pointer](job))
+
+proc returnBlockingVoidJob(job: ptr BlockingVoidJob) {.gcsafe.} =
+  let rt {.cursor.} = cast[CpsRuntime](job.runtime)
+  if job.ownerWorker >= 0:
+    let sched {.cursor.} = asScheduler(rt)
+    if sched != nil and sched.schedulePinnedCall(
+        job.ownerWorker, cleanupBlockingVoidJob, cast[pointer](job)):
+      return
+  else:
+    let loop {.cursor.} = asEventLoop(rt)
+    if loop != nil and loop.mtActive:
+      loop.postRawToEventLoop(cleanupMainBlockingVoidJob, cast[pointer](job))
+      return
+  when compileOption("gc", "atomicArc"):
+    cleanupMainBlockingVoidJob(cast[pointer](job))
+
+proc runBlockingJob[T](ctx: pointer) {.nimcall, gcsafe.} =
+  let job = cast[ptr BlockingJob[T]](ctx)
+  {.cast(gcsafe).}:
+    let workerRt {.cursor.} = cast[CpsRuntime](job.runtime)
+    let workerFut {.cursor.} = cast[CpsFuture[T]](job.future)
+    setCurrentRuntimeBorrowed(workerRt)
+  type RawBodyCall = proc(env: pointer): T {.nimcall, gcsafe.}
+  try:
+    var val = cast[RawBodyCall](job.body.fn)(job.body.env)
+    {.cast(gcsafe).}:
+      workerFut.completeTransferred(move(val))
+  except CatchableError as e:
+    {.cast(gcsafe).}:
+      var copied = captureWorkerError(e)
+      workerFut.failTransferred(move(copied))
+  finally:
+    returnBlockingJob(job)
+
+proc runBlockingVoidJob(ctx: pointer) {.nimcall, gcsafe.} =
+  let job = cast[ptr BlockingVoidJob](ctx)
+  {.cast(gcsafe).}:
+    let workerRt {.cursor.} = cast[CpsRuntime](job.runtime)
+    let workerFut {.cursor.} = cast[CpsVoidFuture](job.future)
+    setCurrentRuntimeBorrowed(workerRt)
+  type RawBodyCall = proc(env: pointer) {.nimcall, gcsafe.}
+  try:
+    cast[RawBodyCall](job.body.fn)(job.body.env)
+    {.cast(gcsafe).}:
+      workerFut.complete()
+  except CatchableError as e:
+    {.cast(gcsafe).}:
+      var copied = captureWorkerError(e)
+      workerFut.failTransferred(move(copied))
+  finally:
+    returnBlockingVoidJob(job)
 
 proc takeSchedulerTask[T](cb: var T): SchedulerTask {.inline.} =
   ## Transfer a compatible Nim closure pair without creating an RC edge.
@@ -243,6 +359,13 @@ proc makePinnedCallbackDispatcher(rt: CpsRuntime): proc(workerId: int, cb: sink 
   result = proc(workerId: int, cb: sink proc() {.closure.}): bool {.closure, gcsafe.} =
     {.cast(gcsafe).}:
       let rt {.cursor.} = cast[CpsRuntime](rtPtr)
+      if workerId == MainReactorCallbackWorker:
+        let loop {.cursor.} = asEventLoop(rt)
+        if loop == nil or not loop.mtActive:
+          return false
+        var task = takeClosureTask(cb)
+        loop.postOwnedToEventLoop(task)
+        return true
       let sched {.cursor.} = asScheduler(rt)
       if sched == nil:
         return false
@@ -266,6 +389,12 @@ proc makeOwnedClosureDispatcher(rt: CpsRuntime):
   result = proc(workerId: int, task: OwnedClosureTask): bool {.closure, gcsafe.} =
     {.cast(gcsafe).}:
       let rt {.cursor.} = cast[CpsRuntime](rtPtr)
+      if workerId == MainReactorCallbackWorker:
+        let loop {.cursor.} = asEventLoop(rt)
+        if loop == nil or not loop.mtActive:
+          return false
+        loop.postOwnedToEventLoop(task)
+        return true
       let sched {.cursor.} = asScheduler(rt)
       if sched == nil:
         return false
@@ -303,7 +432,8 @@ proc createMtRuntime(config: RuntimeConfig): CpsRuntime {.nimcall.} =
     let loop = newEventLoop()
     loop.mtActive = true
     loop.ownerRuntime = rt
-    rt.eventLoopPtr = cast[RootRef](cast[pointer](loop))
+    GC_ref(loop)
+    copyMem(addr rt.eventLoopPtr, unsafeAddr loop, sizeof(rt.eventLoopPtr))
 
     loop.enableCrossThreadWake()
 
@@ -317,7 +447,9 @@ proc createMtRuntime(config: RuntimeConfig): CpsRuntime {.nimcall.} =
       if config.numWorkers <= 0: detectedProcessors else: config.numWorkers)
     let shards = MtIoShardSet(runtime: rt,
                               loops: newSeq[pointer](workerCount))
-    rt.ioShardSetPtr = cast[RootRef](shards)
+    GC_ref(shards)
+    copyMem(addr rt.ioShardSetPtr, unsafeAddr shards,
+            sizeof(rt.ioShardSetPtr))
     rt.ioShardCount = workerCount
 
     # Publish every runtime hook before workers start. workerMain binds the
@@ -351,7 +483,7 @@ proc createMtRuntime(config: RuntimeConfig): CpsRuntime {.nimcall.} =
 proc captureWorkerError(e: ref CatchableError): ref CatchableError {.inline.} =
   ## Reconstruct an exception as a value-safe copy for cross-thread transfer.
   let msg = $e.name & ": " & e.msg
-  result = newException(CatchableError, msg)
+  result = newException(TransferredWorkerError, msg)
 
 proc initMtRuntime*(numWorkers: int = 0,
                     numBlockingThreads: int = 0,
@@ -380,7 +512,8 @@ proc ioShardLoop*(rt: CpsRuntime, shardId: int): EventLoop =
   let shards = asIoShardSet(rt)
   if shards == nil or shardId < 0 or shardId >= shards.loops.len:
     raise newException(IndexDefect, "I/O shard index out of bounds")
-  if not isSchedulerWorker or currentRuntime().runtime != rt or
+  if not isSchedulerWorker or
+      currentRuntimePointer() != cast[pointer](rt) or
       currentWorkerId != shardId:
     raise newException(ValueError,
       "I/O shard loops are only borrowable from their owning worker")
@@ -420,69 +553,73 @@ proc startMtIoShards*(handle: RuntimeHandle, setup: MtIoSetup) {.inline.} =
   ## Initialize worker-owned I/O shards through a runtime handle.
   startMtIoShards(handle.runtime, setup)
 
-proc spawnBlockingOn*[T](handle: RuntimeHandle, body: proc(): T {.gcsafe.}): CpsFuture[T] =
+proc spawnBlockingOn*[T](handle: RuntimeHandle,
+                         bodyArg: sink BlockingProc[T]): CpsFuture[T] =
   ## Offload blocking work to a runtime's blocking pool.
-  let rt = runtimeFromHandle(handle)
+  let rt {.cursor.} = cast[CpsRuntime](runtimeFromHandle(handle))
   if rt == nil or rt.flavor != rfMultiThread:
     raise newException(ValueError, "MT runtime not initialized for this handle")
-  let pool = ensureBlockingPool(rt)
-  if pool == nil:
+  let poolPtr = ensureBlockingPool(rt)
+  if poolPtr == nil:
     raise newException(ValueError, "MT runtime is shutting down")
+  let pool {.cursor.} = cast[ThreadPool](poolPtr)
 
   let fut = newCpsFuture[T]()
   fut.bindFutureRuntime(toHandle(rt))
+  fut.ensureShared()
   GC_ref(fut)
-  pool.submit(proc() {.gcsafe.} =
-    {.cast(gcsafe).}:
-      setCurrentRuntime(rt)
-    try:
-      let val = body()
-      {.cast(gcsafe).}:
-        fut.complete(val)
-    except CatchableError as e:
-      {.cast(gcsafe).}:
-        fut.fail(captureWorkerError(e))
-    finally:
-      {.cast(gcsafe).}:
-        GC_unref(fut)
-  )
+  let job = cast[ptr BlockingJob[T]](allocShared0(sizeof(BlockingJob[T])))
+  job.header.run = runBlockingJob[T]
+  job.runtime = cast[pointer](rt)
+  job.future = cast[pointer](fut)
+  job.ownerWorker = if isSchedulerWorker: currentWorkerId else: -1
+  var body = move(bodyArg)
+  job.body = takeClosureTask(body)
+  if not pool.submitRawJob(cast[pointer](job)):
+    fut.fail(newException(CatchableError, "blocking pool is shutting down"))
+    if job.ownerWorker >= 0:
+      cleanupBlockingJob[T](cast[pointer](job), job.ownerWorker)
+    else:
+      cleanupMainBlockingJob[T](cast[pointer](job))
   result = fut
 
-proc spawnBlockingOn*(handle: RuntimeHandle, body: proc() {.gcsafe.}): CpsVoidFuture =
+proc spawnBlockingOn*(handle: RuntimeHandle,
+                      bodyArg: sink BlockingVoidProc): CpsVoidFuture =
   ## Offload blocking void work to a runtime's blocking pool.
-  let rt = runtimeFromHandle(handle)
+  let rt {.cursor.} = cast[CpsRuntime](runtimeFromHandle(handle))
   if rt == nil or rt.flavor != rfMultiThread:
     raise newException(ValueError, "MT runtime not initialized for this handle")
-  let pool = ensureBlockingPool(rt)
-  if pool == nil:
+  let poolPtr = ensureBlockingPool(rt)
+  if poolPtr == nil:
     raise newException(ValueError, "MT runtime is shutting down")
+  let pool {.cursor.} = cast[ThreadPool](poolPtr)
 
   let fut = newCpsVoidFuture()
   fut.bindFutureRuntime(toHandle(rt))
+  fut.ensureShared()
   GC_ref(fut)
-  pool.submit(proc() {.gcsafe.} =
-    {.cast(gcsafe).}:
-      setCurrentRuntime(rt)
-    try:
-      body()
-      {.cast(gcsafe).}:
-        fut.complete()
-    except CatchableError as e:
-      {.cast(gcsafe).}:
-        fut.fail(captureWorkerError(e))
-    finally:
-      {.cast(gcsafe).}:
-        GC_unref(fut)
-  )
+  let job = cast[ptr BlockingVoidJob](allocShared0(sizeof(BlockingVoidJob)))
+  job.header.run = runBlockingVoidJob
+  job.runtime = cast[pointer](rt)
+  job.future = cast[pointer](fut)
+  job.ownerWorker = if isSchedulerWorker: currentWorkerId else: -1
+  var body = move(bodyArg)
+  job.body = takeClosureTask(body)
+  if not pool.submitRawJob(cast[pointer](job)):
+    fut.fail(newException(CatchableError, "blocking pool is shutting down"))
+    if job.ownerWorker >= 0:
+      cleanupBlockingVoidJob(cast[pointer](job), job.ownerWorker)
+    else:
+      cleanupMainBlockingVoidJob(cast[pointer](job))
   result = fut
 
-proc spawnBlocking*[T](body: proc(): T {.gcsafe.}): CpsFuture[T] =
+proc spawnBlocking*[T](body: sink BlockingProc[T]): CpsFuture[T] =
   ## Schedule blocking for asynchronous execution.
-  spawnBlockingOn(currentRuntime(), body)
+  spawnBlockingOn(currentRuntime(), move(body))
 
-proc spawnBlocking*(body: proc() {.gcsafe.}): CpsVoidFuture =
+proc spawnBlocking*(body: sink BlockingVoidProc): CpsVoidFuture =
   ## Schedule blocking for asynchronous execution.
-  spawnBlockingOn(currentRuntime(), body)
+  spawnBlockingOn(currentRuntime(), move(body))
 
 proc shutdownMtRuntime*(rt: CpsRuntime) =
   ## Shut down one MT runtime instance.
@@ -497,7 +634,7 @@ proc shutdownMtRuntime*(rt: CpsRuntime) =
     # owner, so shutdown deliberately pays one RC pair outside the hot path.
     let shards = asIoShardSet(rt)
     let sched = asScheduler(rt)
-    var pool = asBlockingPool(rt)
+    let pool {.cursor.} = cast[ThreadPool](blockingPoolPointer(rt))
 
     # Blocking jobs may complete futures by dispatching callbacks to scheduler
     # workers, and the pool may have been lazily allocated by one of those
@@ -505,10 +642,13 @@ proc shutdownMtRuntime*(rt: CpsRuntime) =
     if pool != nil:
       pool.shutdown()
       zeroMem(addr rt.blockingPoolPtr, sizeof(rt.blockingPoolPtr))
-      # The pool and its Thread sequence may have been allocated by the
-      # scheduler worker that first called spawnBlocking. Retire the typed
-      # owner before joining scheduler workers and tearing down that allocator.
-      pool = nil
+      GC_unref(pool)
+
+    let loop = asEventLoop(rt)
+    if loop != nil and loop.isCurrentThreadOwner():
+      # Pool workers return their manual future roots through this queue.
+      # Joining the pool first guarantees that every cleanup is now visible.
+      loop.drainCrossThreadQueue()
 
     if sched != nil:
       shutdownScheduler(sched)
@@ -517,13 +657,15 @@ proc shutdownMtRuntime*(rt: CpsRuntime) =
 
     if shards != nil:
       # ioShardTeardown released every managed loop on its owning worker.
-      rt.ioShardSetPtr = nil
+      zeroMem(addr rt.ioShardSetPtr, sizeof(rt.ioShardSetPtr))
       rt.ioShardCount = 0
+      GC_unref(shards)
 
-    let loop = asEventLoop(rt)
     if loop != nil:
       loop.disableCrossThreadWake()
-      rt.eventLoopPtr = nil
+      loop.ownerRuntime = nil
+      zeroMem(addr rt.eventLoopPtr, sizeof(rt.eventLoopPtr))
+      GC_unref(loop)
 
     rt.continuationDispatcher = nil
     rt.callbackDispatcher = nil
@@ -535,7 +677,7 @@ proc shutdownMtRuntime*(rt: CpsRuntime) =
     rt.wakeIoShard = nil
     rt.mtActive = false
 
-    if currentRuntime().runtime == rt:
+    if cast[CpsRuntime](currentRuntimePointer()) == rt:
       let replacement = newCurrentThreadRuntime()
       setMainRuntime(replacement)
       setCurrentRuntime(replacement)
@@ -545,12 +687,13 @@ proc shutdownMtRuntime*(rt: CpsRuntime) =
 
 proc shutdownMtRuntime*(loop: EventLoop) =
   ## Compatibility wrapper for existing call sites.
-  let curRt = currentRuntime().runtime
+  let curRt {.cursor.} = cast[CpsRuntime](currentRuntimePointer())
   if curRt != nil and asEventLoop(curRt) == loop:
     shutdownMtRuntime(curRt)
     return
 
-  let mainRt = mainRuntime().runtime
+  let mainHandle = mainRuntime()
+  let mainRt {.cursor.} = mainHandle.runtime
   if mainRt != nil and asEventLoop(mainRt) == loop:
     shutdownMtRuntime(mainRt)
 

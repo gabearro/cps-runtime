@@ -58,7 +58,11 @@
   <details open>
     <summary><a class="reference reference-toplevel" href="#7" id="57">Types</a></summary>
     <ul class="simple simple-toc-section">
-      <li><a class="reference" href="#ThreadPool" title="ThreadPool {.acyclic.} = ref object">ThreadPool</a></li>
+      <li><a class="reference" href="#RawPoolJobHeader" title="RawPoolJobHeader = object
+  run*: RawPoolTaskProc">RawPoolJobHeader</a></li>
+<li><a class="reference" href="#RawPoolTaskProc" title="RawPoolTaskProc = proc (ctx: pointer) {.nimcall, gcsafe.}">RawPoolTaskProc</a></li>
+<li><a class="reference" href="#ThreadPool" title="ThreadPool {.acyclic.} = ref object">ThreadPool</a></li>
+<li><a class="reference" href="#ThreadSetupProc" title="ThreadSetupProc = proc (ctx: pointer) {.nimcall, gcsafe.}">ThreadSetupProc</a></li>
 
     </ul>
   </details>
@@ -72,21 +76,17 @@
 
 </ul>
 <ul class="simple nested-toc-section">newThreadPool
-  <li><a class="reference" href="#newThreadPool%2Cint%2Cproc%29%2Cint" title="newThreadPool(numThreads: int = 0; workerSetup: proc () {.gcsafe.} = nil;
-              maxPendingTasks: int = 65536): ThreadPool">newThreadPool(numThreads: int = 0; workerSetup: proc () {.gcsafe.} = nil;
-              maxPendingTasks: int = 65536): ThreadPool</a></li>
+  <li><a class="reference" href="#newThreadPool%2Cint%2CThreadSetupProc%2Cpointer%2Cint" title="newThreadPool(numThreads: int = 0; workerSetup: ThreadSetupProc = nil;
+              workerSetupCtx: pointer = nil; maxPendingTasks: int = 65536): ThreadPool">newThreadPool(numThreads: int = 0; workerSetup: ThreadSetupProc = nil;
+              workerSetupCtx: pointer = nil; maxPendingTasks: int = 65536): ThreadPool</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">shutdown
   <li><a class="reference" href="#shutdown%2CThreadPool" title="shutdown(pool: ThreadPool)">shutdown(pool: ThreadPool)</a></li>
 
 </ul>
-<ul class="simple nested-toc-section">submit
-  <li><a class="reference" href="#submit%2CThreadPool%2CsinkTaskProc" title="submit(pool: ThreadPool; taskArg: sink TaskProc)">submit(pool: ThreadPool; taskArg: sink TaskProc)</a></li>
-
-</ul>
-<ul class="simple nested-toc-section">trySubmit
-  <li><a class="reference" href="#trySubmit%2CThreadPool%2CsinkTaskProc" title="trySubmit(pool: ThreadPool; taskArg: sink TaskProc): bool">trySubmit(pool: ThreadPool; taskArg: sink TaskProc): bool</a></li>
+<ul class="simple nested-toc-section">submitRawJob
+  <li><a class="reference" href="#submitRawJob%2CThreadPool%2Cpointer" title="submitRawJob(pool: ThreadPool; job: pointer): bool">submitRawJob(pool: ThreadPool; job: pointer): bool</a></li>
 
 </ul>
 
@@ -107,17 +107,42 @@
     <div class="section" id="6">
   <h1><a class="toc-backref" href="#6">Imports</a></h1>
   <dl class="item">
-    <a class="reference external" href="../private/mpmc_ring.html">../private/mpmc_ring</a>, <a class="reference external" href="../private/mpsc_queue.html">../private/mpsc_queue</a>, <a class="reference external" href="../private/atomic_parker.html">../private/atomic_parker</a>, <a class="reference external" href="../private/cross_thread_closure.html">../private/cross_thread_closure</a>
+    <a class="reference external" href="../private/mpmc_ring.html">../private/mpmc_ring</a>, <a class="reference external" href="../private/atomic_parker.html">../private/atomic_parker</a>, <a class="reference external" href="../private/cross_thread_closure.html">../private/cross_thread_closure</a>
   </dl>
 </div>
 <div class="section" id="7">
   <h1><a class="toc-backref" href="#7">Types</a></h1>
   <dl class="item">
-    <div id="ThreadPool">
+    <div id="RawPoolJobHeader">
+  <dt><pre><a href="threadpool.html#RawPoolJobHeader"><span class="Identifier">RawPoolJobHeader</span></a> <span class="Other">=</span> <span class="Keyword">object</span>
+  <span class="Identifier">run</span><span class="Operator">*</span><span class="Other">:</span> <a href="threadpool.html#RawPoolTaskProc"><span class="Identifier">RawPoolTaskProc</span></a></pre></dt>
+  <dd>
+    
+    Header embedded at offset zero in jobs submitted with <tt class="docutils literal"><span class="pre">submitRawJob</span></tt>.
+    
+  </dd>
+</div>
+<div id="RawPoolTaskProc">
+  <dt><pre><a href="threadpool.html#RawPoolTaskProc"><span class="Identifier">RawPoolTaskProc</span></a> <span class="Other">=</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">ctx</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">)</span> {.<span class="Identifier">nimcall</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
+  <dd>
+    
+    Execute an unmanaged blocking-pool work item.
+    
+  </dd>
+</div>
+<div id="ThreadPool">
   <dt><pre><a href="threadpool.html#ThreadPool"><span class="Identifier">ThreadPool</span></a> {.<span class="Identifier">acyclic</span>.} <span class="Other">=</span> <span class="Keyword">ref</span> <span class="Keyword">object</span></pre></dt>
   <dd>
     
     
+    
+  </dd>
+</div>
+<div id="ThreadSetupProc">
+  <dt><pre><a href="threadpool.html#ThreadSetupProc"><span class="Identifier">ThreadSetupProc</span></a> <span class="Other">=</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Identifier">ctx</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">)</span> {.<span class="Identifier">nimcall</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.}</pre></dt>
+  <dd>
+    
+    Initialize one blocking-pool worker from unmanaged state.
     
   </dd>
 </div>
@@ -139,13 +164,13 @@
 
 </div>
 <div id="newThreadPool-procs-all">
-  <div id="newThreadPool,int,proc),int">
-  <dt><pre><span class="Keyword">proc</span> <a href="#newThreadPool%2Cint%2Cproc%29%2Cint"><span class="Identifier">newThreadPool</span></a><span class="Other">(</span><span class="Identifier">numThreads</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">0</span><span class="Other">;</span> <span class="Identifier">workerSetup</span><span class="Other">:</span> <span class="Keyword">proc</span> <span class="Other">(</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">gcsafe</span></span>.} <span class="Other">=</span> <span class="Keyword">nil</span><span class="Other">;</span>
-                   <span class="Identifier">maxPendingTasks</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">65536</span><span class="Other">)</span><span class="Other">:</span> <a href="threadpool.html#ThreadPool"><span class="Identifier">ThreadPool</span></a> {.
+  <div id="newThreadPool,int,ThreadSetupProc,pointer,int">
+  <dt><pre><span class="Keyword">proc</span> <a href="#newThreadPool%2Cint%2CThreadSetupProc%2Cpointer%2Cint"><span class="Identifier">newThreadPool</span></a><span class="Other">(</span><span class="Identifier">numThreads</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">0</span><span class="Other">;</span> <span class="Identifier">workerSetup</span><span class="Other">:</span> <a href="threadpool.html#ThreadSetupProc"><span class="Identifier">ThreadSetupProc</span></a> <span class="Other">=</span> <span class="Keyword">nil</span><span class="Other">;</span>
+                   <span class="Identifier">workerSetupCtx</span><span class="Other">:</span> <span class="Identifier">pointer</span> <span class="Other">=</span> <span class="Keyword">nil</span><span class="Other">;</span> <span class="Identifier">maxPendingTasks</span><span class="Other">:</span> <span class="Identifier">int</span> <span class="Other">=</span> <span class="DecNumber">65536</span><span class="Other">)</span><span class="Other">:</span> <a href="threadpool.html#ThreadPool"><span class="Identifier">ThreadPool</span></a> {.
     <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ResourceExhaustedError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
     
-    Create a thread pool with the given number of workers. If numThreads is 0, defaults to the process's available processors. workerSetup is called once on each worker thread before it starts processing.
+    Create a thread pool with the given number of workers. If numThreads is 0, defaults to the process's available processors. <tt class="docutils literal"><span class="pre">workerSetup</span></tt> is called with unmanaged context once on every worker.
     
   </dd>
 </div>
@@ -162,25 +187,13 @@
 </div>
 
 </div>
-<div id="submit-procs-all">
-  <div id="submit,ThreadPool,sinkTaskProc">
-  <dt><pre><span class="Keyword">proc</span> <a href="#submit%2CThreadPool%2CsinkTaskProc"><span class="Identifier">submit</span></a><span class="Other">(</span><span class="Identifier">pool</span><span class="Other">:</span> <a href="threadpool.html#ThreadPool"><span class="Identifier">ThreadPool</span></a><span class="Other">;</span> <span class="Identifier">taskArg</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Identifier">TaskProc</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+<div id="submitRawJob-procs-all">
+  <div id="submitRawJob,ThreadPool,pointer">
+  <dt><pre><span class="Keyword">proc</span> <a href="#submitRawJob%2CThreadPool%2Cpointer"><span class="Identifier">submitRawJob</span></a><span class="Other">(</span><span class="Identifier">pool</span><span class="Other">:</span> <a href="threadpool.html#ThreadPool"><span class="Identifier">ThreadPool</span></a><span class="Other">;</span> <span class="Identifier">job</span><span class="Other">:</span> <span class="Identifier">pointer</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
     
-    Submit a task. Spins briefly if the queue is full, then yields.
-    
-  </dd>
-</div>
-
-</div>
-<div id="trySubmit-procs-all">
-  <div id="trySubmit,ThreadPool,sinkTaskProc">
-  <dt><pre><span class="Keyword">proc</span> <a href="#trySubmit%2CThreadPool%2CsinkTaskProc"><span class="Identifier">trySubmit</span></a><span class="Other">(</span><span class="Identifier">pool</span><span class="Other">:</span> <a href="threadpool.html#ThreadPool"><span class="Identifier">ThreadPool</span></a><span class="Other">;</span> <span class="Identifier">taskArg</span><span class="Other">:</span> <span class="Identifier">sink</span> <span class="Identifier">TaskProc</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
-  <dd>
-    
-    Non-blocking submit. Returns false if the queue is full or pool is shut down.
+    Submit a shared unmanaged job whose first field is <tt class="docutils literal"><span class="pre">RawPoolJobHeader</span></tt>. The job owns its storage and must retire it from its <tt class="docutils literal"><span class="pre">run</span></tt> callback.
     
   </dd>
 </div>
@@ -196,7 +209,7 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:26 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 17:32:46 UTC</small>
       </div>
     </div>
   </div>

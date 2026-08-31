@@ -1,17 +1,19 @@
 nimTitle	mtruntime	cps/mt/mtruntime.html	module cps/mt/mtruntime		0
 nim	MtIoSetup	cps/mt/mtruntime.html#MtIoSetup	type MtIoSetup		30
-nim	initMtRuntime	cps/mt/mtruntime.html#initMtRuntime,int,int,int,int,bool	proc initMtRuntime(numWorkers: int = 0; numBlockingThreads: int = 0;\n              maxSchedulerQueue: int = 65536; maxBlockingQueue: int = 65536;\n              pinWorkers: bool = true): EventLoop		356
-nim	ioShardCount	cps/mt/mtruntime.html#ioShardCount,CpsRuntime	proc ioShardCount(rt: CpsRuntime): int		374
-nim	ioShardLoop	cps/mt/mtruntime.html#ioShardLoop,CpsRuntime,int	proc ioShardLoop(rt: CpsRuntime; shardId: int): EventLoop		378
-nim	startMtIoShards	cps/mt/mtruntime.html#startMtIoShards,CpsRuntime,MtIoSetup	proc startMtIoShards(rt: CpsRuntime; setup: MtIoSetup)		389
-nim	startMtIoShards	cps/mt/mtruntime.html#startMtIoShards,RuntimeHandle,MtIoSetup	proc startMtIoShards(handle: RuntimeHandle; setup: MtIoSetup)		419
-nim	spawnBlockingOn	cps/mt/mtruntime.html#spawnBlockingOn,RuntimeHandle,proc)	proc spawnBlockingOn[T](handle: RuntimeHandle; body: proc (): T {.gcsafe.}): CpsFuture[\n    T]		423
-nim	spawnBlockingOn	cps/mt/mtruntime.html#spawnBlockingOn,RuntimeHandle,proc)_2	proc spawnBlockingOn(handle: RuntimeHandle; body: proc () {.gcsafe.}): CpsVoidFuture		451
-nim	spawnBlocking	cps/mt/mtruntime.html#spawnBlocking,proc)	proc spawnBlocking[T](body: proc (): T {.gcsafe.}): CpsFuture[T]		479
-nim	spawnBlocking	cps/mt/mtruntime.html#spawnBlocking,proc)_2	proc spawnBlocking(body: proc () {.gcsafe.}): CpsVoidFuture		483
-nim	shutdownMtRuntime	cps/mt/mtruntime.html#shutdownMtRuntime,CpsRuntime	proc shutdownMtRuntime(rt: CpsRuntime)		487
-nim	shutdownMtRuntime	cps/mt/mtruntime.html#shutdownMtRuntime,EventLoop	proc shutdownMtRuntime(loop: EventLoop)		546
-nimgrp	spawnblocking	cps/mt/mtruntime.html#spawnBlocking-procs-all	proc		479
-nimgrp	startmtioshards	cps/mt/mtruntime.html#startMtIoShards-procs-all	proc		389
-nimgrp	spawnblockingon	cps/mt/mtruntime.html#spawnBlockingOn-procs-all	proc		423
-nimgrp	shutdownmtruntime	cps/mt/mtruntime.html#shutdownMtRuntime-procs-all	proc		487
+nim	BlockingProc	cps/mt/mtruntime.html#BlockingProc	type BlockingProc		44
+nim	BlockingVoidProc	cps/mt/mtruntime.html#BlockingVoidProc	type BlockingVoidProc		46
+nim	initMtRuntime	cps/mt/mtruntime.html#initMtRuntime,int,int,int,int,bool	proc initMtRuntime(numWorkers: int = 0; numBlockingThreads: int = 0;\n              maxSchedulerQueue: int = 65536; maxBlockingQueue: int = 65536;\n              pinWorkers: bool = true): EventLoop		488
+nim	ioShardCount	cps/mt/mtruntime.html#ioShardCount,CpsRuntime	proc ioShardCount(rt: CpsRuntime): int		506
+nim	ioShardLoop	cps/mt/mtruntime.html#ioShardLoop,CpsRuntime,int	proc ioShardLoop(rt: CpsRuntime; shardId: int): EventLoop		510
+nim	startMtIoShards	cps/mt/mtruntime.html#startMtIoShards,CpsRuntime,MtIoSetup	proc startMtIoShards(rt: CpsRuntime; setup: MtIoSetup)		522
+nim	startMtIoShards	cps/mt/mtruntime.html#startMtIoShards,RuntimeHandle,MtIoSetup	proc startMtIoShards(handle: RuntimeHandle; setup: MtIoSetup)		552
+nim	spawnBlockingOn	cps/mt/mtruntime.html#spawnBlockingOn,RuntimeHandle,sinkBlockingProc[T]	proc spawnBlockingOn[T](handle: RuntimeHandle; bodyArg: sink BlockingProc[T]): CpsFuture[\n    T]		556
+nim	spawnBlockingOn	cps/mt/mtruntime.html#spawnBlockingOn,RuntimeHandle,sinkBlockingVoidProc	proc spawnBlockingOn(handle: RuntimeHandle; bodyArg: sink BlockingVoidProc): CpsVoidFuture		586
+nim	spawnBlocking	cps/mt/mtruntime.html#spawnBlocking,sinkBlockingProc[T]	proc spawnBlocking[T](body: sink BlockingProc[T]): CpsFuture[T]		616
+nim	spawnBlocking	cps/mt/mtruntime.html#spawnBlocking,sinkBlockingVoidProc	proc spawnBlocking(body: sink BlockingVoidProc): CpsVoidFuture		620
+nim	shutdownMtRuntime	cps/mt/mtruntime.html#shutdownMtRuntime,CpsRuntime	proc shutdownMtRuntime(rt: CpsRuntime)		624
+nim	shutdownMtRuntime	cps/mt/mtruntime.html#shutdownMtRuntime,EventLoop	proc shutdownMtRuntime(loop: EventLoop)		688
+nimgrp	spawnblocking	cps/mt/mtruntime.html#spawnBlocking-procs-all	proc		616
+nimgrp	startmtioshards	cps/mt/mtruntime.html#startMtIoShards-procs-all	proc		522
+nimgrp	spawnblockingon	cps/mt/mtruntime.html#spawnBlockingOn-procs-all	proc		556
+nimgrp	shutdownmtruntime	cps/mt/mtruntime.html#shutdownMtRuntime-procs-all	proc		624

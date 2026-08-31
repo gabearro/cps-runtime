@@ -89,12 +89,13 @@ type
     mtActive*: bool
 
   RuntimeHandle* = object
-    ## Cloneable lightweight runtime reference (Tokio-like Handle).
-    runtime*: CpsRuntime
+    ## Borrowed lightweight runtime reference (Tokio-like Handle).
+    ## The runtime remains valid until its explicit shutdown.
+    runtime* {.cursor.}: CpsRuntime
 
   RuntimeGuard* = object
     ## Scoped enter guard restoring prior runtime context.
-    prev*: CpsRuntime
+    prev* {.cursor.}: CpsRuntime
     active*: bool
 
   RuntimeAffinityError* = object of CatchableError
@@ -166,6 +167,8 @@ const
   CallbackClosed = cast[pointer](1)
   CallbackInline = cast[pointer](2)
   CallbackInlineInit = cast[pointer](3)
+  ## Callback affinity sentinel for work that must resume on the main reactor.
+  MainReactorCallbackWorker* = -2
   DefaultSchedulerQueueCap = 65536
   DefaultBlockingQueueCap = 65536
 
@@ -195,10 +198,16 @@ proc ensureShared*(fut: CpsVoidFuture)
 proc complete*[T](fut: CpsFuture[T], val: T)
 ## Complete the future and notify its waiters.
 proc complete*(fut: CpsVoidFuture)
+## Move a worker-owned value into a shared future without foreign RC traffic.
+proc completeTransferred*[T](fut: CpsFuture[T], valArg: sink T)
 ## Fail the future and notify its waiters.
 proc fail*[T](fut: CpsFuture[T], err: ref CatchableError)
 ## Fail the future and notify its waiters.
 proc fail*(fut: CpsVoidFuture, err: ref CatchableError)
+## Move a worker-owned error into a shared future without foreign RC traffic.
+proc failTransferred*[T](fut: CpsFuture[T], errArg: sink ref CatchableError)
+## Move a worker-owned error into a shared void future without foreign RC traffic.
+proc failTransferred*(fut: CpsVoidFuture, errArg: sink ref CatchableError)
 
 var rtCompletions: Atomic[int]
 var rtFailures: Atomic[int]
@@ -254,7 +263,6 @@ type
 
 var gRuntimeLock: Lock
 var gRuntimeLockInit: Atomic[int]  ## 0=uninit, 1=initializing, 2=ready
-var gMainRuntime: CpsRuntime = nil
 var gMainRuntimeRoot: pointer
 var gMainRuntimeFast: Atomic[pointer]
 var gMainRuntimeCallbacksInlineFast: Atomic[int]
@@ -307,8 +315,8 @@ proc ensureRuntimeLockReady() {.inline.} =
     while gRuntimeLockInit.load(moAcquire) != 2:
       cpuRelax()
 
-proc loadMainRuntimeFast(): CpsRuntime {.inline.} =
-  cast[CpsRuntime](gMainRuntimeFast.load(moAcquire))
+proc loadMainRuntimeFast(): pointer {.inline.} =
+  gMainRuntimeFast.load(moAcquire)
 
 proc storeMainRuntimeFast(rt: CpsRuntime) {.inline.} =
   gMainRuntimeFast.store(cast[pointer](rt), moRelease)
@@ -321,16 +329,13 @@ proc nextRuntimeId(): int64 {.inline.} =
   gNextRuntimeId.fetchAdd(1'i64, moAcquireRelease) + 1'i64
 
 proc applyCompatMtHooks(rt: CpsRuntime) {.inline.} =
-  if rt != nil and rt.flavor == rfMultiThread:
-    mtModeEnabled = true
-    mtCallbackDispatcher = rt.callbackDispatcher
-    mtYieldDispatcher = rt.yieldDispatcher
-    mtWakeReactor = rt.wakeReactor
-  else:
-    mtModeEnabled = false
-    mtCallbackDispatcher = nil
-    mtYieldDispatcher = nil
-    mtWakeReactor = nil
+  # Runtime dispatch now reads the active runtime directly. Keeping duplicate
+  # managed closures in threadvars created cross-thread aliases under ARC/ORC
+  # and paid three ref-count operations on every runtime switch.
+  mtModeEnabled = rt != nil and rt.flavor == rfMultiThread
+  mtCallbackDispatcher = nil
+  mtYieldDispatcher = nil
+  mtWakeReactor = nil
 
 proc defaultRuntimeConfig*(): RuntimeConfig =
   ## Return the default runtime config.
@@ -373,6 +378,13 @@ proc setCurrentRuntime*(rt: CpsRuntime) =
   else:
     currentWorkerId = -1
     applyCompatMtHooks(rt)
+
+proc setCurrentRuntimeBorrowed*(rt: CpsRuntime) {.inline.} =
+  ## Bind a runtime pointer on an auxiliary worker without copying its managed
+  ## compatibility dispatch closures into that worker's ARC/ORC heap.
+  currentRuntimeCtx = cast[pointer](rt)
+  mtModeEnabled = rt != nil and rt.flavor == rfMultiThread
+  currentWorkerId = -1
 
 proc tryCurrentRuntime*(): RuntimeHandle =
   ## Return the runtime bound to this thread without creating one.
@@ -442,19 +454,19 @@ proc newRuntime*(config: RuntimeConfig): CpsRuntime =
 proc ensureMainRuntime(): CpsRuntime =
   let fast = loadMainRuntimeFast()
   if fast != nil:
-    return fast
+    return cast[CpsRuntime](fast)
   ensureRuntimeLockReady()
   acquire(gRuntimeLock)
-  if gMainRuntime == nil:
-    gMainRuntime = newCurrentThreadRuntime()
+  if gMainRuntimeRoot == nil:
+    let created = newCurrentThreadRuntime()
     # The final process-wide runtime deliberately keeps one manual root. Nim
-    # destroys module globals after main returns; allowing that last decrement
-    # to enter a callback-rich event-loop graph can recursively release the
-    # runtime while its destructor is active. Replacements release this root.
-    GC_ref(gMainRuntime)
-    gMainRuntimeRoot = cast[pointer](gMainRuntime)
-    storeMainRuntimeFast(gMainRuntime)
-  result = gMainRuntime
+    # must not also keep a managed global reference: replacing that reference
+    # and releasing the manual root performs two decrements around a runtime
+    # graph whose cross-thread cursors deliberately contribute no count.
+    GC_ref(created)
+    gMainRuntimeRoot = cast[pointer](created)
+    storeMainRuntimeFast(created)
+  result = cast[CpsRuntime](gMainRuntimeRoot)
   release(gRuntimeLock)
 
 proc setMainRuntime*(rt: CpsRuntime) =
@@ -467,7 +479,6 @@ proc setMainRuntime*(rt: CpsRuntime) =
       GC_ref(rt)
     oldRoot = gMainRuntimeRoot
     gMainRuntimeRoot = cast[pointer](rt)
-    gMainRuntime = rt
   storeMainRuntimeFast(rt)
   release(gRuntimeLock)
   if oldRoot != nil:
@@ -484,7 +495,7 @@ proc currentRuntime*(): RuntimeHandle =
   else:
     let fast = loadMainRuntimeFast()
     if fast != nil:
-      toHandle(fast)
+      toHandle(cast[CpsRuntime](fast))
     else:
       mainRuntime()
 
@@ -793,7 +804,7 @@ proc localAffinityOk(fut: CpsVoidFuture): bool {.inline.} =
   result = true
 
 proc tryHopLocalOpToOwner[T](fut: CpsFuture[T], op: proc() {.closure.}): bool {.inline.} =
-  let rt = fut.ownerRuntime
+  let rt {.cursor.} = fut.ownerRuntime
   if rt == nil or rt.pinnedCallbackDispatcher == nil or fut.localOwnerWorkerId < 0:
     return false
   GC_ref(fut)
@@ -808,7 +819,7 @@ proc tryHopLocalOpToOwner[T](fut: CpsFuture[T], op: proc() {.closure.}): bool {.
   result = accepted
 
 proc tryHopLocalOpToOwner(fut: CpsVoidFuture, op: proc() {.closure.}): bool {.inline.} =
-  let rt = fut.ownerRuntime
+  let rt {.cursor.} = fut.ownerRuntime
   if rt == nil or rt.pinnedCallbackDispatcher == nil or fut.localOwnerWorkerId < 0:
     return false
   GC_ref(fut)
@@ -902,7 +913,7 @@ proc newLocalCpsFuture*[T](): CpsFuture[T] =
         fastRt
       else:
         let mainRt = loadMainRuntimeFast()
-        if mainRt != nil: mainRt else: ensureMainRuntime()
+        if mainRt != nil: cast[CpsRuntime](mainRt) else: ensureMainRuntime()
     if rt != nil and rt.flavor == rfMultiThread and
        (not isSchedulerWorker or currentSchedulerPtr == nil):
       return newCpsFuture[T]()
@@ -923,7 +934,7 @@ proc newLocalCpsVoidFuture*(): CpsVoidFuture =
         fastRt
       else:
         let mainRt = loadMainRuntimeFast()
-        if mainRt != nil: mainRt else: ensureMainRuntime()
+        if mainRt != nil: cast[CpsRuntime](mainRt) else: ensureMainRuntime()
     if rt != nil and rt.flavor == rfMultiThread and
        (not isSchedulerWorker or currentSchedulerPtr == nil):
       return newCpsVoidFuture()
@@ -1082,7 +1093,7 @@ proc pinFutureRuntime*[T](fut: CpsFuture[T]) {.inline.} =
     else:
       let fast = loadMainRuntimeFast()
       if fast != nil:
-        fut.ownerRuntime = fast
+        fut.ownerRuntime = cast[CpsRuntime](fast)
       else:
         fut.ownerRuntime = ensureMainRuntime()
   fut.runtimePinned.store(true, moRelease)
@@ -1100,7 +1111,7 @@ proc pinFutureRuntime*(fut: CpsVoidFuture) {.inline.} =
     else:
       let fast = loadMainRuntimeFast()
       if fast != nil:
-        fut.ownerRuntime = fast
+        fut.ownerRuntime = cast[CpsRuntime](fast)
       else:
         fut.ownerRuntime = ensureMainRuntime()
   fut.runtimePinned.store(true, moRelease)
@@ -1172,7 +1183,7 @@ proc dispatchCallback(rt: CpsRuntime, targetWorker: int,
   ## Fire a single callback on the target runtime, dispatching to workers
   ## when the runtime has a scheduler dispatcher configured.
   statInc(rtCallbacksFired)
-  if rt != nil and targetWorker >= 0 and
+  if rt != nil and targetWorker != -1 and
      rt.pinnedCallbackDispatcher != nil:
     {.cast(gcsafe).}:
       discard rt.pinnedCallbackDispatcher(targetWorker, move(cb))
@@ -1184,7 +1195,8 @@ proc dispatchCallback(rt: CpsRuntime, targetWorker: int,
     var mustEnter = rt != nil and rt != prevRt
     # ST fast path: if this callback targets the default current-thread
     # runtime and no explicit runtime is entered, avoid enter/leave churn.
-    if mustEnter and prevRt == nil and rt.flavor == rfCurrentThread and rt == loadMainRuntimeFast():
+    if mustEnter and prevRt == nil and rt.flavor == rfCurrentThread and
+       cast[pointer](rt) == loadMainRuntimeFast():
       mustEnter = false
     if mustEnter:
       setCurrentRuntime(rt)
@@ -1224,7 +1236,7 @@ proc fireCallbackThunk(thunk: ptr SharedCallbackThunk) {.inline.} =
   let targetRt {.cursor.} = cast[CpsRuntime](thunk.targetRuntime)
   let targetWorker = int(thunk.targetWorker)
   deallocShared(thunk)
-  if targetRt != nil and targetWorker >= 0 and
+  if targetRt != nil and targetWorker != -1 and
      targetRt.ownedClosureDispatcher != nil:
     {.cast(gcsafe).}:
       if targetRt.ownedClosureDispatcher(targetWorker, task):
@@ -1267,7 +1279,7 @@ proc closeAndTakeCallbackStack(fut: CpsVoidFuture): pointer {.inline.} =
 proc fireCallbacks[T](fut: CpsFuture[T], head: pointer) {.inline.} =
   if head == CallbackInline:
     var cb = move(fut.inlineCallback)
-    let rt = fut.inlineTargetRuntime
+    let rt {.cursor.} = fut.inlineTargetRuntime
     let worker = int(fut.inlineTargetWorker)
     fut.inlineTargetRuntime = nil
     if cb != nil:
@@ -1294,7 +1306,7 @@ proc fireCallbacks[T](fut: CpsFuture[T], head: pointer) {.inline.} =
 proc fireCallbacks(fut: CpsVoidFuture, head: pointer) {.inline.} =
   if head == CallbackInline:
     var cb = move(fut.inlineCallback)
-    let rt = fut.inlineTargetRuntime
+    let rt {.cursor.} = fut.inlineTargetRuntime
     let worker = int(fut.inlineTargetWorker)
     fut.inlineTargetRuntime = nil
     if cb != nil:
@@ -1411,25 +1423,46 @@ proc wakeRunCpsWaitersIfNeeded(rt: CpsRuntime) {.inline.} =
     statInc(rtRunCpsWakeSignals)
     discard rt.waitWakeSeq.fetchAdd(1'u64, moAcquireRelease)
 
+proc completeLocal[T](fut: CpsFuture[T], val: T) {.noinline.} =
+  ## Kept out of the shared completion path so its fallback closure is never
+  ## allocated, retained, or retired on a foreign blocking worker.
+  if not fut.localAffinityOk():
+    let localVal = val
+    if fut.tryHopLocalOpToOwner(proc() {.closure.} =
+      complete(fut, localVal)
+    ):
+      return
+    raiseLocalAffinityViolation("complete")
+  if fut.localState != FutureStatePending:
+    return
+  fut.value = val
+  fut.localState = FutureStateDone
+  fut.rootContinuationPtr = nil
+  statInc(rtCompletions)
+  fut.fireLocalCallbacks()
+  wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
+  wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
+
+proc completeLocal(fut: CpsVoidFuture) {.noinline.} =
+  if not fut.localAffinityOk():
+    if fut.tryHopLocalOpToOwner(proc() {.closure.} =
+      complete(fut)
+    ):
+      return
+    raiseLocalAffinityViolation("complete")
+  if fut.localState != FutureStatePending:
+    return
+  fut.localState = FutureStateDone
+  fut.rootContinuationPtr = nil
+  statInc(rtCompletions)
+  fut.fireLocalCallbacks()
+  wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
+  wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
+
 proc complete*[T](fut: CpsFuture[T], val: T) =
   ## Complete the future and notify its waiters.
   if fut.perfMode == fpLocalFast:
-    if not fut.localAffinityOk():
-      let localVal = val
-      if fut.tryHopLocalOpToOwner(proc() {.closure.} =
-        complete(fut, localVal)
-      ):
-        return
-      raiseLocalAffinityViolation("complete")
-    if fut.localState != FutureStatePending:
-      return
-    fut.value = val
-    fut.localState = FutureStateDone
-    fut.rootContinuationPtr = nil
-    statInc(rtCompletions)
-    fut.fireLocalCallbacks()
-    wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-    wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
+    completeLocal(fut, val)
     return
   ## Complete a typed future with a value. Lock-free.
   ## 1. CAS state pending→completing (exclusive ownership)
@@ -1450,20 +1483,7 @@ proc complete*[T](fut: CpsFuture[T], val: T) =
 proc complete*(fut: CpsVoidFuture) =
   ## Complete the future and notify its waiters.
   if fut.perfMode == fpLocalFast:
-    if not fut.localAffinityOk():
-      if fut.tryHopLocalOpToOwner(proc() {.closure.} =
-        complete(fut)
-      ):
-        return
-      raiseLocalAffinityViolation("complete")
-    if fut.localState != FutureStatePending:
-      return
-    fut.localState = FutureStateDone
-    fut.rootContinuationPtr = nil
-    statInc(rtCompletions)
-    fut.fireLocalCallbacks()
-    wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-    wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
+    completeLocal(fut)
     return
   ## Complete a void future. Lock-free.
   var expected = FutureStatePending
@@ -1476,25 +1496,67 @@ proc complete*(fut: CpsVoidFuture) =
   wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
   wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
 
+proc completeTransferred*[T](fut: CpsFuture[T], valArg: sink T) =
+  ## Move a worker-owned value into a shared future without retaining and
+  ## releasing that value on two ARC/ORC heaps.
+  if fut.perfMode != fpSharedSafe:
+    raise newException(RuntimeAffinityError,
+      "completeTransferred requires a shared-safe future")
+  var expected = FutureStatePending
+  if not fut.atomicState.compareExchange(expected, FutureStateCompleting,
+                                          moAcquireRelease, moAcquire):
+    return
+  var val = move(valArg)
+  fut.value = move(val)
+  fut.atomicState.store(FutureStateDone, moRelease)
+  fut.rootContinuationPtr = nil
+  statInc(rtCompletions)
+  fireCallbacks(fut, closeAndTakeCallbackStack(fut))
+  wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
+  wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
+
+proc failLocal[T](fut: CpsFuture[T], err: ref CatchableError) {.noinline.} =
+  ## Isolate the local-future hop closure from the shared failure hot path.
+  if not fut.localAffinityOk():
+    let localErr = err
+    if fut.tryHopLocalOpToOwner(proc() {.closure.} =
+      fail(fut, localErr)
+    ):
+      return
+    raiseLocalAffinityViolation("fail")
+  if fut.localState != FutureStatePending:
+    return
+  fut.error = err
+  fut.localState = FutureStateDone
+  fut.rootContinuationPtr = nil
+  statInc(rtFailures)
+  fut.fireLocalCallbacks()
+  wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
+  wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
+
+proc failLocal(fut: CpsVoidFuture,
+               err: ref CatchableError) {.noinline.} =
+  if not fut.localAffinityOk():
+    let localErr = err
+    if fut.tryHopLocalOpToOwner(proc() {.closure.} =
+      fail(fut, localErr)
+    ):
+      return
+    raiseLocalAffinityViolation("fail")
+  if fut.localState != FutureStatePending:
+    return
+  fut.error = err
+  fut.localState = FutureStateDone
+  fut.rootContinuationPtr = nil
+  statInc(rtFailures)
+  fut.fireLocalCallbacks()
+  wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
+  wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
+
 proc fail*[T](fut: CpsFuture[T], err: ref CatchableError) =
   ## Fail the future and notify its waiters.
   if fut.perfMode == fpLocalFast:
-    if not fut.localAffinityOk():
-      let localErr = err
-      if fut.tryHopLocalOpToOwner(proc() {.closure.} =
-        fail(fut, localErr)
-      ):
-        return
-      raiseLocalAffinityViolation("fail")
-    if fut.localState != FutureStatePending:
-      return
-    fut.error = err
-    fut.localState = FutureStateDone
-    fut.rootContinuationPtr = nil
-    statInc(rtFailures)
-    fut.fireLocalCallbacks()
-    wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-    wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
+    failLocal(fut, err)
     return
   ## Fail a typed future with an error. Lock-free.
   var expected = FutureStatePending
@@ -1511,28 +1573,53 @@ proc fail*[T](fut: CpsFuture[T], err: ref CatchableError) =
 proc fail*(fut: CpsVoidFuture, err: ref CatchableError) =
   ## Fail the future and notify its waiters.
   if fut.perfMode == fpLocalFast:
-    if not fut.localAffinityOk():
-      let localErr = err
-      if fut.tryHopLocalOpToOwner(proc() {.closure.} =
-        fail(fut, localErr)
-      ):
-        return
-      raiseLocalAffinityViolation("fail")
-    if fut.localState != FutureStatePending:
-      return
-    fut.error = err
-    fut.localState = FutureStateDone
-    fut.rootContinuationPtr = nil
-    statInc(rtFailures)
-    fut.fireLocalCallbacks()
-    wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
-    wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
+    failLocal(fut, err)
     return
   ## Fail a void future with an error. Lock-free.
   var expected = FutureStatePending
   if not fut.atomicState.compareExchange(expected, FutureStateCompleting, moAcquireRelease, moAcquire):
     return
   fut.error = err
+  fut.atomicState.store(FutureStateDone, moRelease)
+  fut.rootContinuationPtr = nil
+  statInc(rtFailures)
+  fireCallbacks(fut, closeAndTakeCallbackStack(fut))
+  wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
+  wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
+
+proc failTransferred*[T](fut: CpsFuture[T],
+                         errArg: sink ref CatchableError) =
+  ## Move a worker-owned error into a shared future without retaining and
+  ## releasing the exception on two ARC/ORC heaps.
+  if fut.perfMode != fpSharedSafe:
+    raise newException(RuntimeAffinityError,
+      "failTransferred requires a shared-safe future")
+  var expected = FutureStatePending
+  if not fut.atomicState.compareExchange(expected, FutureStateCompleting,
+                                          moAcquireRelease, moAcquire):
+    return
+  var err = move(errArg)
+  fut.error = move(err)
+  fut.atomicState.store(FutureStateDone, moRelease)
+  fut.rootContinuationPtr = nil
+  statInc(rtFailures)
+  fireCallbacks(fut, closeAndTakeCallbackStack(fut))
+  wakeRunCpsWaitersIfNeeded(ownerRuntimeRef(fut))
+  wakeReactorIfNeeded(ownerRuntimeRef(fut), fut.localOwnerWorkerId)
+
+proc failTransferred*(fut: CpsVoidFuture,
+                      errArg: sink ref CatchableError) =
+  ## Move a worker-owned error into a shared void future without retaining and
+  ## releasing the exception on two ARC/ORC heaps.
+  if fut.perfMode != fpSharedSafe:
+    raise newException(RuntimeAffinityError,
+      "failTransferred requires a shared-safe future")
+  var expected = FutureStatePending
+  if not fut.atomicState.compareExchange(expected, FutureStateCompleting,
+                                          moAcquireRelease, moAcquire):
+    return
+  var err = move(errArg)
+  fut.error = move(err)
   fut.atomicState.store(FutureStateDone, moRelease)
   fut.rootContinuationPtr = nil
   statInc(rtFailures)
@@ -1606,6 +1693,9 @@ proc callbackAffinity(targetRt: CpsRuntime,
   if targetRt == nil or targetRt.flavor != rfMultiThread or
      targetRt.ioShardCount <= 0:
     return -1
+  if isReactorThread and not isSchedulerWorker and
+     currentRuntimeCtx == cast[pointer](targetRt):
+    return MainReactorCallbackWorker
   var transferable = cb
   prepareCrossThreadClosure(transferable)
   if isSchedulerWorker and currentRuntimeCtx == cast[pointer](targetRt):
@@ -1854,7 +1944,6 @@ proc ensureShared*[T](fut: CpsFuture[T]) =
   fut.perfMode = fpSharedSafe
   fut.localOwnerThreadToken = nil
   fut.localOwnerSchedulerPtr = nil
-  fut.localOwnerWorkerId = -1
   fut.localCallbacks.setLen(0)
   fut.inlineCallback = nil
   fut.inlineTargetRuntime = nil
@@ -1889,7 +1978,6 @@ proc ensureShared*(fut: CpsVoidFuture) =
   fut.perfMode = fpSharedSafe
   fut.localOwnerThreadToken = nil
   fut.localOwnerSchedulerPtr = nil
-  fut.localOwnerWorkerId = -1
   fut.localCallbacks.setLen(0)
   fut.inlineCallback = nil
   fut.inlineTargetRuntime = nil

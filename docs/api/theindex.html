@@ -180,6 +180,14 @@
           <li><a class="reference external"
           data-doc-search-tag="runtime: proc bindFutureRuntime(fut: CpsVoidFuture; handle: RuntimeHandle)" href="cps/runtime.html#bindFutureRuntime%2CCpsVoidFuture%2CRuntimeHandle">runtime: proc bindFutureRuntime(fut: CpsVoidFuture; handle: RuntimeHandle)</a></li>
           </ul></dd>
+<dt><a name="BlockingProc" href="#BlockingProc"><span>BlockingProc:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="mtruntime: type BlockingProc" href="cps/mt/mtruntime.html#BlockingProc">mtruntime: type BlockingProc</a></li>
+          </ul></dd>
+<dt><a name="BlockingVoidProc" href="#BlockingVoidProc"><span>BlockingVoidProc:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="mtruntime: type BlockingVoidProc" href="cps/mt/mtruntime.html#BlockingVoidProc">mtruntime: type BlockingVoidProc</a></li>
+          </ul></dd>
 <dt><a name="blockOn" href="#blockOn"><span>blockOn:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="eventloop: proc blockOn[T](handle: RuntimeHandle; fut: CpsFuture[T]): T" href="cps/eventloop.html#blockOn%2CRuntimeHandle%2CCpsFuture%5BT%5D">eventloop: proc blockOn[T](handle: RuntimeHandle; fut: CpsFuture[T]): T</a></li>
@@ -367,6 +375,10 @@
 <dt><a name="completedVoidFuture" href="#completedVoidFuture"><span>completedVoidFuture:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="runtime: proc completedVoidFuture(): CpsVoidFuture" href="cps/runtime.html#completedVoidFuture">runtime: proc completedVoidFuture(): CpsVoidFuture</a></li>
+          </ul></dd>
+<dt><a name="completeTransferred" href="#completeTransferred"><span>completeTransferred:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="runtime: proc completeTransferred[T](fut: CpsFuture[T]; valArg: sink T)" href="cps/runtime.html#completeTransferred%2CCpsFuture%5BT%5D%2CsinkT">runtime: proc completeTransferred[T](fut: CpsFuture[T]; valArg: sink T)</a></li>
           </ul></dd>
 <dt><a name="ConcurrentTable" href="#ConcurrentTable"><span>ConcurrentTable:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -620,6 +632,10 @@
 <li><a class="reference external"
           data-doc-search-tag="eventloop: type EventLoop" href="cps/eventloop.html#EventLoop">eventloop: type EventLoop</a></li>
           </ul></dd>
+<dt><a name="EventLoopRawProc" href="#EventLoopRawProc"><span>EventLoopRawProc:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="eventloop: type EventLoopRawProc" href="cps/eventloop.html#EventLoopRawProc">eventloop: type EventLoopRawProc</a></li>
+          </ul></dd>
 <dt><a name="exec" href="#exec"><span>exec:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="process: proc exec(command: string; args: seq[string] = @[];
@@ -669,6 +685,12 @@
 <dt><a name="failedVoidFuture" href="#failedVoidFuture"><span>failedVoidFuture:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="runtime: proc failedVoidFuture(err: ref CatchableError): CpsVoidFuture" href="cps/runtime.html#failedVoidFuture%2Cref.CatchableError">runtime: proc failedVoidFuture(err: ref CatchableError): CpsVoidFuture</a></li>
+          </ul></dd>
+<dt><a name="failTransferred" href="#failTransferred"><span>failTransferred:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="runtime: proc failTransferred[T](fut: CpsFuture[T]; errArg: sink ref CatchableError)" href="cps/runtime.html#failTransferred%2CCpsFuture%5BT%5D%2C">runtime: proc failTransferred[T](fut: CpsFuture[T]; errArg: sink ref CatchableError)</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="runtime: proc failTransferred(fut: CpsVoidFuture; errArg: sink ref CatchableError)" href="cps/runtime.html#failTransferred%2CCpsVoidFuture%2C">runtime: proc failTransferred(fut: CpsVoidFuture; errArg: sink ref CatchableError)</a></li>
           </ul></dd>
 <dt><a name="FileStream" href="#FileStream"><span>FileStream:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -1086,6 +1108,10 @@
 <li><a class="reference external"
           data-doc-search-tag="eventloop: object LoopStats" href="cps/eventloop.html#LoopStats">eventloop: object LoopStats</a></li>
           </ul></dd>
+<dt><a name="MainReactorCallbackWorker" href="#MainReactorCallbackWorker"><span>MainReactorCallbackWorker:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="runtime: const MainReactorCallbackWorker" href="cps/runtime.html#MainReactorCallbackWorker">runtime: const MainReactorCallbackWorker</a></li>
+          </ul></dd>
 <dt><a name="mainRuntime" href="#mainRuntime"><span>mainRuntime:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="runtime: proc mainRuntime(): RuntimeHandle" href="cps/runtime.html#mainRuntime">runtime: proc mainRuntime(): RuntimeHandle</a></li>
@@ -1334,9 +1360,9 @@
           </ul></dd>
 <dt><a name="newThreadPool" href="#newThreadPool"><span>newThreadPool:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
-          data-doc-search-tag="threadpool: proc newThreadPool(numThreads: int = 0; workerSetup: proc () {.gcsafe.} = nil;
-              maxPendingTasks: int = 65536): ThreadPool" href="cps/mt/threadpool.html#newThreadPool%2Cint%2Cproc%29%2Cint">threadpool: proc newThreadPool(numThreads: int = 0; workerSetup: proc () {.gcsafe.} = nil;
-              maxPendingTasks: int = 65536): ThreadPool</a></li>
+          data-doc-search-tag="threadpool: proc newThreadPool(numThreads: int = 0; workerSetup: ThreadSetupProc = nil;
+              workerSetupCtx: pointer = nil; maxPendingTasks: int = 65536): ThreadPool" href="cps/mt/threadpool.html#newThreadPool%2Cint%2CThreadSetupProc%2Cpointer%2Cint">threadpool: proc newThreadPool(numThreads: int = 0; workerSetup: ThreadSetupProc = nil;
+              workerSetupCtx: pointer = nil; maxPendingTasks: int = 65536): ThreadPool</a></li>
           </ul></dd>
 <dt><a name="newUdpSocket" href="#newUdpSocket"><span>newUdpSocket:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -1504,6 +1530,14 @@
 <li><a class="reference external"
           data-doc-search-tag="chase_lev: proc pop[T](d: var ChaseLevDeque[T]): T" href="cps/private/chase_lev.html#pop%2CChaseLevDeque%5BT%5D">chase_lev: proc pop[T](d: var ChaseLevDeque[T]): T</a></li>
           </ul></dd>
+<dt><a name="postOwnedToEventLoop" href="#postOwnedToEventLoop"><span>postOwnedToEventLoop:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="eventloop: proc postOwnedToEventLoop(loop: EventLoop; task: OwnedClosureTask)" href="cps/eventloop.html#postOwnedToEventLoop%2CEventLoop%2COwnedClosureTask">eventloop: proc postOwnedToEventLoop(loop: EventLoop; task: OwnedClosureTask)</a></li>
+          </ul></dd>
+<dt><a name="postRawToEventLoop" href="#postRawToEventLoop"><span>postRawToEventLoop:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="eventloop: proc postRawToEventLoop(loop: EventLoop; cb: EventLoopRawProc; ctx: pointer)" href="cps/eventloop.html#postRawToEventLoop%2CEventLoop%2CEventLoopRawProc%2Cpointer">eventloop: proc postRawToEventLoop(loop: EventLoop; cb: EventLoopRawProc; ctx: pointer)</a></li>
+          </ul></dd>
 <dt><a name="postToEventLoop" href="#postToEventLoop"><span>postToEventLoop:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="eventloop: proc postToEventLoop(loop: EventLoop; cbArg: sink CrossThreadCallback)" href="cps/eventloop.html#postToEventLoop%2CEventLoop%2CsinkCrossThreadCallback">eventloop: proc postToEventLoop(loop: EventLoop; cbArg: sink CrossThreadCallback)</a></li>
@@ -1579,6 +1613,14 @@
 <dt><a name="RawDatagram" href="#RawDatagram"><span>RawDatagram:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="udp: object RawDatagram" href="cps/io/udp.html#RawDatagram">udp: object RawDatagram</a></li>
+          </ul></dd>
+<dt><a name="RawPoolJobHeader" href="#RawPoolJobHeader"><span>RawPoolJobHeader:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="threadpool: object RawPoolJobHeader" href="cps/mt/threadpool.html#RawPoolJobHeader">threadpool: object RawPoolJobHeader</a></li>
+          </ul></dd>
+<dt><a name="RawPoolTaskProc" href="#RawPoolTaskProc"><span>RawPoolTaskProc:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="threadpool: type RawPoolTaskProc" href="cps/mt/threadpool.html#RawPoolTaskProc">threadpool: type RawPoolTaskProc</a></li>
           </ul></dd>
 <dt><a name="ReactorPool" href="#ReactorPool"><span>ReactorPool:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -1902,6 +1944,10 @@
 <li><a class="reference external"
           data-doc-search-tag="runtime: proc setCurrentRuntime(rt: CpsRuntime)" href="cps/runtime.html#setCurrentRuntime%2CCpsRuntime">runtime: proc setCurrentRuntime(rt: CpsRuntime)</a></li>
           </ul></dd>
+<dt><a name="setCurrentRuntimeBorrowed" href="#setCurrentRuntimeBorrowed"><span>setCurrentRuntimeBorrowed:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="runtime: proc setCurrentRuntimeBorrowed(rt: CpsRuntime)" href="cps/runtime.html#setCurrentRuntimeBorrowed%2CCpsRuntime">runtime: proc setCurrentRuntimeBorrowed(rt: CpsRuntime)</a></li>
+          </ul></dd>
 <dt><a name="setDnsCacheTtl" href="#setDnsCacheTtl"><span>setDnsCacheTtl:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="dns: proc setDnsCacheTtl(ttlSeconds: int)" href="cps/io/dns.html#setDnsCacheTtl%2Cint">dns: proc setDnsCacheTtl(ttlSeconds: int)</a></li>
@@ -2018,17 +2064,17 @@
           </ul></dd>
 <dt><a name="spawnBlocking" href="#spawnBlocking"><span>spawnBlocking:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
-          data-doc-search-tag="mtruntime: proc spawnBlocking[T](body: proc (): T {.gcsafe.}): CpsFuture[T]" href="cps/mt/mtruntime.html#spawnBlocking%2Cproc%29">mtruntime: proc spawnBlocking[T](body: proc (): T {.gcsafe.}): CpsFuture[T]</a></li>
+          data-doc-search-tag="mtruntime: proc spawnBlocking[T](body: sink BlockingProc[T]): CpsFuture[T]" href="cps/mt/mtruntime.html#spawnBlocking%2CsinkBlockingProc%5BT%5D">mtruntime: proc spawnBlocking[T](body: sink BlockingProc[T]): CpsFuture[T]</a></li>
           <li><a class="reference external"
-          data-doc-search-tag="mtruntime: proc spawnBlocking(body: proc () {.gcsafe.}): CpsVoidFuture" href="cps/mt/mtruntime.html#spawnBlocking%2Cproc%29_2">mtruntime: proc spawnBlocking(body: proc () {.gcsafe.}): CpsVoidFuture</a></li>
+          data-doc-search-tag="mtruntime: proc spawnBlocking(body: sink BlockingVoidProc): CpsVoidFuture" href="cps/mt/mtruntime.html#spawnBlocking%2CsinkBlockingVoidProc">mtruntime: proc spawnBlocking(body: sink BlockingVoidProc): CpsVoidFuture</a></li>
           </ul></dd>
 <dt><a name="spawnBlockingOn" href="#spawnBlockingOn"><span>spawnBlockingOn:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
-          data-doc-search-tag="mtruntime: proc spawnBlockingOn[T](handle: RuntimeHandle; body: proc (): T {.gcsafe.}): CpsFuture[
-    T]" href="cps/mt/mtruntime.html#spawnBlockingOn%2CRuntimeHandle%2Cproc%29">mtruntime: proc spawnBlockingOn[T](handle: RuntimeHandle; body: proc (): T {.gcsafe.}): CpsFuture[
+          data-doc-search-tag="mtruntime: proc spawnBlockingOn[T](handle: RuntimeHandle; bodyArg: sink BlockingProc[T]): CpsFuture[
+    T]" href="cps/mt/mtruntime.html#spawnBlockingOn%2CRuntimeHandle%2CsinkBlockingProc%5BT%5D">mtruntime: proc spawnBlockingOn[T](handle: RuntimeHandle; bodyArg: sink BlockingProc[T]): CpsFuture[
     T]</a></li>
           <li><a class="reference external"
-          data-doc-search-tag="mtruntime: proc spawnBlockingOn(handle: RuntimeHandle; body: proc () {.gcsafe.}): CpsVoidFuture" href="cps/mt/mtruntime.html#spawnBlockingOn%2CRuntimeHandle%2Cproc%29_2">mtruntime: proc spawnBlockingOn(handle: RuntimeHandle; body: proc () {.gcsafe.}): CpsVoidFuture</a></li>
+          data-doc-search-tag="mtruntime: proc spawnBlockingOn(handle: RuntimeHandle; bodyArg: sink BlockingVoidProc): CpsVoidFuture" href="cps/mt/mtruntime.html#spawnBlockingOn%2CRuntimeHandle%2CsinkBlockingVoidProc">mtruntime: proc spawnBlockingOn(handle: RuntimeHandle; bodyArg: sink BlockingVoidProc): CpsVoidFuture</a></li>
           </ul></dd>
 <dt><a name="spawnOn" href="#spawnOn"><span>spawnOn:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -2076,9 +2122,9 @@
           <li><a class="reference external"
           data-doc-search-tag="reactorpool: proc stop(pool: ReactorPool)" href="cps/mt/reactorpool.html#stop%2CReactorPool">reactorpool: proc stop(pool: ReactorPool)</a></li>
           </ul></dd>
-<dt><a name="submit" href="#submit"><span>submit:</span></a></dt><dd><ul class="simple">
+<dt><a name="submitRawJob" href="#submitRawJob"><span>submitRawJob:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
-          data-doc-search-tag="threadpool: proc submit(pool: ThreadPool; taskArg: sink TaskProc)" href="cps/mt/threadpool.html#submit%2CThreadPool%2CsinkTaskProc">threadpool: proc submit(pool: ThreadPool; taskArg: sink TaskProc)</a></li>
+          data-doc-search-tag="threadpool: proc submitRawJob(pool: ThreadPool; job: pointer): bool" href="cps/mt/threadpool.html#submitRawJob%2CThreadPool%2Cpointer">threadpool: proc submitRawJob(pool: ThreadPool; job: pointer): bool</a></li>
           </ul></dd>
 <dt><a name="subscribe" href="#subscribe"><span>subscribe:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -2163,6 +2209,10 @@
 <dt><a name="ThreadPool" href="#ThreadPool"><span>ThreadPool:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="threadpool: type ThreadPool" href="cps/mt/threadpool.html#ThreadPool">threadpool: type ThreadPool</a></li>
+          </ul></dd>
+<dt><a name="ThreadSetupProc" href="#ThreadSetupProc"><span>ThreadSetupProc:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="threadpool: type ThreadSetupProc" href="cps/mt/threadpool.html#ThreadSetupProc">threadpool: type ThreadSetupProc</a></li>
           </ul></dd>
 <dt><a name="tick" href="#tick"><span>tick:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -2249,10 +2299,6 @@
 <dt><a name="trySendToAddrBytes" href="#trySendToAddrBytes"><span>trySendToAddrBytes:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="udp: proc trySendToAddrBytes(sock: UdpSocket; data: openArray[byte]; ip: string; port: int): bool" href="cps/io/udp.html#trySendToAddrBytes%2CUdpSocket%2CopenArray%5Bbyte%5D%2Cstring%2Cint">udp: proc trySendToAddrBytes(sock: UdpSocket; data: openArray[byte]; ip: string; port: int): bool</a></li>
-          </ul></dd>
-<dt><a name="trySubmit" href="#trySubmit"><span>trySubmit:</span></a></dt><dd><ul class="simple">
-<li><a class="reference external"
-          data-doc-search-tag="threadpool: proc trySubmit(pool: ThreadPool; taskArg: sink TaskProc): bool" href="cps/mt/threadpool.html#trySubmit%2CThreadPool%2CsinkTaskProc">threadpool: proc trySubmit(pool: ThreadPool; taskArg: sink TaskProc): bool</a></li>
           </ul></dd>
 <dt><a name="tryUnlock" href="#tryUnlock"><span>tryUnlock:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -2456,7 +2502,7 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:30 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 17:32:51 UTC</small>
       </div>
     </div>
   </div>

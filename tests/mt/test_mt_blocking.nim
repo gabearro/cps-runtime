@@ -5,9 +5,19 @@
 
 import cps/mt
 import cps/transform
-import std/[os, monotimes, times, strutils]
+import std/[atomics, os, monotimes, times, strutils]
 
 let loop = initMtRuntime(numWorkers = 4)
+var parallelStarted: Atomic[int]
+
+proc waitForParallelPeer(value: int): int {.gcsafe.} =
+  discard parallelStarted.fetchAdd(1, moAcquireRelease)
+  let deadline = getMonoTime() + initDuration(seconds = 2)
+  while parallelStarted.load(moAcquire) < 2:
+    if getMonoTime() >= deadline:
+      return -value
+    sleep(1)
+  value
 
 # Test 1: spawnBlocking with typed result
 block testSpawnBlockingTyped:
@@ -85,24 +95,23 @@ block testSpawnBlockingNonBlocking:
 
 # Test 5: Multiple spawnBlocking run in parallel
 block testSpawnBlockingParallel:
+  parallelStarted.store(0, moRelaxed)
+
   proc blockingOne(): CpsFuture[int] {.cps.} =
     let r = await spawnBlocking(proc(): int {.gcsafe.} =
-      sleep(50)
-      return 1
+      waitForParallelPeer(1)
     )
     return r
 
   proc blockingTwo(): CpsFuture[int] {.cps.} =
     let r = await spawnBlocking(proc(): int {.gcsafe.} =
-      sleep(50)
-      return 2
+      waitForParallelPeer(2)
     )
     return r
 
   proc blockingThree(): CpsFuture[int] {.cps.} =
     let r = await spawnBlocking(proc(): int {.gcsafe.} =
-      sleep(50)
-      return 3
+      waitForParallelPeer(3)
     )
     return r
 
@@ -115,12 +124,9 @@ block testSpawnBlockingParallel:
     let r3 = await t3
     return r1 + r2 + r3
 
-  let start = getMonoTime()
   let val = runCps(parallelWork())
-  let elapsed = (getMonoTime() - start).inMilliseconds
 
   assert val == 6, "Expected 6, got " & $val
-  assert elapsed < 150, "Expected under 150ms (parallel), got " & $elapsed & "ms"
   echo "PASS: Multiple spawnBlocking run in parallel"
 
 loop.shutdownMtRuntime()

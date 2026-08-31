@@ -19,7 +19,7 @@ import ../runtime
 import ../private/spinlock
 
 proc runtimeMtEnabled(): bool {.inline.} =
-  let rt = currentRuntime().runtime
+  let rt {.cursor.} = cast[CpsRuntime](currentRuntimePointer())
   rt != nil and rt.flavor == rfMultiThread
 
 template withLock(lock: var SpinLock, mt: bool, body: untyped) =

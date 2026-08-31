@@ -203,7 +203,9 @@
   <dt><pre><span class="Keyword">proc</span> <a href="#prepareCrossThreadClosure%2CT"><span class="Identifier">prepareCrossThreadClosure</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">cb</span><span class="Other">:</span> <span class="Keyword">var</span> <span class="Identifier">T</span><span class="Other">)</span> {.<span class="Identifier">inline</span>.}</pre></dt>
   <dd>
     
-    Prevent a transferred one-shot closure environment from entering the producer's thread-local ORC cycle-root list. Generated closure types are unique to their lexical task site; their captured graph is released on its owner worker (or returned there after remote invocation).
+    <p>Validate the closure-pair ABI used by the ownership queues.</p>
+<p>ARC/ORC type descriptors are process-global and immutable here. Closure environments are instead invoked remotely as raw pairs and returned to their allocating worker for destruction.</p>
+
     
   </dd>
 </div>
@@ -252,7 +254,7 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 16:26:27 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-31 17:32:47 UTC</small>
       </div>
     </div>
   </div>

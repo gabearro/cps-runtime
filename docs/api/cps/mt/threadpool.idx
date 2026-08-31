@@ -1,7 +1,9 @@
 nimTitle	threadpool	cps/mt/threadpool.html	module cps/mt/threadpool		0
-nim	ThreadPool	cps/mt/threadpool.html#ThreadPool	type ThreadPool		31
-nim	newThreadPool	cps/mt/threadpool.html#newThreadPool,int,proc),int	proc newThreadPool(numThreads: int = 0; workerSetup: proc () {.gcsafe.} = nil;\n              maxPendingTasks: int = 65536): ThreadPool		107
-nim	trySubmit	cps/mt/threadpool.html#trySubmit,ThreadPool,sinkTaskProc	proc trySubmit(pool: ThreadPool; taskArg: sink TaskProc): bool		141
-nim	submit	cps/mt/threadpool.html#submit,ThreadPool,sinkTaskProc	proc submit(pool: ThreadPool; taskArg: sink TaskProc)		154
-nim	len	cps/mt/threadpool.html#len,ThreadPool	proc len(pool: ThreadPool): int		168
-nim	shutdown	cps/mt/threadpool.html#shutdown,ThreadPool	proc shutdown(pool: ThreadPool)		172
+nim	ThreadSetupProc	cps/mt/threadpool.html#ThreadSetupProc	type ThreadSetupProc		15
+nim	RawPoolTaskProc	cps/mt/threadpool.html#RawPoolTaskProc	type RawPoolTaskProc		17
+nim	RawPoolJobHeader	cps/mt/threadpool.html#RawPoolJobHeader	object RawPoolJobHeader		19
+nim	ThreadPool	cps/mt/threadpool.html#ThreadPool	type ThreadPool		33
+nim	newThreadPool	cps/mt/threadpool.html#newThreadPool,int,ThreadSetupProc,pointer,int	proc newThreadPool(numThreads: int = 0; workerSetup: ThreadSetupProc = nil;\n              workerSetupCtx: pointer = nil; maxPendingTasks: int = 65536): ThreadPool		84
+nim	submitRawJob	cps/mt/threadpool.html#submitRawJob,ThreadPool,pointer	proc submitRawJob(pool: ThreadPool; job: pointer): bool		111
+nim	len	cps/mt/threadpool.html#len,ThreadPool	proc len(pool: ThreadPool): int		127
+nim	shutdown	cps/mt/threadpool.html#shutdown,ThreadPool	proc shutdown(pool: ThreadPool)		131

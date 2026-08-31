@@ -16,159 +16,165 @@ nim	RuntimeFlavor	cps/runtime.html#RuntimeFlavor	enum RuntimeFlavor		52
 nim	RuntimeConfig	cps/runtime.html#RuntimeConfig	object RuntimeConfig		56
 nim	CpsRuntime	cps/runtime.html#CpsRuntime	type CpsRuntime		64
 nim	RuntimeHandle	cps/runtime.html#RuntimeHandle	object RuntimeHandle		91
-nim	RuntimeGuard	cps/runtime.html#RuntimeGuard	object RuntimeGuard		95
-nim	RuntimeAffinityError	cps/runtime.html#RuntimeAffinityError	object RuntimeAffinityError		100
-nim	Trampoline	cps/runtime.html#Trampoline	object Trampoline		103
-nim	CpsFuture	cps/runtime.html#CpsFuture	type CpsFuture		121
-nim	CpsVoidFuture	cps/runtime.html#CpsVoidFuture	type CpsVoidFuture		141
-nim	RuntimeStats	cps/runtime.html#RuntimeStats	object RuntimeStats		173
-nim	ensureShared	cps/runtime.html#ensureShared,CpsFuture[T]	proc ensureShared[T](fut: CpsFuture[T])		191
-nim	ensureShared	cps/runtime.html#ensureShared,CpsVoidFuture	proc ensureShared(fut: CpsVoidFuture)		193
-nim	complete	cps/runtime.html#complete,CpsFuture[T],T	proc complete[T](fut: CpsFuture[T]; val: T)		195
-nim	complete	cps/runtime.html#complete,CpsVoidFuture	proc complete(fut: CpsVoidFuture)		197
-nim	fail	cps/runtime.html#fail,CpsFuture[T],ref.CatchableError	proc fail[T](fut: CpsFuture[T]; err: ref CatchableError)		199
-nim	fail	cps/runtime.html#fail,CpsVoidFuture,ref.CatchableError	proc fail(fut: CpsVoidFuture; err: ref CatchableError)		201
-nim	getRuntimeStats	cps/runtime.html#getRuntimeStats	proc getRuntimeStats(): RuntimeStats		220
-nim	resetRuntimeStats	cps/runtime.html#resetRuntimeStats	proc resetRuntimeStats()		235
-nim	currentSchedulerPtr	cps/runtime.html#currentSchedulerPtr	var currentSchedulerPtr		266
-nim	currentEventLoopPtr	cps/runtime.html#currentEventLoopPtr	var currentEventLoopPtr		267
-nim	currentEventLoopRuntimePtr	cps/runtime.html#currentEventLoopRuntimePtr	var currentEventLoopRuntimePtr		268
-nim	currentIoShardId	cps/runtime.html#currentIoShardId	var currentIoShardId		269
-nim	mtModeEnabled	cps/runtime.html#mtModeEnabled	var mtModeEnabled		271
-nim	mtDispatcher	cps/runtime.html#mtDispatcher	var mtDispatcher		272
-nim	mtCallbackDispatcher	cps/runtime.html#mtCallbackDispatcher	var mtCallbackDispatcher		273
-nim	mtYieldDispatcher	cps/runtime.html#mtYieldDispatcher	var mtYieldDispatcher		274
-nim	mtWakeReactor	cps/runtime.html#mtWakeReactor	var mtWakeReactor		275
-nim	isSchedulerWorker	cps/runtime.html#isSchedulerWorker	var isSchedulerWorker		276
-nim	currentWorkerId	cps/runtime.html#currentWorkerId	var currentWorkerId		277
-nim	isReactorThread	cps/runtime.html#isReactorThread	var isReactorThread		278
-nim	currentReactorCpuId	cps/runtime.html#currentReactorCpuId	var currentReactorCpuId		279
-nim	currentReactorPinned	cps/runtime.html#currentReactorPinned	var currentReactorPinned		280
-nim	currentThreadIdentity	cps/runtime.html#currentThreadIdentity	proc currentThreadIdentity(): pointer		282
-nim	bindCurrentEventLoop	cps/runtime.html#bindCurrentEventLoop,CpsRuntime,pointer,int	proc bindCurrentEventLoop(rt: CpsRuntime; loopPtr: pointer; shardId: int)		286
-nim	clearCurrentEventLoop	cps/runtime.html#clearCurrentEventLoop	proc clearCurrentEventLoop()		293
-nim	defaultRuntimeConfig	cps/runtime.html#defaultRuntimeConfig	proc defaultRuntimeConfig(): RuntimeConfig		335
-nim	toHandle	cps/runtime.html#toHandle,CpsRuntime	proc toHandle(rt: CpsRuntime): RuntimeHandle		346
-nim	isNil	cps/runtime.html#isNil,RuntimeHandle	proc isNil(h: RuntimeHandle): bool		350
-nim	runtimeId	cps/runtime.html#runtimeId,RuntimeHandle	proc runtimeId(h: RuntimeHandle): int64		354
-nim	runtimeFlavor	cps/runtime.html#runtimeFlavor,RuntimeHandle	proc runtimeFlavor(h: RuntimeHandle): RuntimeFlavor		358
-nim	setCurrentRuntime	cps/runtime.html#setCurrentRuntime,CpsRuntime	proc setCurrentRuntime(rt: CpsRuntime)		362
-nim	tryCurrentRuntime	cps/runtime.html#tryCurrentRuntime	proc tryCurrentRuntime(): RuntimeHandle		377
-nim	newCurrentThreadRuntime	cps/runtime.html#newCurrentThreadRuntime	proc newCurrentThreadRuntime(): CpsRuntime		381
-nim	registerMtRuntimeFactory	cps/runtime.html#registerMtRuntimeFactory,MtRuntimeFactoryProc	proc registerMtRuntimeFactory(factory: MtRuntimeFactoryProc)		406
-nim	newMultiThreadRuntime	cps/runtime.html#newMultiThreadRuntime,int,int,int,int,bool	proc newMultiThreadRuntime(numWorkers: int = 0; numBlockingThreads: int = 0;\n                      maxSchedulerQueue: int = DefaultSchedulerQueueCap;\n                      maxBlockingQueue: int = DefaultBlockingQueueCap;\n                      pinWorkers: bool = true): CpsRuntime		410
-nim	newRuntime	cps/runtime.html#newRuntime,RuntimeConfig	proc newRuntime(config: RuntimeConfig): CpsRuntime		428
-nim	setMainRuntime	cps/runtime.html#setMainRuntime,CpsRuntime	proc setMainRuntime(rt: CpsRuntime)		460
-nim	mainRuntime	cps/runtime.html#mainRuntime	proc mainRuntime(): RuntimeHandle		476
-nim	currentRuntime	cps/runtime.html#currentRuntime	proc currentRuntime(): RuntimeHandle		480
-nim	currentRuntimePointer	cps/runtime.html#currentRuntimePointer	proc currentRuntimePointer(): pointer		491
-nim	deferCurrentWorker	cps/runtime.html#deferCurrentWorker,sinkproc)	proc deferCurrentWorker(cbArg: sink proc () {.closure.}): bool		501
-nim	setLocalFutureDefault	cps/runtime.html#setLocalFutureDefault,bool	proc setLocalFutureDefault(enabled: bool)		515
-nim	localFutureDefaultEnabled	cps/runtime.html#localFutureDefaultEnabled	proc localFutureDefaultEnabled(): bool		522
-nim	enter	cps/runtime.html#enter,RuntimeHandle	proc enter(handle: RuntimeHandle): RuntimeGuard		526
-nim	leave	cps/runtime.html#leave,RuntimeGuard	proc leave(guard: var RuntimeGuard)		534
-nim	withRuntime	cps/runtime.html#withRuntime.t,RuntimeHandle,untyped	template withRuntime(handle: RuntimeHandle; body: untyped): untyped		541
-nim	runCpsWaitEnter	cps/runtime.html#runCpsWaitEnter,CpsRuntime	proc runCpsWaitEnter(rt: CpsRuntime)		563
-nim	runCpsWaitLeave	cps/runtime.html#runCpsWaitLeave,CpsRuntime	proc runCpsWaitLeave(rt: CpsRuntime)		569
-nim	runCpsWaitEnter	cps/runtime.html#runCpsWaitEnter	proc runCpsWaitEnter()		574
-nim	runCpsWaitLeave	cps/runtime.html#runCpsWaitLeave	proc runCpsWaitLeave()		579
-nim	waitRunCpsSignal	cps/runtime.html#waitRunCpsSignal,CpsRuntime,CpsFuture[T]	proc waitRunCpsSignal[T](rt: CpsRuntime; fut: CpsFuture[T])		584
-nim	waitRunCpsSignal	cps/runtime.html#waitRunCpsSignal,CpsRuntime,CpsVoidFuture	proc waitRunCpsSignal(rt: CpsRuntime; fut: CpsVoidFuture)		606
-nim	waitRunCpsSignal	cps/runtime.html#waitRunCpsSignal,CpsFuture[T]	proc waitRunCpsSignal[T](fut: CpsFuture[T])		628
-nim	waitRunCpsSignal	cps/runtime.html#waitRunCpsSignal,CpsVoidFuture	proc waitRunCpsSignal(fut: CpsVoidFuture)		634
-nim	newContinuation	cps/runtime.html#newContinuation,typedesc[Continuation],proc(sinkContinuation)	proc newContinuation(T: typedesc[Continuation];\n                fn: proc (c: sink Continuation): Continuation {.nimcall.}): T:type		644
-nim	pass	cps/runtime.html#pass,sinkContinuation	proc pass(c: sink Continuation): Continuation		652
-nim	halt	cps/runtime.html#halt,sinkContinuation	proc halt(c: sink Continuation): Continuation		656
-nim	suspend	cps/runtime.html#suspend,sinkContinuation	proc suspend(c: sink Continuation): Continuation		662
-nim	fail	cps/runtime.html#fail,sinkContinuation,ref.CatchableError	proc fail(c: sink Continuation; err: ref CatchableError): Continuation		668
-nim	isRunning	cps/runtime.html#isRunning,Continuation	proc isRunning(c: Continuation): bool		674
-nim	isFinished	cps/runtime.html#isFinished,Continuation	proc isFinished(c: Continuation): bool		678
-nim	isSuspended	cps/runtime.html#isSuspended,Continuation	proc isSuspended(c: Continuation): bool		682
-nim	initTrampoline	cps/runtime.html#initTrampoline,sinkContinuation	proc initTrampoline(c: sink Continuation): Trampoline		690
-nim	bounce	cps/runtime.html#bounce,Trampoline	proc bounce(t: var Trampoline): bool		694
-nim	run	cps/runtime.html#run,sinkContinuation	proc run(c: sink Continuation): Continuation		706
-nim	runUntilSuspend	cps/runtime.html#runUntilSuspend,sinkContinuation	proc runUntilSuspend(c: sink Continuation): Continuation		734
-nim	isLocalFast	cps/runtime.html#isLocalFast,CpsFuture[T]	proc isLocalFast[T](fut: CpsFuture[T]): bool		844
-nim	isLocalFast	cps/runtime.html#isLocalFast,CpsVoidFuture	proc isLocalFast(fut: CpsVoidFuture): bool		848
-nim	isSharedSafe	cps/runtime.html#isSharedSafe,CpsFuture[T]	proc isSharedSafe[T](fut: CpsFuture[T]): bool		852
-nim	isSharedSafe	cps/runtime.html#isSharedSafe,CpsVoidFuture	proc isSharedSafe(fut: CpsVoidFuture): bool		856
-nim	newCpsFuture	cps/runtime.html#newCpsFuture	proc newCpsFuture[T](): CpsFuture[T]		860
-nim	newCpsVoidFuture	cps/runtime.html#newCpsVoidFuture	proc newCpsVoidFuture(): CpsVoidFuture		877
-nim	newLocalCpsFuture	cps/runtime.html#newLocalCpsFuture	proc newLocalCpsFuture[T](): CpsFuture[T]		894
-nim	newLocalCpsVoidFuture	cps/runtime.html#newLocalCpsVoidFuture	proc newLocalCpsVoidFuture(): CpsVoidFuture		915
-nim	completedLocalFuture	cps/runtime.html#completedLocalFuture,T	proc completedLocalFuture[T](val: T): CpsFuture[T]		936
-nim	completedLocalVoidFuture	cps/runtime.html#completedLocalVoidFuture	proc completedLocalVoidFuture(): CpsVoidFuture		941
-nim	failedLocalFuture	cps/runtime.html#failedLocalFuture,ref.CatchableError	proc failedLocalFuture[T](err: ref CatchableError): CpsFuture[T]		946
-nim	failedLocalVoidFuture	cps/runtime.html#failedLocalVoidFuture,ref.CatchableError	proc failedLocalVoidFuture(err: ref CatchableError): CpsVoidFuture		951
-nim	completedFuture	cps/runtime.html#completedFuture,T	proc completedFuture[T](val: T): CpsFuture[T]		956
-nim	completedVoidFuture	cps/runtime.html#completedVoidFuture	proc completedVoidFuture(): CpsVoidFuture		970
-nim	cachedCompletedVoidFuture	cps/runtime.html#cachedCompletedVoidFuture	proc cachedCompletedVoidFuture(): CpsVoidFuture		984
-nim	failedFuture	cps/runtime.html#failedFuture,ref.CatchableError	proc failedFuture[T](err: ref CatchableError): CpsFuture[T]		992
-nim	failedVoidFuture	cps/runtime.html#failedVoidFuture,ref.CatchableError	proc failedVoidFuture(err: ref CatchableError): CpsVoidFuture		1005
-nim	finished	cps/runtime.html#finished,CpsFuture[T]	proc finished[T](fut: CpsFuture[T]): bool		1018
-nim	finished	cps/runtime.html#finished,CpsVoidFuture	proc finished(fut: CpsVoidFuture): bool		1025
-nim	futureRuntime	cps/runtime.html#futureRuntime,CpsFuture[T]	proc futureRuntime[T](fut: CpsFuture[T]): RuntimeHandle		1038
-nim	futureRuntime	cps/runtime.html#futureRuntime,CpsVoidFuture	proc futureRuntime(fut: CpsVoidFuture): RuntimeHandle		1042
-nim	bindFutureRuntime	cps/runtime.html#bindFutureRuntime,CpsFuture[T],RuntimeHandle	proc bindFutureRuntime[T](fut: CpsFuture[T]; handle: RuntimeHandle)		1046
-nim	bindFutureRuntime	cps/runtime.html#bindFutureRuntime,CpsVoidFuture,RuntimeHandle	proc bindFutureRuntime(fut: CpsVoidFuture; handle: RuntimeHandle)		1054
-nim	setFutureRootContinuation	cps/runtime.html#setFutureRootContinuation,CpsFuture[T],Continuation	proc setFutureRootContinuation[T](fut: CpsFuture[T]; c: Continuation)		1062
-nim	setFutureRootContinuation	cps/runtime.html#setFutureRootContinuation,CpsVoidFuture,Continuation	proc setFutureRootContinuation(fut: CpsVoidFuture; c: Continuation)		1068
-nim	pinFutureRuntime	cps/runtime.html#pinFutureRuntime,CpsFuture[T]	proc pinFutureRuntime[T](fut: CpsFuture[T])		1074
-nim	pinFutureRuntime	cps/runtime.html#pinFutureRuntime,CpsVoidFuture	proc pinFutureRuntime(fut: CpsVoidFuture)		1092
-nim	isRuntimePinned	cps/runtime.html#isRuntimePinned,CpsFuture[T]	proc isRuntimePinned[T](fut: CpsFuture[T]): bool		1110
-nim	isRuntimePinned	cps/runtime.html#isRuntimePinned,CpsVoidFuture	proc isRuntimePinned(fut: CpsVoidFuture): bool		1114
-nim	pinFutureWaitWorker	cps/runtime.html#pinFutureWaitWorker,CpsFuture[T]	proc pinFutureWaitWorker[T](fut: CpsFuture[T])		1118
-nim	pinFutureWaitWorker	cps/runtime.html#pinFutureWaitWorker,CpsVoidFuture	proc pinFutureWaitWorker(fut: CpsVoidFuture)		1123
-nim	tryMigrateTo	cps/runtime.html#tryMigrateTo,CpsFuture[T],RuntimeHandle	proc tryMigrateTo[T](fut: CpsFuture[T]; handle: RuntimeHandle): bool		1128
-nim	tryMigrateTo	cps/runtime.html#tryMigrateTo,CpsVoidFuture,RuntimeHandle	proc tryMigrateTo(fut: CpsVoidFuture; handle: RuntimeHandle): bool		1142
-nim	migrateTo	cps/runtime.html#migrateTo,CpsFuture[T],RuntimeHandle	proc migrateTo[T](fut: CpsFuture[T]; handle: RuntimeHandle)		1156
-nim	migrateTo	cps/runtime.html#migrateTo,CpsVoidFuture,RuntimeHandle	proc migrateTo(fut: CpsVoidFuture; handle: RuntimeHandle)		1163
-nim	hasError	cps/runtime.html#hasError,CpsFuture[T]	proc hasError[T](fut: CpsFuture[T]): bool		1543
-nim	hasError	cps/runtime.html#hasError,CpsVoidFuture	proc hasError(fut: CpsVoidFuture): bool		1549
-nim	getError	cps/runtime.html#getError,CpsFuture[T]	proc getError[T](fut: CpsFuture[T]): ref CatchableError		1555
-nim	getError	cps/runtime.html#getError,CpsVoidFuture	proc getError(fut: CpsVoidFuture): ref CatchableError		1561
-nim	read	cps/runtime.html#read,CpsFuture[T]	proc read[T](fut: CpsFuture[T]): T		1567
-nim	read	cps/runtime.html#read,CpsVoidFuture	proc read(fut: CpsVoidFuture)		1576
-nim	addCallbackOn	cps/runtime.html#addCallbackOn,CpsFuture[T],RuntimeHandle,sinkproc)	proc addCallbackOn[T](fut: CpsFuture[T]; rt: RuntimeHandle;\n                 cb: sink proc () {.closure.})		1822
-nim	addCallbackOn	cps/runtime.html#addCallbackOn,CpsVoidFuture,RuntimeHandle,sinkproc)	proc addCallbackOn(fut: CpsVoidFuture; rt: RuntimeHandle; cb: sink proc () {.closure.})		1827
-nim	addCallback	cps/runtime.html#addCallback,CpsFuture[T],sinkproc)	proc addCallback[T](fut: CpsFuture[T]; cb: sink proc () {.closure.})		1832
-nim	addCallback	cps/runtime.html#addCallback,CpsVoidFuture,sinkproc)	proc addCallback(fut: CpsVoidFuture; cb: sink proc () {.closure.})		1838
-nim	isCancelled	cps/runtime.html#isCancelled,CpsFuture[T]	proc isCancelled[T](fut: CpsFuture[T]): bool		1918
-nim	isCancelled	cps/runtime.html#isCancelled,CpsVoidFuture	proc isCancelled(fut: CpsVoidFuture): bool		1925
-nim	cancel	cps/runtime.html#cancel,CpsFuture[T]	proc cancel[T](fut: CpsFuture[T])		1932
-nim	cancel	cps/runtime.html#cancel,CpsVoidFuture	proc cancel(fut: CpsVoidFuture)		1965
-nim	AtomicCounter	cps/runtime.html#AtomicCounter	object AtomicCounter		2003
-nim	newAtomicCounter	cps/runtime.html#newAtomicCounter,int	proc newAtomicCounter(initial: int): ptr AtomicCounter		2007
-nim	freeAtomicCounter	cps/runtime.html#freeAtomicCounter,ptr.AtomicCounter	proc freeAtomicCounter(c: ptr AtomicCounter)		2013
-nim	setContinuation	cps/runtime.html#setContinuation.t,Continuation,untyped	template setContinuation(env: Continuation; nextFn: untyped)		2021
-nim	race	cps/runtime.html#race,varargs[CpsFuture[T]]	proc race[T](futures: varargs[CpsFuture[T]]): CpsFuture[T]		2039
-nim	race	cps/runtime.html#race,varargs[CpsVoidFuture]	proc race(futures: varargs[CpsVoidFuture]): CpsVoidFuture		2075
-nim	select	cps/runtime.html#select,varargs[CpsFuture[T]]	proc select[T](futures: varargs[CpsFuture[T]]): CpsFuture[tuple[index: int, value: T]]		2107
-nim	raceCancel	cps/runtime.html#raceCancel,varargs[CpsFuture[T]]	proc raceCancel[T](futures: varargs[CpsFuture[T]]): CpsFuture[T]		2140
-nim	raceCancel	cps/runtime.html#raceCancel,varargs[CpsVoidFuture]	proc raceCancel(futures: varargs[CpsVoidFuture]): CpsVoidFuture		2187
-nimgrp	race	cps/runtime.html#race-procs-all	proc		2039
-nimgrp	fail	cps/runtime.html#fail-procs-all	proc		199
-nimgrp	setfuturerootcontinuation	cps/runtime.html#setFutureRootContinuation-procs-all	proc		1062
-nimgrp	waitruncpssignal	cps/runtime.html#waitRunCpsSignal-procs-all	proc		584
-nimgrp	ensureshared	cps/runtime.html#ensureShared-procs-all	proc		191
-nimgrp	trymigrateto	cps/runtime.html#tryMigrateTo-procs-all	proc		1128
-nimgrp	isruntimepinned	cps/runtime.html#isRuntimePinned-procs-all	proc		1110
-nimgrp	racecancel	cps/runtime.html#raceCancel-procs-all	proc		2140
-nimgrp	islocalfast	cps/runtime.html#isLocalFast-procs-all	proc		844
-nimgrp	addcallbackon	cps/runtime.html#addCallbackOn-procs-all	proc		1822
-nimgrp	migrateto	cps/runtime.html#migrateTo-procs-all	proc		1156
-nimgrp	pinfutureruntime	cps/runtime.html#pinFutureRuntime-procs-all	proc		1074
-nimgrp	addcallback	cps/runtime.html#addCallback-procs-all	proc		1832
-nimgrp	pinfuturewaitworker	cps/runtime.html#pinFutureWaitWorker-procs-all	proc		1118
-nimgrp	runcpswaitleave	cps/runtime.html#runCpsWaitLeave-procs-all	proc		569
-nimgrp	runcpswaitenter	cps/runtime.html#runCpsWaitEnter-procs-all	proc		563
-nimgrp	finished	cps/runtime.html#finished-procs-all	proc		1018
-nimgrp	complete	cps/runtime.html#complete-procs-all	proc		195
-nimgrp	futureruntime	cps/runtime.html#futureRuntime-procs-all	proc		1038
-nimgrp	read	cps/runtime.html#read-procs-all	proc		1567
-nimgrp	issharedsafe	cps/runtime.html#isSharedSafe-procs-all	proc		852
-nimgrp	bindfutureruntime	cps/runtime.html#bindFutureRuntime-procs-all	proc		1046
-nimgrp	haserror	cps/runtime.html#hasError-procs-all	proc		1543
-nimgrp	geterror	cps/runtime.html#getError-procs-all	proc		1555
-nimgrp	iscancelled	cps/runtime.html#isCancelled-procs-all	proc		1918
-nimgrp	cancel	cps/runtime.html#cancel-procs-all	proc		1932
+nim	RuntimeGuard	cps/runtime.html#RuntimeGuard	object RuntimeGuard		96
+nim	RuntimeAffinityError	cps/runtime.html#RuntimeAffinityError	object RuntimeAffinityError		101
+nim	Trampoline	cps/runtime.html#Trampoline	object Trampoline		104
+nim	CpsFuture	cps/runtime.html#CpsFuture	type CpsFuture		122
+nim	CpsVoidFuture	cps/runtime.html#CpsVoidFuture	type CpsVoidFuture		142
+nim	MainReactorCallbackWorker	cps/runtime.html#MainReactorCallbackWorker	const MainReactorCallbackWorker		171
+nim	RuntimeStats	cps/runtime.html#RuntimeStats	object RuntimeStats		176
+nim	ensureShared	cps/runtime.html#ensureShared,CpsFuture[T]	proc ensureShared[T](fut: CpsFuture[T])		194
+nim	ensureShared	cps/runtime.html#ensureShared,CpsVoidFuture	proc ensureShared(fut: CpsVoidFuture)		196
+nim	complete	cps/runtime.html#complete,CpsFuture[T],T	proc complete[T](fut: CpsFuture[T]; val: T)		198
+nim	complete	cps/runtime.html#complete,CpsVoidFuture	proc complete(fut: CpsVoidFuture)		200
+nim	completeTransferred	cps/runtime.html#completeTransferred,CpsFuture[T],sinkT	proc completeTransferred[T](fut: CpsFuture[T]; valArg: sink T)		202
+nim	fail	cps/runtime.html#fail,CpsFuture[T],ref.CatchableError	proc fail[T](fut: CpsFuture[T]; err: ref CatchableError)		204
+nim	fail	cps/runtime.html#fail,CpsVoidFuture,ref.CatchableError	proc fail(fut: CpsVoidFuture; err: ref CatchableError)		206
+nim	failTransferred	cps/runtime.html#failTransferred,CpsFuture[T],	proc failTransferred[T](fut: CpsFuture[T]; errArg: sink ref CatchableError)		208
+nim	failTransferred	cps/runtime.html#failTransferred,CpsVoidFuture,	proc failTransferred(fut: CpsVoidFuture; errArg: sink ref CatchableError)		210
+nim	getRuntimeStats	cps/runtime.html#getRuntimeStats	proc getRuntimeStats(): RuntimeStats		229
+nim	resetRuntimeStats	cps/runtime.html#resetRuntimeStats	proc resetRuntimeStats()		244
+nim	currentSchedulerPtr	cps/runtime.html#currentSchedulerPtr	var currentSchedulerPtr		274
+nim	currentEventLoopPtr	cps/runtime.html#currentEventLoopPtr	var currentEventLoopPtr		275
+nim	currentEventLoopRuntimePtr	cps/runtime.html#currentEventLoopRuntimePtr	var currentEventLoopRuntimePtr		276
+nim	currentIoShardId	cps/runtime.html#currentIoShardId	var currentIoShardId		277
+nim	mtModeEnabled	cps/runtime.html#mtModeEnabled	var mtModeEnabled		279
+nim	mtDispatcher	cps/runtime.html#mtDispatcher	var mtDispatcher		280
+nim	mtCallbackDispatcher	cps/runtime.html#mtCallbackDispatcher	var mtCallbackDispatcher		281
+nim	mtYieldDispatcher	cps/runtime.html#mtYieldDispatcher	var mtYieldDispatcher		282
+nim	mtWakeReactor	cps/runtime.html#mtWakeReactor	var mtWakeReactor		283
+nim	isSchedulerWorker	cps/runtime.html#isSchedulerWorker	var isSchedulerWorker		284
+nim	currentWorkerId	cps/runtime.html#currentWorkerId	var currentWorkerId		285
+nim	isReactorThread	cps/runtime.html#isReactorThread	var isReactorThread		286
+nim	currentReactorCpuId	cps/runtime.html#currentReactorCpuId	var currentReactorCpuId		287
+nim	currentReactorPinned	cps/runtime.html#currentReactorPinned	var currentReactorPinned		288
+nim	currentThreadIdentity	cps/runtime.html#currentThreadIdentity	proc currentThreadIdentity(): pointer		290
+nim	bindCurrentEventLoop	cps/runtime.html#bindCurrentEventLoop,CpsRuntime,pointer,int	proc bindCurrentEventLoop(rt: CpsRuntime; loopPtr: pointer; shardId: int)		294
+nim	clearCurrentEventLoop	cps/runtime.html#clearCurrentEventLoop	proc clearCurrentEventLoop()		301
+nim	defaultRuntimeConfig	cps/runtime.html#defaultRuntimeConfig	proc defaultRuntimeConfig(): RuntimeConfig		340
+nim	toHandle	cps/runtime.html#toHandle,CpsRuntime	proc toHandle(rt: CpsRuntime): RuntimeHandle		351
+nim	isNil	cps/runtime.html#isNil,RuntimeHandle	proc isNil(h: RuntimeHandle): bool		355
+nim	runtimeId	cps/runtime.html#runtimeId,RuntimeHandle	proc runtimeId(h: RuntimeHandle): int64		359
+nim	runtimeFlavor	cps/runtime.html#runtimeFlavor,RuntimeHandle	proc runtimeFlavor(h: RuntimeHandle): RuntimeFlavor		363
+nim	setCurrentRuntime	cps/runtime.html#setCurrentRuntime,CpsRuntime	proc setCurrentRuntime(rt: CpsRuntime)		367
+nim	setCurrentRuntimeBorrowed	cps/runtime.html#setCurrentRuntimeBorrowed,CpsRuntime	proc setCurrentRuntimeBorrowed(rt: CpsRuntime)		382
+nim	tryCurrentRuntime	cps/runtime.html#tryCurrentRuntime	proc tryCurrentRuntime(): RuntimeHandle		389
+nim	newCurrentThreadRuntime	cps/runtime.html#newCurrentThreadRuntime	proc newCurrentThreadRuntime(): CpsRuntime		393
+nim	registerMtRuntimeFactory	cps/runtime.html#registerMtRuntimeFactory,MtRuntimeFactoryProc	proc registerMtRuntimeFactory(factory: MtRuntimeFactoryProc)		418
+nim	newMultiThreadRuntime	cps/runtime.html#newMultiThreadRuntime,int,int,int,int,bool	proc newMultiThreadRuntime(numWorkers: int = 0; numBlockingThreads: int = 0;\n                      maxSchedulerQueue: int = DefaultSchedulerQueueCap;\n                      maxBlockingQueue: int = DefaultBlockingQueueCap;\n                      pinWorkers: bool = true): CpsRuntime		422
+nim	newRuntime	cps/runtime.html#newRuntime,RuntimeConfig	proc newRuntime(config: RuntimeConfig): CpsRuntime		440
+nim	setMainRuntime	cps/runtime.html#setMainRuntime,CpsRuntime	proc setMainRuntime(rt: CpsRuntime)		472
+nim	mainRuntime	cps/runtime.html#mainRuntime	proc mainRuntime(): RuntimeHandle		487
+nim	currentRuntime	cps/runtime.html#currentRuntime	proc currentRuntime(): RuntimeHandle		491
+nim	currentRuntimePointer	cps/runtime.html#currentRuntimePointer	proc currentRuntimePointer(): pointer		502
+nim	deferCurrentWorker	cps/runtime.html#deferCurrentWorker,sinkproc)	proc deferCurrentWorker(cbArg: sink proc () {.closure.}): bool		512
+nim	setLocalFutureDefault	cps/runtime.html#setLocalFutureDefault,bool	proc setLocalFutureDefault(enabled: bool)		526
+nim	localFutureDefaultEnabled	cps/runtime.html#localFutureDefaultEnabled	proc localFutureDefaultEnabled(): bool		533
+nim	enter	cps/runtime.html#enter,RuntimeHandle	proc enter(handle: RuntimeHandle): RuntimeGuard		537
+nim	leave	cps/runtime.html#leave,RuntimeGuard	proc leave(guard: var RuntimeGuard)		545
+nim	withRuntime	cps/runtime.html#withRuntime.t,RuntimeHandle,untyped	template withRuntime(handle: RuntimeHandle; body: untyped): untyped		552
+nim	runCpsWaitEnter	cps/runtime.html#runCpsWaitEnter,CpsRuntime	proc runCpsWaitEnter(rt: CpsRuntime)		574
+nim	runCpsWaitLeave	cps/runtime.html#runCpsWaitLeave,CpsRuntime	proc runCpsWaitLeave(rt: CpsRuntime)		580
+nim	runCpsWaitEnter	cps/runtime.html#runCpsWaitEnter	proc runCpsWaitEnter()		585
+nim	runCpsWaitLeave	cps/runtime.html#runCpsWaitLeave	proc runCpsWaitLeave()		590
+nim	waitRunCpsSignal	cps/runtime.html#waitRunCpsSignal,CpsRuntime,CpsFuture[T]	proc waitRunCpsSignal[T](rt: CpsRuntime; fut: CpsFuture[T])		595
+nim	waitRunCpsSignal	cps/runtime.html#waitRunCpsSignal,CpsRuntime,CpsVoidFuture	proc waitRunCpsSignal(rt: CpsRuntime; fut: CpsVoidFuture)		617
+nim	waitRunCpsSignal	cps/runtime.html#waitRunCpsSignal,CpsFuture[T]	proc waitRunCpsSignal[T](fut: CpsFuture[T])		639
+nim	waitRunCpsSignal	cps/runtime.html#waitRunCpsSignal,CpsVoidFuture	proc waitRunCpsSignal(fut: CpsVoidFuture)		645
+nim	newContinuation	cps/runtime.html#newContinuation,typedesc[Continuation],proc(sinkContinuation)	proc newContinuation(T: typedesc[Continuation];\n                fn: proc (c: sink Continuation): Continuation {.nimcall.}): T:type		655
+nim	pass	cps/runtime.html#pass,sinkContinuation	proc pass(c: sink Continuation): Continuation		663
+nim	halt	cps/runtime.html#halt,sinkContinuation	proc halt(c: sink Continuation): Continuation		667
+nim	suspend	cps/runtime.html#suspend,sinkContinuation	proc suspend(c: sink Continuation): Continuation		673
+nim	fail	cps/runtime.html#fail,sinkContinuation,ref.CatchableError	proc fail(c: sink Continuation; err: ref CatchableError): Continuation		679
+nim	isRunning	cps/runtime.html#isRunning,Continuation	proc isRunning(c: Continuation): bool		685
+nim	isFinished	cps/runtime.html#isFinished,Continuation	proc isFinished(c: Continuation): bool		689
+nim	isSuspended	cps/runtime.html#isSuspended,Continuation	proc isSuspended(c: Continuation): bool		693
+nim	initTrampoline	cps/runtime.html#initTrampoline,sinkContinuation	proc initTrampoline(c: sink Continuation): Trampoline		701
+nim	bounce	cps/runtime.html#bounce,Trampoline	proc bounce(t: var Trampoline): bool		705
+nim	run	cps/runtime.html#run,sinkContinuation	proc run(c: sink Continuation): Continuation		717
+nim	runUntilSuspend	cps/runtime.html#runUntilSuspend,sinkContinuation	proc runUntilSuspend(c: sink Continuation): Continuation		745
+nim	isLocalFast	cps/runtime.html#isLocalFast,CpsFuture[T]	proc isLocalFast[T](fut: CpsFuture[T]): bool		855
+nim	isLocalFast	cps/runtime.html#isLocalFast,CpsVoidFuture	proc isLocalFast(fut: CpsVoidFuture): bool		859
+nim	isSharedSafe	cps/runtime.html#isSharedSafe,CpsFuture[T]	proc isSharedSafe[T](fut: CpsFuture[T]): bool		863
+nim	isSharedSafe	cps/runtime.html#isSharedSafe,CpsVoidFuture	proc isSharedSafe(fut: CpsVoidFuture): bool		867
+nim	newCpsFuture	cps/runtime.html#newCpsFuture	proc newCpsFuture[T](): CpsFuture[T]		871
+nim	newCpsVoidFuture	cps/runtime.html#newCpsVoidFuture	proc newCpsVoidFuture(): CpsVoidFuture		888
+nim	newLocalCpsFuture	cps/runtime.html#newLocalCpsFuture	proc newLocalCpsFuture[T](): CpsFuture[T]		905
+nim	newLocalCpsVoidFuture	cps/runtime.html#newLocalCpsVoidFuture	proc newLocalCpsVoidFuture(): CpsVoidFuture		926
+nim	completedLocalFuture	cps/runtime.html#completedLocalFuture,T	proc completedLocalFuture[T](val: T): CpsFuture[T]		947
+nim	completedLocalVoidFuture	cps/runtime.html#completedLocalVoidFuture	proc completedLocalVoidFuture(): CpsVoidFuture		952
+nim	failedLocalFuture	cps/runtime.html#failedLocalFuture,ref.CatchableError	proc failedLocalFuture[T](err: ref CatchableError): CpsFuture[T]		957
+nim	failedLocalVoidFuture	cps/runtime.html#failedLocalVoidFuture,ref.CatchableError	proc failedLocalVoidFuture(err: ref CatchableError): CpsVoidFuture		962
+nim	completedFuture	cps/runtime.html#completedFuture,T	proc completedFuture[T](val: T): CpsFuture[T]		967
+nim	completedVoidFuture	cps/runtime.html#completedVoidFuture	proc completedVoidFuture(): CpsVoidFuture		981
+nim	cachedCompletedVoidFuture	cps/runtime.html#cachedCompletedVoidFuture	proc cachedCompletedVoidFuture(): CpsVoidFuture		995
+nim	failedFuture	cps/runtime.html#failedFuture,ref.CatchableError	proc failedFuture[T](err: ref CatchableError): CpsFuture[T]		1003
+nim	failedVoidFuture	cps/runtime.html#failedVoidFuture,ref.CatchableError	proc failedVoidFuture(err: ref CatchableError): CpsVoidFuture		1016
+nim	finished	cps/runtime.html#finished,CpsFuture[T]	proc finished[T](fut: CpsFuture[T]): bool		1029
+nim	finished	cps/runtime.html#finished,CpsVoidFuture	proc finished(fut: CpsVoidFuture): bool		1036
+nim	futureRuntime	cps/runtime.html#futureRuntime,CpsFuture[T]	proc futureRuntime[T](fut: CpsFuture[T]): RuntimeHandle		1049
+nim	futureRuntime	cps/runtime.html#futureRuntime,CpsVoidFuture	proc futureRuntime(fut: CpsVoidFuture): RuntimeHandle		1053
+nim	bindFutureRuntime	cps/runtime.html#bindFutureRuntime,CpsFuture[T],RuntimeHandle	proc bindFutureRuntime[T](fut: CpsFuture[T]; handle: RuntimeHandle)		1057
+nim	bindFutureRuntime	cps/runtime.html#bindFutureRuntime,CpsVoidFuture,RuntimeHandle	proc bindFutureRuntime(fut: CpsVoidFuture; handle: RuntimeHandle)		1065
+nim	setFutureRootContinuation	cps/runtime.html#setFutureRootContinuation,CpsFuture[T],Continuation	proc setFutureRootContinuation[T](fut: CpsFuture[T]; c: Continuation)		1073
+nim	setFutureRootContinuation	cps/runtime.html#setFutureRootContinuation,CpsVoidFuture,Continuation	proc setFutureRootContinuation(fut: CpsVoidFuture; c: Continuation)		1079
+nim	pinFutureRuntime	cps/runtime.html#pinFutureRuntime,CpsFuture[T]	proc pinFutureRuntime[T](fut: CpsFuture[T])		1085
+nim	pinFutureRuntime	cps/runtime.html#pinFutureRuntime,CpsVoidFuture	proc pinFutureRuntime(fut: CpsVoidFuture)		1103
+nim	isRuntimePinned	cps/runtime.html#isRuntimePinned,CpsFuture[T]	proc isRuntimePinned[T](fut: CpsFuture[T]): bool		1121
+nim	isRuntimePinned	cps/runtime.html#isRuntimePinned,CpsVoidFuture	proc isRuntimePinned(fut: CpsVoidFuture): bool		1125
+nim	pinFutureWaitWorker	cps/runtime.html#pinFutureWaitWorker,CpsFuture[T]	proc pinFutureWaitWorker[T](fut: CpsFuture[T])		1129
+nim	pinFutureWaitWorker	cps/runtime.html#pinFutureWaitWorker,CpsVoidFuture	proc pinFutureWaitWorker(fut: CpsVoidFuture)		1134
+nim	tryMigrateTo	cps/runtime.html#tryMigrateTo,CpsFuture[T],RuntimeHandle	proc tryMigrateTo[T](fut: CpsFuture[T]; handle: RuntimeHandle): bool		1139
+nim	tryMigrateTo	cps/runtime.html#tryMigrateTo,CpsVoidFuture,RuntimeHandle	proc tryMigrateTo(fut: CpsVoidFuture; handle: RuntimeHandle): bool		1153
+nim	migrateTo	cps/runtime.html#migrateTo,CpsFuture[T],RuntimeHandle	proc migrateTo[T](fut: CpsFuture[T]; handle: RuntimeHandle)		1167
+nim	migrateTo	cps/runtime.html#migrateTo,CpsVoidFuture,RuntimeHandle	proc migrateTo(fut: CpsVoidFuture; handle: RuntimeHandle)		1174
+nim	hasError	cps/runtime.html#hasError,CpsFuture[T]	proc hasError[T](fut: CpsFuture[T]): bool		1630
+nim	hasError	cps/runtime.html#hasError,CpsVoidFuture	proc hasError(fut: CpsVoidFuture): bool		1636
+nim	getError	cps/runtime.html#getError,CpsFuture[T]	proc getError[T](fut: CpsFuture[T]): ref CatchableError		1642
+nim	getError	cps/runtime.html#getError,CpsVoidFuture	proc getError(fut: CpsVoidFuture): ref CatchableError		1648
+nim	read	cps/runtime.html#read,CpsFuture[T]	proc read[T](fut: CpsFuture[T]): T		1654
+nim	read	cps/runtime.html#read,CpsVoidFuture	proc read(fut: CpsVoidFuture)		1663
+nim	addCallbackOn	cps/runtime.html#addCallbackOn,CpsFuture[T],RuntimeHandle,sinkproc)	proc addCallbackOn[T](fut: CpsFuture[T]; rt: RuntimeHandle;\n                 cb: sink proc () {.closure.})		1912
+nim	addCallbackOn	cps/runtime.html#addCallbackOn,CpsVoidFuture,RuntimeHandle,sinkproc)	proc addCallbackOn(fut: CpsVoidFuture; rt: RuntimeHandle; cb: sink proc () {.closure.})		1917
+nim	addCallback	cps/runtime.html#addCallback,CpsFuture[T],sinkproc)	proc addCallback[T](fut: CpsFuture[T]; cb: sink proc () {.closure.})		1922
+nim	addCallback	cps/runtime.html#addCallback,CpsVoidFuture,sinkproc)	proc addCallback(fut: CpsVoidFuture; cb: sink proc () {.closure.})		1928
+nim	isCancelled	cps/runtime.html#isCancelled,CpsFuture[T]	proc isCancelled[T](fut: CpsFuture[T]): bool		2006
+nim	isCancelled	cps/runtime.html#isCancelled,CpsVoidFuture	proc isCancelled(fut: CpsVoidFuture): bool		2013
+nim	cancel	cps/runtime.html#cancel,CpsFuture[T]	proc cancel[T](fut: CpsFuture[T])		2020
+nim	cancel	cps/runtime.html#cancel,CpsVoidFuture	proc cancel(fut: CpsVoidFuture)		2053
+nim	AtomicCounter	cps/runtime.html#AtomicCounter	object AtomicCounter		2091
+nim	newAtomicCounter	cps/runtime.html#newAtomicCounter,int	proc newAtomicCounter(initial: int): ptr AtomicCounter		2095
+nim	freeAtomicCounter	cps/runtime.html#freeAtomicCounter,ptr.AtomicCounter	proc freeAtomicCounter(c: ptr AtomicCounter)		2101
+nim	setContinuation	cps/runtime.html#setContinuation.t,Continuation,untyped	template setContinuation(env: Continuation; nextFn: untyped)		2109
+nim	race	cps/runtime.html#race,varargs[CpsFuture[T]]	proc race[T](futures: varargs[CpsFuture[T]]): CpsFuture[T]		2127
+nim	race	cps/runtime.html#race,varargs[CpsVoidFuture]	proc race(futures: varargs[CpsVoidFuture]): CpsVoidFuture		2163
+nim	select	cps/runtime.html#select,varargs[CpsFuture[T]]	proc select[T](futures: varargs[CpsFuture[T]]): CpsFuture[tuple[index: int, value: T]]		2195
+nim	raceCancel	cps/runtime.html#raceCancel,varargs[CpsFuture[T]]	proc raceCancel[T](futures: varargs[CpsFuture[T]]): CpsFuture[T]		2228
+nim	raceCancel	cps/runtime.html#raceCancel,varargs[CpsVoidFuture]	proc raceCancel(futures: varargs[CpsVoidFuture]): CpsVoidFuture		2275
+nimgrp	race	cps/runtime.html#race-procs-all	proc		2127
+nimgrp	fail	cps/runtime.html#fail-procs-all	proc		204
+nimgrp	setfuturerootcontinuation	cps/runtime.html#setFutureRootContinuation-procs-all	proc		1073
+nimgrp	waitruncpssignal	cps/runtime.html#waitRunCpsSignal-procs-all	proc		595
+nimgrp	ensureshared	cps/runtime.html#ensureShared-procs-all	proc		194
+nimgrp	trymigrateto	cps/runtime.html#tryMigrateTo-procs-all	proc		1139
+nimgrp	isruntimepinned	cps/runtime.html#isRuntimePinned-procs-all	proc		1121
+nimgrp	racecancel	cps/runtime.html#raceCancel-procs-all	proc		2228
+nimgrp	islocalfast	cps/runtime.html#isLocalFast-procs-all	proc		855
+nimgrp	addcallbackon	cps/runtime.html#addCallbackOn-procs-all	proc		1912
+nimgrp	migrateto	cps/runtime.html#migrateTo-procs-all	proc		1167
+nimgrp	pinfutureruntime	cps/runtime.html#pinFutureRuntime-procs-all	proc		1085
+nimgrp	addcallback	cps/runtime.html#addCallback-procs-all	proc		1922
+nimgrp	pinfuturewaitworker	cps/runtime.html#pinFutureWaitWorker-procs-all	proc		1129
+nimgrp	failtransferred	cps/runtime.html#failTransferred-procs-all	proc		208
+nimgrp	runcpswaitleave	cps/runtime.html#runCpsWaitLeave-procs-all	proc		580
+nimgrp	runcpswaitenter	cps/runtime.html#runCpsWaitEnter-procs-all	proc		574
+nimgrp	finished	cps/runtime.html#finished-procs-all	proc		1029
+nimgrp	complete	cps/runtime.html#complete-procs-all	proc		198
+nimgrp	futureruntime	cps/runtime.html#futureRuntime-procs-all	proc		1049
+nimgrp	read	cps/runtime.html#read-procs-all	proc		1654
+nimgrp	issharedsafe	cps/runtime.html#isSharedSafe-procs-all	proc		863
+nimgrp	bindfutureruntime	cps/runtime.html#bindFutureRuntime-procs-all	proc		1057
+nimgrp	haserror	cps/runtime.html#hasError-procs-all	proc		1630
+nimgrp	geterror	cps/runtime.html#getError-procs-all	proc		1642
+nimgrp	iscancelled	cps/runtime.html#isCancelled-procs-all	proc		2006
+nimgrp	cancel	cps/runtime.html#cancel-procs-all	proc		2020
