@@ -700,14 +700,16 @@ proc accept*(listener: TcpListener): CpsFuture[TcpStream] =
 
 proc acceptEach*(listener: TcpListener, onAccept: TcpAcceptHandler,
                  onError: TcpAcceptErrorHandler = nil,
-                 maxBatch: int = 128) =
+                 maxBatch: int = 16) =
   ## Register a persistent, allocation-light accept callback.
   ##
   ## This is intended for servers that continuously consume a listener. It
   ## avoids constructing and completing a Future for every accepted socket,
   ## while bounding each readiness callback so established connections and
-  ## timers still get reactor time. A listener must have only one active
-  ## accept consumer (`accept` or `acceptEach`) at a time.
+  ## timers still get reactor time. The default deliberately favors a short
+  ## reactor turn; callers with unusually cheap callbacks can raise `maxBatch`.
+  ## A listener must have only one active accept consumer (`accept` or
+  ## `acceptEach`) at a time.
   if listener.isNil or listener.closed:
     raise newException(streams.AsyncIoError, "Cannot accept on a closed listener")
   if onAccept.isNil:
