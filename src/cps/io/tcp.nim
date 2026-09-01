@@ -24,7 +24,6 @@ import ./udp
 
 when defined(linux):
   const TCP_DEFER_ACCEPT_OPT = 9.cint  # Linux <netinet/tcp.h>
-  const SO_INCOMING_CPU_OPT = 49.cint  # Linux <asm-generic/socket.h>
 const TcpConnectPerAddressTimeoutMs = 5000
 
 proc ipprotoTcp(): cint {.inline.} =
@@ -553,7 +552,7 @@ type
   TcpAcceptHandler* = proc(client: TcpStream) {.closure.}
   TcpAcceptErrorHandler* = proc(err: ref CatchableError) {.closure.}
 
-proc tcpListen*(host: string, port: int, backlog: int = 128,
+proc tcpListen*(host: string, port: int, backlog: int = 4096,
                 domain: Domain = AF_INET, dualStack: bool = false,
                 reusePort: bool = false,
                 deferAcceptSeconds: int = 0,
@@ -587,15 +586,6 @@ proc tcpListen*(host: string, port: int, backlog: int = 128,
                               addr yes, sizeof(yes).SockLen) != 0:
     fd.close()
     raise newException(streams.AsyncIoError, "Failed to set SO_REUSEPORT")
-
-  # Keep reuseport flows on the CPU that owns this reactor and listener.
-  # This improves receive-cache locality and lets Linux steer new flows using
-  # the incoming CPU. Unsupported kernels simply retain their default hash.
-  when defined(linux):
-    if reusePort and currentReactorPinned:
-      var incomingCpu = currentReactorCpuId.cint
-      discard setsockopt(fd, SOL_SOCKET.cint, SO_INCOMING_CPU_OPT,
-                         addr incomingCpu, sizeof(incomingCpu).SockLen)
 
   if noDelay and setsockopt(fd, ipprotoTcp(), TCP_NODELAY,
                             addr yes, sizeof(yes).SockLen) != 0:
@@ -710,7 +700,7 @@ proc accept*(listener: TcpListener): CpsFuture[TcpStream] =
 
 proc acceptEach*(listener: TcpListener, onAccept: TcpAcceptHandler,
                  onError: TcpAcceptErrorHandler = nil,
-                 maxBatch: int = 64) =
+                 maxBatch: int = 128) =
   ## Register a persistent, allocation-light accept callback.
   ##
   ## This is intended for servers that continuously consume a listener. It

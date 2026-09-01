@@ -48,9 +48,7 @@ proc reactorMain(arg: ReactorThreadArg) {.thread.} =
   isReactorThread = true
   when defined(linux):
     if arg.cpuId >= 0:
-      currentReactorPinned = platform.pinCurrentThreadToCpu(arg.cpuId)
-      if currentReactorPinned:
-        currentReactorCpuId = arg.cpuId
+      discard platform.pinCurrentThreadToCpu(arg.cpuId)
   var loop: EventLoop
   var running = true
   let (wakeRead, wakeWrite) = platform.createWakePipe()
@@ -76,7 +74,6 @@ proc reactorMain(arg: ReactorThreadArg) {.thread.} =
     loop.unregister(wakeRead)
   platform.closePipeFd(wakeRead)
   platform.closePipeFd(wakeWrite)
-  currentReactorPinned = false
   isReactorThread = false
   {.cast(gcsafe).}:
     setLocalFutureDefault(false)

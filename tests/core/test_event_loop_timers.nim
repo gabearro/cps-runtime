@@ -123,5 +123,23 @@ block testCancelledTimerDoesNotRetainWork:
   assert not loop.hasWork(), "Cancelled timer must not keep event loop work alive"
   echo "PASS: Cancelled timer does not retain active work"
 
+block testCancelledTimersBehindLiveRootStayBounded:
+  let loop = getEventLoop()
+  let live = loop.registerTimer(60000, proc() = discard)
+
+  # A live, earlier deadline prevents root-only pruning from reaching these
+  # cancelled entries. The heap must compact them before their deadlines.
+  for _ in 0 ..< 4096:
+    let cancelled = loop.registerTimer(120000, proc() = discard)
+    cancelled.cancel()
+
+  assert loop.pendingTimerCount() < 512,
+    "Cancelled timer entries behind a live root must remain bounded"
+  live.cancel()
+  discard loop.poll()
+  assert loop.pendingTimerCount() == 0,
+    "Cancelling the remaining live root should drain the timer heap"
+  echo "PASS: Cancelled timers behind a live root stay bounded"
+
 
 echo "All event loop timer tests passed!"

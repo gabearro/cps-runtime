@@ -284,8 +284,6 @@ var mtWakeReactor* {.threadvar.}: proc() {.closure, gcsafe.}
 var isSchedulerWorker* {.threadvar.}: bool
 var currentWorkerId* {.threadvar.}: int
 var isReactorThread* {.threadvar.}: bool
-var currentReactorCpuId* {.threadvar.}: int
-var currentReactorPinned* {.threadvar.}: bool
 
 proc currentThreadIdentity*(): pointer {.inline.} =
   ## Return a stable identity for the calling thread.
@@ -342,7 +340,7 @@ proc defaultRuntimeConfig*(): RuntimeConfig =
   RuntimeConfig(
     flavor: rfCurrentThread,
     numWorkers: 0,
-    pinWorkers: true,
+    pinWorkers: false,
     numBlockingThreads: 0,
     maxSchedulerQueue: DefaultSchedulerQueueCap,
     maxBlockingQueue: DefaultBlockingQueueCap
@@ -423,7 +421,7 @@ proc newMultiThreadRuntime*(numWorkers: int = 0,
                             numBlockingThreads: int = 0,
                             maxSchedulerQueue: int = DefaultSchedulerQueueCap,
                             maxBlockingQueue: int = DefaultBlockingQueueCap,
-                            pinWorkers: bool = true): CpsRuntime =
+                            pinWorkers: bool = false): CpsRuntime =
   ## Create a new multi thread runtime.
   if gMtRuntimeFactory == nil:
     raise newException(ValueError, "MT runtime factory not registered; import cps/mt first")

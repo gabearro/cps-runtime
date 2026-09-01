@@ -15,7 +15,7 @@
 ## POSIX symbols (Sockaddr_in, inet_pton, EAGAIN, etc.) are available to
 ## importers. On Windows, equivalent symbols are provided directly.
 
-import std/[nativesockets, os]
+import std/[nativesockets, os, strutils]
 
 when defined(posix):
   import std/posix
@@ -63,6 +63,27 @@ when defined(linux):
   proc pinCurrentThreadToCpu*(cpu: int): bool =
     ## Pin the calling Linux thread to one allowed logical CPU.
     cpsPinCurrentThread(cpu.cint) != 0
+
+  proc networkRxQueueCount*(): int =
+    ## Return the largest receive-queue count exposed by an active interface.
+    ## A zero result means queue topology is unavailable and callers should
+    ## retain their platform-neutral default.
+    try:
+      for _, ifacePath in walkDir("/sys/class/net"):
+        let statePath = ifacePath / "operstate"
+        if fileExists(statePath):
+          let state = readFile(statePath).strip()
+          if state != "up" and state != "unknown":
+            continue
+        var queues = 0
+        let queuePath = ifacePath / "queues"
+        if dirExists(queuePath):
+          for _, entry in walkDir(queuePath):
+            if extractFilename(entry).startsWith("rx-"):
+              inc queues
+        result = max(result, queues)
+    except OSError:
+      result = 0
 
 # ============================================================
 # Windows socket error codes

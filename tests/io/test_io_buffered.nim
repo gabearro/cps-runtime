@@ -4,6 +4,24 @@ import cps/eventloop
 import cps/io/streams
 import cps/io/buffered
 
+type PollStream = ref object of AsyncStream
+  data: string
+  calls: int
+
+proc pollReadInto(s: AsyncStream, buf: pointer, size: int): int =
+  let stream = PollStream(s)
+  inc stream.calls
+  if stream.calls == 1:
+    return -1
+  if stream.data.len == 0:
+    return 0
+  result = min(size, stream.data.len)
+  copyMem(buf, unsafeAddr stream.data[0], result)
+  if result == stream.data.len:
+    stream.data.setLen(0)
+  else:
+    stream.data = stream.data[result .. ^1]
+
 # Test 1: BufferedReader readLine with \r\n
 block testReadLine:
   let bs = newBufferStream()
@@ -161,5 +179,19 @@ block testAutoFlush:
   let data = runCps(bs.AsyncStream.read(100))
   assert data == "hello world", "Expected 'hello world' after auto-flush"
   echo "PASS: BufferedWriter auto-flush"
+
+# Test 10: zero-copy polling does not allocate or register a readiness future
+block testPollFillBuffer:
+  let stream = PollStream(data: "ready")
+  stream.readIntoProc = pollReadInto
+  let br = newBufferedReader(stream.AsyncStream, bufSize = 16)
+
+  assert br.pollFillBuffer() == bfpWouldBlock
+  assert br.available == 0
+  assert br.pollFillBuffer() == bfpData
+  assert br.available == 5
+  assert runCps(br.read(5)) == "ready"
+  assert br.pollFillBuffer() == bfpEof
+  echo "PASS: BufferedReader non-blocking fill polling"
 
 echo "All buffered I/O tests passed!"

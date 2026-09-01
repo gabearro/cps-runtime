@@ -60,6 +60,7 @@ type
   EventLoop* {.cpsMtLoopAcyclic.} = ref object
     selector: Selector[IoCallback]
     timers: seq[TimerEntry]
+    timerCompactAt: int
     readyQueue: seq[proc() {.closure.}]
     readyScratch: seq[proc() {.closure.}]
     ioEvents: array[64, ReadyKey]
@@ -82,6 +83,7 @@ type
     stats*: LoopStats
 
 const RawPostedCallback = -2
+const MinTimerCompactAt = 256
 
 proc timerLess(a, b: TimerEntry): bool {.inline.} =
   a.deadline < b.deadline
@@ -121,6 +123,7 @@ proc newEventLoop*(): EventLoop =
   new(result)
   result.selector = newSelector[IoCallback]()
   result.timers = @[]
+  result.timerCompactAt = MinTimerCompactAt
   result.readyQueue = @[]
   result.readyScratch = @[]
   result.running = false
@@ -140,6 +143,43 @@ proc timerHeapPush(loop: EventLoop, entry: TimerEntry) {.inline.} =
       i = p
     else:
       break
+
+  if loop.timers.len >= loop.timerCompactAt:
+    var write = 0
+    for read in 0 ..< loop.timers.len:
+      let state = loop.timers[read].state
+      if state != nil and state.cancelled.load(moAcquire):
+        loop.timers[read].callback = nil
+        loop.timers[read].state = nil
+      else:
+        if write != read:
+          loop.timers[write] = move(loop.timers[read])
+        inc write
+    loop.timers.setLen(write)
+
+    # Filtering arbitrary heap slots does not preserve heap order. Rebuild it
+    # bottom-up; compaction runs only when the heap doubles, so its cost is
+    # amortized while cancelled callback graphs remain bounded.
+    if write > 1:
+      var parent = (write shr 1) - 1
+      while true:
+        var i = parent
+        while true:
+          let left = (i shl 1) + 1
+          if left >= write:
+            break
+          let right = left + 1
+          var smallest = left
+          if right < write and timerLess(loop.timers[right], loop.timers[left]):
+            smallest = right
+          if not timerLess(loop.timers[smallest], loop.timers[i]):
+            break
+          swap(loop.timers[i], loop.timers[smallest])
+          i = smallest
+        if parent == 0:
+          break
+        dec parent
+    loop.timerCompactAt = max(MinTimerCompactAt, write * 2)
 
 proc timerHeapPeek(loop: EventLoop): TimerEntry =
   if loop.timers.len == 0:
@@ -860,6 +900,10 @@ proc hasUserIoWork*(loop: EventLoop): bool {.inline.} =
   loop.readyQueue.len > 0 or loop.timers.len > 0 or
     loop.userIoHandleCount() > 0 or
     (loop.mtActive and loop.crossThreadQueue.hasPending())
+
+proc pendingTimerCount*(loop: EventLoop): int {.inline.} =
+  ## Return the number of timer entries currently retained by the loop.
+  loop.timers.len
 
 proc hasWork*(loop: EventLoop): bool =
   ## Return whether the event loop has work ready to run.

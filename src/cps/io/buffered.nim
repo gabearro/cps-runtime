@@ -13,6 +13,10 @@ import ./streams
 # ============================================================
 
 type
+  BufferFillPoll* = enum
+    ## Result of a non-blocking buffered read attempt.
+    bfpWouldBlock, bfpData, bfpEof, bfpError, bfpUnsupported
+
   BufferedReader* = ref object
     stream*: AsyncStream
     buf: string
@@ -111,6 +115,29 @@ proc ensureSpace(br: BufferedReader) {.inline.} =
   if br.buf.len - br.cap < br.bufSize:
     br.buf.setLen(br.cap + br.bufSize)
 
+proc pollFillBuffer*(br: BufferedReader): BufferFillPoll =
+  ## Attempt one non-blocking, zero-copy fill without registering readiness.
+  ## Protocol drivers can inspect buffered data between retries and defer all
+  ## future/callback allocation until the socket actually needs to wait.
+  if br.eof:
+    return bfpEof
+  br.compact()
+  if br.stream.readIntoProc == nil:
+    return bfpUnsupported
+  br.ensureSpace()
+  let n = br.stream.readIntoProc(br.stream,
+    addr br.buf[br.cap], br.bufSize)
+  if n > 0:
+    br.cap += n
+    bfpData
+  elif n == 0:
+    br.eof = true
+    bfpEof
+  elif n == -1:
+    bfpWouldBlock
+  else:
+    bfpError
+
 template fillAndRetry(fillFut: CpsFuture[bool], fut, retryCall: untyped) =
   ## Common pattern: chain on a fillBuffer future — sync fast path or async callback.
   if fillFut.finished():
@@ -129,49 +156,40 @@ template fillAndRetry(fillFut: CpsFuture[bool], fut, retryCall: untyped) =
 proc fillBuffer*(br: BufferedReader): CpsFuture[bool] =
   ## Read a chunk from the underlying stream into the buffer.
   ## Returns true if data was read, false on EOF.
-  if br.eof:
+  case br.pollFillBuffer()
+  of bfpData:
+    return completedBoolTrue()
+  of bfpEof:
     return completedBoolFalse()
-
-  br.compact()
-
-  # Zero-copy fast path: read directly into buffer via readInto vtable.
-  if br.stream.readIntoProc != nil:
-    br.ensureSpace()
-    let n = br.stream.readIntoProc(br.stream, addr br.buf[br.cap], br.bufSize)
-    if n > 0:
-      br.cap += n
-      return completedBoolTrue()
-    elif n == 0:
-      br.eof = true
-      return completedBoolFalse()
-    elif n == -1:
-      # EAGAIN: wait for readability, then retry
-      if br.stream.waitReadableProc != nil:
-        let waitFut = br.stream.waitReadableProc(br.stream)
-        let fut = newCpsFuture[bool]()
-        let brLocal = br
-        waitFut.addCallback(proc() =
-          if waitFut.hasError():
-            fut.fail(waitFut.getError())
+  of bfpError:
+    return failedFuture[bool](newException(streams.AsyncIoError, "Read failed"))
+  of bfpWouldBlock:
+    if br.stream.waitReadableProc != nil:
+      let waitFut = br.stream.waitReadableProc(br.stream)
+      let fut = newCpsFuture[bool]()
+      let brLocal = br
+      waitFut.addCallback(proc() =
+        if waitFut.hasError():
+          fut.fail(waitFut.getError())
+        else:
+          brLocal.ensureSpace()
+          let n = brLocal.stream.readIntoProc(brLocal.stream,
+            addr brLocal.buf[brLocal.cap], brLocal.bufSize)
+          if n > 0:
+            brLocal.cap += n
+            fut.complete(true)
+          elif n == 0:
+            brLocal.eof = true
+            fut.complete(false)
+          elif n == -1:
+            fut.complete(false)
           else:
-            brLocal.ensureSpace()
-            let n2 = brLocal.stream.readIntoProc(brLocal.stream,
-              addr brLocal.buf[brLocal.cap], brLocal.bufSize)
-            if n2 > 0:
-              brLocal.cap += n2
-              fut.complete(true)
-            elif n2 == 0:
-              brLocal.eof = true
-              fut.complete(false)
-            elif n2 == -1:
-              fut.complete(false)
-            else:
-              fut.fail(newException(streams.AsyncIoError, "Read failed"))
-        )
-        return fut
-      # No waitReadable — fall through to allocating read() path
-    else:
-      return failedFuture[bool](newException(streams.AsyncIoError, "Read failed"))
+            fut.fail(newException(streams.AsyncIoError, "Read failed"))
+      )
+      return fut
+    # No waitReadable — fall through to allocating read() path.
+  of bfpUnsupported:
+    discard
 
   # Allocating fallback: use stream.read() (creates temp string + CpsFuture)
   let streamFut = br.stream.read(br.bufSize)

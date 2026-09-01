@@ -20,6 +20,13 @@ when defined(linux):
 const
   DefaultGlobalQueueCapacity = 65536
   LocalPinnedCapacity = 16
+  # Bound uninterrupted continuation batches before servicing the worker's
+  # reactor. Sixteen preserves throughput while keeping rare scheduler stalls
+  # out of the HTTP tail; builds can override it for unusual workloads.
+  CpsMtIoPollQuantum {.intdefine.} = 16
+
+static:
+  doAssert CpsMtIoPollQuantum > 0
 
 type
   SchedulerTask* = proc() {.closure, gcsafe.}
@@ -303,15 +310,13 @@ proc workerMain(arg: WorkerArg) {.thread.} =
     setCurrentRuntime(cast[CpsRuntime](arg.runtime))
   when defined(linux):
     if arg.cpuId >= 0:
-      currentReactorPinned = platform.pinCurrentThreadToCpu(arg.cpuId)
-      if currentReactorPinned:
-        currentReactorCpuId = arg.cpuId
+      discard platform.pinCurrentThreadToCpu(arg.cpuId)
   if s.reactorSetup != nil:
     s.reactorSetup(s.reactorCtx, myIdx)
 
   let myState = s.workers[myIdx]
   var rng = initXorShift32(myIdx * 31 + 17)
-  var tasksUntilIoPoll = 64
+  var tasksUntilIoPoll = CpsMtIoPollQuantum
 
   template unpark() =
     myState.parked.store(false, moRelease)
@@ -364,7 +369,7 @@ proc workerMain(arg: WorkerArg) {.thread.} =
         dec tasksUntilIoPoll
         if tasksUntilIoPoll == 0:
           discard s.reactorPollNow(s.reactorCtx, myIdx)
-          tasksUntilIoPoll = 64
+          tasksUntilIoPoll = CpsMtIoPollQuantum
       continue
 
     # No work found — check shutdown before parking
@@ -395,8 +400,6 @@ proc workerMain(arg: WorkerArg) {.thread.} =
   {.cast(gcsafe).}:
     setCurrentRuntime(nil)
   currentSchedulerPtr = nil
-  currentReactorCpuId = -1
-  currentReactorPinned = false
   isSchedulerWorker = false
   currentWorkerId = -1
 
@@ -409,7 +412,7 @@ proc newScheduler*(runtime: CpsRuntime, numWorkers: int = 0,
                    reactorShouldDrain: SchedulerReactorPredicateHook = nil,
                    reactorWake: SchedulerReactorHook = nil,
                    reactorTeardown: SchedulerReactorHook = nil,
-                   pinWorkers: bool = true): Scheduler =
+                   pinWorkers: bool = false): Scheduler =
   ## Create a new scheduler.
   ## Non-positive queue capacities use the bounded default.
   when defined(linux):
@@ -460,7 +463,9 @@ proc newScheduler*(runtime: CpsRuntime, numWorkers: int = 0,
     let cpuId =
       when defined(linux):
         if pinWorkers and allowedCpus.len > 0:
-          allowedCpus[i mod allowedCpus.len]
+          # Leave low-numbered housekeeping/interrupt CPUs to the kernel and
+          # place the first (usually ingress-heavy) reactor on a high CPU.
+          allowedCpus[allowedCpus.len - 1 - (i mod allowedCpus.len)]
         else:
           -1
       else:

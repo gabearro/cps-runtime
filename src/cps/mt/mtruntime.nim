@@ -489,7 +489,7 @@ proc initMtRuntime*(numWorkers: int = 0,
                     numBlockingThreads: int = 0,
                     maxSchedulerQueue: int = 65536,
                     maxBlockingQueue: int = 65536,
-                    pinWorkers: bool = true): EventLoop =
+                    pinWorkers: bool = false): EventLoop =
   ## Compatibility wrapper: create an MT runtime and install it as main/current.
   let rt = newMultiThreadRuntime(
     numWorkers = numWorkers,
@@ -519,8 +519,10 @@ proc ioShardLoop*(rt: CpsRuntime, shardId: int): EventLoop =
       "I/O shard loops are only borrowable from their owning worker")
   cast[EventLoop](shards.loops[shardId])
 
-proc startMtIoShards*(rt: CpsRuntime, setup: MtIoSetup) =
-  ## Run ``setup`` once on every scheduler worker and wait for initialization.
+proc startMtIoShards*(rt: CpsRuntime, setup: MtIoSetup,
+                      numShards: int = 0) =
+  ## Run ``setup`` on the requested scheduler workers and wait for initialization.
+  ## Non-positive ``numShards`` initializes every worker-owned reactor.
   ## Each callback executes on the worker that owns the corresponding selector,
   ## so listeners, sockets, timers, and their continuations remain thread-local.
   if rt == nil or rt.flavor != rfMultiThread or not rt.mtActive:
@@ -531,27 +533,54 @@ proc startMtIoShards*(rt: CpsRuntime, setup: MtIoSetup) =
   if sched == nil or rt.ioShardCount <= 0:
     raise newException(ValueError, "MT runtime has no I/O shards")
 
+  let setupCount =
+    if numShards > 0: min(rt.ioShardCount, numShards)
+    else: rt.ioShardCount
+
   let state = cast[ptr MtIoStartState](allocShared0(sizeof(MtIoStartState)))
   state.started.store(0, moRelaxed)
   state.failed.store(false, moRelaxed)
   state.setup = setup
 
-  for shardId in 0 ..< rt.ioShardCount:
+  for shardId in 0 ..< setupCount:
     if not sched.schedulePinnedCall(shardId, runMtIoSetup,
                                     cast[pointer](state)):
       state.failed.store(true, moRelease)
       discard state.started.fetchAdd(1, moAcquireRelease)
 
-  while state.started.load(moAcquire) != rt.ioShardCount:
+  while state.started.load(moAcquire) != setupCount:
     sleep(0)
   let failed = state.failed.load(moAcquire)
   deallocShared(state)
   if failed:
     raise newException(CatchableError, "one or more MT I/O shards failed to initialize")
 
-proc startMtIoShards*(handle: RuntimeHandle, setup: MtIoSetup) {.inline.} =
+proc startMtIoShards*(handle: RuntimeHandle, setup: MtIoSetup,
+                      numShards: int = 0) {.inline.} =
   ## Initialize worker-owned I/O shards through a runtime handle.
-  startMtIoShards(handle.runtime, setup)
+  startMtIoShards(handle.runtime, setup, numShards)
+
+proc startMtNetworkShards*(rt: CpsRuntime, setup: MtIoSetup,
+                           numShards: int = 0) =
+  ## Initialize network reactors without exceeding ingress queue parallelism.
+  ## Additional scheduler workers remain available for CPU and blocking work.
+  let networkShards =
+    if numShards > 0:
+      numShards
+    else:
+      when defined(linux):
+        let rxQueues = platform.networkRxQueueCount()
+        if rxQueues > 0: rxQueues
+        elif rt != nil: rt.ioShardCount
+        else: 0
+      else:
+        if rt != nil: rt.ioShardCount else: 0
+  startMtIoShards(rt, setup, networkShards)
+
+proc startMtNetworkShards*(handle: RuntimeHandle, setup: MtIoSetup,
+                           numShards: int = 0) {.inline.} =
+  ## Initialize receive-queue-aware network reactors through a runtime handle.
+  startMtNetworkShards(handle.runtime, setup, numShards)
 
 proc spawnBlockingOn*[T](handle: RuntimeHandle,
                          bodyArg: sink BlockingProc[T]): CpsFuture[T] =
