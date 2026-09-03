@@ -138,6 +138,41 @@ proc pollFillBuffer*(br: BufferedReader): BufferFillPoll =
   else:
     bfpError
 
+proc waitFillBuffer*(br: BufferedReader): CpsFuture[bool] =
+  ## Wait for readability, then fill the buffer without a speculative read.
+  ##
+  ## Call this after ``pollFillBuffer`` returns ``bfpWouldBlock``. Separating
+  ## the two operations lets protocol drivers inspect buffered data first and
+  ## avoids issuing the same non-blocking read twice before arming readiness.
+  if br.eof:
+    return completedBoolFalse()
+  if br.stream.readIntoProc == nil or br.stream.waitReadableProc == nil:
+    return failedFuture[bool](newException(streams.AsyncIoError,
+      "Stream does not support readiness-based buffered reads"))
+
+  let waitFut = br.stream.waitReadableProc(br.stream)
+  let fut = newCpsFuture[bool]()
+  let brLocal = br
+  waitFut.addCallback(proc() =
+    if waitFut.hasError():
+      fut.fail(waitFut.getError())
+    else:
+      brLocal.ensureSpace()
+      let n = brLocal.stream.readIntoProc(brLocal.stream,
+        addr brLocal.buf[brLocal.cap], brLocal.bufSize)
+      if n > 0:
+        brLocal.cap += n
+        fut.complete(true)
+      elif n == 0:
+        brLocal.eof = true
+        fut.complete(false)
+      elif n == -1:
+        fut.complete(false)
+      else:
+        fut.fail(newException(streams.AsyncIoError, "Read failed"))
+  )
+  result = fut
+
 template fillAndRetry(fillFut: CpsFuture[bool], fut, retryCall: untyped) =
   ## Common pattern: chain on a fillBuffer future — sync fast path or async callback.
   if fillFut.finished():
@@ -165,28 +200,7 @@ proc fillBuffer*(br: BufferedReader): CpsFuture[bool] =
     return failedFuture[bool](newException(streams.AsyncIoError, "Read failed"))
   of bfpWouldBlock:
     if br.stream.waitReadableProc != nil:
-      let waitFut = br.stream.waitReadableProc(br.stream)
-      let fut = newCpsFuture[bool]()
-      let brLocal = br
-      waitFut.addCallback(proc() =
-        if waitFut.hasError():
-          fut.fail(waitFut.getError())
-        else:
-          brLocal.ensureSpace()
-          let n = brLocal.stream.readIntoProc(brLocal.stream,
-            addr brLocal.buf[brLocal.cap], brLocal.bufSize)
-          if n > 0:
-            brLocal.cap += n
-            fut.complete(true)
-          elif n == 0:
-            brLocal.eof = true
-            fut.complete(false)
-          elif n == -1:
-            fut.complete(false)
-          else:
-            fut.fail(newException(streams.AsyncIoError, "Read failed"))
-      )
-      return fut
+      return br.waitFillBuffer()
     # No waitReadable — fall through to allocating read() path.
   of bfpUnsupported:
     discard

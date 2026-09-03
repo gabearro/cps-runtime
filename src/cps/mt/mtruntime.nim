@@ -489,7 +489,7 @@ proc initMtRuntime*(numWorkers: int = 0,
                     numBlockingThreads: int = 0,
                     maxSchedulerQueue: int = 65536,
                     maxBlockingQueue: int = 65536,
-                    pinWorkers: bool = false): EventLoop =
+                    pinWorkers: bool = true): EventLoop =
   ## Compatibility wrapper: create an MT runtime and install it as main/current.
   let rt = newMultiThreadRuntime(
     numWorkers = numWorkers,

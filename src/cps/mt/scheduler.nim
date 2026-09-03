@@ -21,9 +21,9 @@ const
   DefaultGlobalQueueCapacity = 65536
   LocalPinnedCapacity = 16
   # Bound uninterrupted continuation batches before servicing the worker's
-  # reactor. Sixteen preserves throughput while keeping rare scheduler stalls
-  # out of the HTTP tail; builds can override it for unusual workloads.
-  CpsMtIoPollQuantum {.intdefine.} = 16
+  # reactor. Sixty-four avoids excessive non-blocking selector polls while
+  # keeping I/O latency bounded; builds can override it for unusual workloads.
+  CpsMtIoPollQuantum {.intdefine.} = 64
 
 static:
   doAssert CpsMtIoPollQuantum > 0
@@ -412,7 +412,7 @@ proc newScheduler*(runtime: CpsRuntime, numWorkers: int = 0,
                    reactorShouldDrain: SchedulerReactorPredicateHook = nil,
                    reactorWake: SchedulerReactorHook = nil,
                    reactorTeardown: SchedulerReactorHook = nil,
-                   pinWorkers: bool = false): Scheduler =
+                   pinWorkers: bool = true): Scheduler =
   ## Create a new scheduler.
   ## Non-positive queue capacities use the bounded default.
   when defined(linux):

@@ -340,7 +340,7 @@ proc defaultRuntimeConfig*(): RuntimeConfig =
   RuntimeConfig(
     flavor: rfCurrentThread,
     numWorkers: 0,
-    pinWorkers: false,
+    pinWorkers: true,
     numBlockingThreads: 0,
     maxSchedulerQueue: DefaultSchedulerQueueCap,
     maxBlockingQueue: DefaultBlockingQueueCap
@@ -421,7 +421,7 @@ proc newMultiThreadRuntime*(numWorkers: int = 0,
                             numBlockingThreads: int = 0,
                             maxSchedulerQueue: int = DefaultSchedulerQueueCap,
                             maxBlockingQueue: int = DefaultBlockingQueueCap,
-                            pinWorkers: bool = false): CpsRuntime =
+                            pinWorkers: bool = true): CpsRuntime =
   ## Create a new multi thread runtime.
   if gMtRuntimeFactory == nil:
     raise newException(ValueError, "MT runtime factory not registered; import cps/mt first")

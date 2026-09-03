@@ -22,6 +22,9 @@ proc pollReadInto(s: AsyncStream, buf: pointer, size: int): int =
   else:
     stream.data = stream.data[result .. ^1]
 
+proc pollWaitReadable(s: AsyncStream): CpsVoidFuture =
+  cachedCompletedVoidFuture()
+
 # Test 1: BufferedReader readLine with \r\n
 block testReadLine:
   let bs = newBufferStream()
@@ -193,5 +196,19 @@ block testPollFillBuffer:
   assert runCps(br.read(5)) == "ready"
   assert br.pollFillBuffer() == bfpEof
   echo "PASS: BufferedReader non-blocking fill polling"
+
+# Test 11: a confirmed EAGAIN arms readiness without polling twice
+block testWaitFillBuffer:
+  let stream = PollStream(data: "ready")
+  stream.readIntoProc = pollReadInto
+  stream.waitReadableProc = pollWaitReadable
+  let br = newBufferedReader(stream.AsyncStream, bufSize = 16)
+
+  assert br.pollFillBuffer() == bfpWouldBlock
+  assert stream.calls == 1
+  assert runCps(br.waitFillBuffer())
+  assert stream.calls == 2
+  assert runCps(br.read(5)) == "ready"
+  echo "PASS: BufferedReader readiness fill"
 
 echo "All buffered I/O tests passed!"
